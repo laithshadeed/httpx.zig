@@ -103,8 +103,8 @@ pub fn checkFrameAllowed(kind: StreamKind, frameType: u64) ?H3Error {
             0x4, 0x7, 0x3, 0xD, 0x5, 0x0F0700, 0x0F0701 => return .h3_frame_unexpected,
             else => return null, // unknown: skip + ignore
         },
-        // No-push policy (matches nghttp3): push streams and PUSH_PROMISE
-        // are rejected everywhere; unknown types are still skipped.
+        // No-push policy: push streams and PUSH_PROMISE are rejected
+        // everywhere; unknown types are still skipped.
         .push => switch (frameType) {
             0x0, 0x1, 0x4, 0x7, 0x3, 0xD, 0x5, 0x0F0700, 0x0F0701 => return .h3_frame_unexpected,
             else => return null,

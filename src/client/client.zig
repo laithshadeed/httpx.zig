@@ -2256,8 +2256,9 @@ test "client get over http3 serves loopback over real udp" {
                     if (std.mem.eql(u8, f.name, ":path")) path = f.value;
                 }
                 const is_hello = std.mem.eql(u8, path, "/hello");
-                var rs = h3conn.RequestStream{ .id = acc.sid, .allocator = alloc, .qpack = h3qpack.Encoder.init(alloc) };
-                defer rs.qpack.deinit();
+                var qenc = h3qpack.Encoder.init(alloc);
+                defer qenc.deinit();
+                var rs = h3conn.RequestStream{ .id = acc.sid, .allocator = alloc, .qpack = &qenc };
                 const rhead = try rs.buildResponseHeaders(if (is_hello) 200 else 404, &.{});
                 defer alloc.free(rhead);
                 const rdata = try rs.buildData(if (is_hello) "hello-h3" else "not-found");

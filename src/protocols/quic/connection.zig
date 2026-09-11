@@ -1393,8 +1393,9 @@ test "http3 request over quic loopback reaches handler and returns response" {
     }
 
     // 3. Request 1: GET /hello on client bidi stream 0.
-    var rs = h3conn.RequestStream{ .id = 0, .allocator = a, .qpack = h3qpack.Encoder.init(a) };
-    defer rs.qpack.deinit();
+    var cli_qenc = h3qpack.Encoder.init(a);
+    defer cli_qenc.deinit();
+    var rs = h3conn.RequestStream{ .id = 0, .allocator = a, .qpack = &cli_qenc };
     const req_head = try rs.buildRequestHeaders("GET", "https", "example.com", "/hello", &.{});
     defer a.free(req_head);
     try sendH3Stream(client, 0, 0, req_head, true, 508);
@@ -1428,8 +1429,9 @@ test "http3 request over quic loopback reaches handler and returns response" {
         }
         try std.testing.expectEqualStrings("GET", method);
         const r = Handler.route(path);
-        var srs = h3conn.RequestStream{ .id = 0, .allocator = a, .qpack = h3qpack.Encoder.init(a) };
-        defer srs.qpack.deinit();
+        var srv_qenc = h3qpack.Encoder.init(a);
+        defer srv_qenc.deinit();
+        var srs = h3conn.RequestStream{ .id = 0, .allocator = a, .qpack = &srv_qenc };
         const resp_head = try srs.buildResponseHeaders(r.status, &.{});
         defer a.free(resp_head);
         const resp_data = try srs.buildData(r.body);
@@ -1463,8 +1465,9 @@ test "http3 request over quic loopback reaches handler and returns response" {
     try std.testing.expectEqualStrings("hello-h3", resp_body);
 
     // 4. Request 2 on a fresh stream proves multiplexing + dispatch miss.
-    var rs2 = h3conn.RequestStream{ .id = 4, .allocator = a, .qpack = h3qpack.Encoder.init(a) };
-    defer rs2.qpack.deinit();
+    var cli_qenc2 = h3qpack.Encoder.init(a);
+    defer cli_qenc2.deinit();
+    var rs2 = h3conn.RequestStream{ .id = 4, .allocator = a, .qpack = &cli_qenc2 };
     const req2 = try rs2.buildRequestHeaders("GET", "https", "example.com", "/missing", &.{});
     defer a.free(req2);
     try sendH3Stream(client, 4, 0, req2, true, 512);

@@ -582,8 +582,9 @@ const H3BenchServer = struct {
             const fr = try httpx.http3.frame.parseFrame(acc.buf.items, &off);
             const fields = try h3.qdec.decodeSectionWithPrefix(fr.payload);
             defer h3.qdec.freeFields(fields);
-            var rs = httpx.http3.RequestStream{ .id = acc.sid, .allocator = alloc, .qpack = httpx.http3.qpack.Encoder.init(alloc) };
-            defer rs.qpack.deinit();
+            var bench_qenc = httpx.http3.qpack.Encoder.init(alloc);
+            defer bench_qenc.deinit();
+            var rs = httpx.http3.RequestStream{ .id = acc.sid, .allocator = alloc, .qpack = &bench_qenc };
             const rhead = try rs.buildResponseHeaders(200, &.{});
             defer alloc.free(rhead);
             const rdata = try rs.buildData("pong");

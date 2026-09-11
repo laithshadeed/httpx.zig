@@ -158,8 +158,9 @@ const DemoServer = struct {
             for (fields) |f| {
                 if (std.mem.eql(u8, f.name, ":path")) path = f.value;
             }
-            var rs = httpx.http3.RequestStream{ .id = acc.sid, .allocator = alloc, .qpack = httpx.http3.qpack.Encoder.init(alloc) };
-            defer rs.qpack.deinit();
+            var ex_qenc = httpx.http3.qpack.Encoder.init(alloc);
+            defer ex_qenc.deinit();
+            var rs = httpx.http3.RequestStream{ .id = acc.sid, .allocator = alloc, .qpack = &ex_qenc };
             const rhead = try rs.buildResponseHeaders(200, &.{});
             defer alloc.free(rhead);
             const body = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\",\"protocol\":\"HTTP/3\"}}", .{path});

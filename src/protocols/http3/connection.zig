@@ -27,10 +27,15 @@ pub const Error = error{
 };
 
 /// A single HTTP/3 message exchange on a bidirectional stream.
+///
+/// The QPACK encoder is borrowed from the owning `Connection` (never
+/// copied): encoder state (dynamic table, insert count, pending
+/// instructions) is per-connection, and copying the struct would
+/// double-free the table. The stream must not outlive its connection.
 pub const RequestStream = struct {
     id: u64,
     allocator: Allocator,
-    qpack: qpack_mod.Encoder,
+    qpack: *qpack_mod.Encoder,
 
     /// Builds HEADERS frame payload for a response.
     pub fn buildResponseHeaders(
@@ -41,11 +46,9 @@ pub const RequestStream = struct {
         var block = std.ArrayList(u8).empty;
         errdefer block.deinit(self.allocator);
 
-        // Encoded Field Section Prefix: Required Insert Count = 0 and
-        // Delta Base = 0. This response builder uses only static/literal
-        // fields, so it must still emit the prefix required by RFC 9204
-        // Section 4.5.
-        try block.appendSlice(self.allocator, "\x00\x00");
+        // Field representations first; the section prefix needs the
+        // final Required Insert Count, which is only known afterwards.
+        self.qpack.beginSection();
 
         // Status pseudo-header
         var code_buf: [4]u8 = undefined;
@@ -57,19 +60,26 @@ pub const RequestStream = struct {
             try self.qpack.encodeField(&block, h.name, h.value);
         }
 
+        const ric = self.qpack.sectionRic();
+        var prefix = std.ArrayList(u8).empty;
+        defer prefix.deinit(self.allocator);
+        try self.qpack.encodePrefix(&prefix, ric, ric);
+
         // Wrap in HEADERS frame
         var out = std.ArrayList(u8).empty;
         errdefer out.deinit(self.allocator);
         var fh: [16]u8 = undefined;
-        const n = try frame_mod.encodeFrameHeader(&fh, @intFromEnum(frame_mod.FrameType.headers), block.items.len);
+        const n = try frame_mod.encodeFrameHeader(&fh, @intFromEnum(frame_mod.FrameType.headers), prefix.items.len + block.items.len);
         try out.appendSlice(self.allocator, fh[0..n]);
+        try out.appendSlice(self.allocator, prefix.items);
         try out.appendSlice(self.allocator, block.items);
         block.deinit(self.allocator);
         return out.toOwnedSlice(self.allocator);
     }
 
     /// Builds an HTTP/3 request HEADERS frame with the required pseudo
-    /// headers and a zero dynamic-table QPACK prefix.
+    /// headers. The QPACK section prefix carries the real Required
+    /// Insert Count (zero while the encoder stays static-only).
     pub fn buildRequestHeaders(
         self: *RequestStream,
         method: []const u8,
@@ -80,7 +90,7 @@ pub const RequestStream = struct {
     ) ![]u8 {
         var block = std.ArrayList(u8).empty;
         errdefer block.deinit(self.allocator);
-        try block.appendSlice(self.allocator, "\x00\x00");
+        self.qpack.beginSection();
         try self.qpack.encodeField(&block, ":method", method);
         try self.qpack.encodeField(&block, ":scheme", scheme);
         try self.qpack.encodeField(&block, ":authority", authority);
@@ -90,11 +100,17 @@ pub const RequestStream = struct {
             try self.qpack.encodeField(&block, h.name, h.value);
         }
 
+        const ric = self.qpack.sectionRic();
+        var prefix = std.ArrayList(u8).empty;
+        defer prefix.deinit(self.allocator);
+        try self.qpack.encodePrefix(&prefix, ric, ric);
+
         var out = std.ArrayList(u8).empty;
         errdefer out.deinit(self.allocator);
         var fh: [16]u8 = undefined;
-        const n = try frame_mod.encodeFrameHeader(&fh, @intFromEnum(frame_mod.FrameType.headers), block.items.len);
+        const n = try frame_mod.encodeFrameHeader(&fh, @intFromEnum(frame_mod.FrameType.headers), prefix.items.len + block.items.len);
         try out.appendSlice(self.allocator, fh[0..n]);
+        try out.appendSlice(self.allocator, prefix.items);
         try out.appendSlice(self.allocator, block.items);
         block.deinit(self.allocator);
         return out.toOwnedSlice(self.allocator);
@@ -158,6 +174,9 @@ pub const PeerSettings = struct {
     h3Datagram: u64 = 0,
 };
 
+/// Canonical settings type (re-exported as `httpx.http3.Settings`).
+pub const Settings = PeerSettings;
+
 /// HTTP/3 connection state machine. Manages control stream lifecycle,
 /// SETTINGS exchange, QPACK integration, and stream multiplexing.
 pub const Connection = struct {
@@ -206,6 +225,14 @@ pub const Connection = struct {
 
     /// Builds the control stream SETTINGS frame to send.
     pub fn buildControlStream(self: *Connection) ![]u8 {
+        // Commit our decoder state to what we advertise: the peer may
+        // use dynamic references up to our capacity from here on.
+        // Once-only: re-sizing mid-connection would drop live entries.
+        if (!self.settingsSent) {
+            self.qdec.setMaxTableCapacity(std.math.cast(usize, self.localSettings.qpackMaxTableCapacity) orelse 0);
+            self.qdec.setMaxFieldSectionSize(self.localSettings.maxFieldSectionSize);
+        }
+
         var entries: [4]frame_mod.SettingEntry = undefined;
         var count: usize = 0;
 
@@ -341,7 +368,7 @@ pub const Connection = struct {
         return .{
             .id = streamId,
             .allocator = self.allocator,
-            .qpack = self.qenc,
+            .qpack = &self.qenc,
         };
     }
 };
@@ -388,10 +415,12 @@ test "qpack capacity changes release the previous table" {
 
 test "request stream builds valid HEADERS + DATA" {
     const a = std.testing.allocator;
+    var qenc = qpack_mod.Encoder.init(a);
+    defer qenc.deinit();
     var rs = RequestStream{
         .id = 4,
         .allocator = a,
-        .qpack = qpack_mod.Encoder.init(a),
+        .qpack = &qenc,
     };
 
     const hdrs = [_]qpack_mod.FieldLine{
@@ -419,7 +448,9 @@ test "request stream builds valid HEADERS + DATA" {
 
 test "request stream builds decodable request headers" {
     const a = std.testing.allocator;
-    var rs = RequestStream{ .id = 0, .allocator = a, .qpack = qpack_mod.Encoder.init(a) };
+    var qenc = qpack_mod.Encoder.init(a);
+    defer qenc.deinit();
+    var rs = RequestStream{ .id = 0, .allocator = a, .qpack = &qenc };
     const headers = [_]qpack_mod.FieldLine{.{ .name = "user-agent", .value = "httpx" }};
     const encoded = try rs.buildRequestHeaders("GET", "https", "example.test", "/", &headers);
     defer a.free(encoded);

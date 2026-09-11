@@ -137,8 +137,9 @@ pub const Client = struct {
 
         const sid = self.h3.nextBidiStreamId();
         self.resp = .{ .sid = sid };
-        var rs = h3conn.RequestStream{ .id = sid, .allocator = a, .qpack = h3qpack.Encoder.init(a) };
-        defer rs.qpack.deinit();
+        var qenc = h3qpack.Encoder.init(a);
+        defer qenc.deinit();
+        var rs = h3conn.RequestStream{ .id = sid, .allocator = a, .qpack = &qenc };
         var qextra = std.ArrayList(h3qpack.FieldLine).empty;
         defer qextra.deinit(a);
         for (extra) |h| try qextra.append(a, .{ .name = h.name, .value = h.value });
