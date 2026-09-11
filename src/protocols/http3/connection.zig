@@ -272,22 +272,16 @@ pub const Connection = struct {
         self.settingsReceived = true;
     }
 
-    /// Builds a GOAWAY frame payload (stream ID varint).
+    /// Builds a GOAWAY frame (stream ID varint payload).
     pub fn buildGoawayFrame(self: *Connection, streamId: u64) ![]u8 {
-        var payload = std.ArrayList(u8).empty;
-        defer payload.deinit(self.allocator);
-        var vb: [16]u8 = undefined;
-        const n = try varint.encode(&vb, streamId);
-        try payload.appendSlice(self.allocator, vb[0..n]);
-        var out = std.ArrayList(u8).empty;
-        errdefer out.deinit(self.allocator);
-        var fh: [16]u8 = undefined;
-        const hn = try frame_mod.encodeFrameHeader(&fh, @intFromEnum(frame_mod.FrameType.goaway), payload.items.len);
-        try out.appendSlice(self.allocator, fh[0..hn]);
-        try out.appendSlice(self.allocator, payload.items);
+        const out = try frame_mod.encodeSingleVarintFrame(
+            self.allocator,
+            @intFromEnum(frame_mod.FrameType.goaway),
+            streamId,
+        );
         self.goawaySent = true;
         self.goawayStreamId = streamId;
-        return out.toOwnedSlice(self.allocator);
+        return out;
     }
 
     /// Processes one frame received on the HTTP/3 control stream.
@@ -309,9 +303,7 @@ pub const Connection = struct {
                 try self.processPeerSettings(entries);
             },
             0x7 => {
-                var off: usize = 0;
-                const sid = varint.decode(payload, &off) catch return Error.ProtocolViolation;
-                if (off != payload.len) return Error.ProtocolViolation;
+                const sid = frame_mod.decodeSingleVarintPayload(payload) catch return Error.ProtocolViolation;
                 if (self.goawayReceived and sid > self.goawayStreamId) return Error.ProtocolViolation;
                 self.goawayReceived = true;
                 self.goawayStreamId = sid;
@@ -323,8 +315,7 @@ pub const Connection = struct {
                 };
                 self.allocator.free(entries);
                 if (frameType == 0xD) {
-                    var off: usize = 0;
-                    const pid = varint.decode(payload, &off) catch return Error.ProtocolViolation;
+                    const pid = frame_mod.decodeSingleVarintPayload(payload) catch return Error.ProtocolViolation;
                     if (pid > self.maxPushId) self.maxPushId = pid;
                 }
             },
