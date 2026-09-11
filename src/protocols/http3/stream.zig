@@ -52,8 +52,8 @@ pub const HttpState = enum {
 pub const UniKind = enum {
     undecided,
     control,
-    qpack_encoder,
-    qpack_decoder,
+    qpackEncoder,
+    qpackDecoder,
     push,
     unknown,
 };
@@ -179,9 +179,19 @@ pub const Stream = struct {
     }
 
     /// Takes staged decoder-stream acknowledgment bytes; caller sends
-    /// them on the decoder stream, then frees the slice.
+    /// them on the decoder stream, then frees the slice (always owned,
+    /// even when empty).
     pub fn takeDecoderAck(self: *Stream) ![]u8 {
+        if (self.decoderAck.items.len == 0) return try self.allocator.dupe(u8, &.{});
         return try self.decoderAck.toOwnedSlice(self.allocator);
+    }
+
+    /// The parsed unidirectional kind, or null while undecided (type
+    /// varint incomplete). The connection layer uses this to track
+    /// duplicate critical streams.
+    pub fn uniKindKnown(self: *const Stream) ?UniKind {
+        if (self.mode != .uni or self.uniKind == .undecided) return null;
+        return self.uniKind;
     }
 
     /// Forces the stream into the failed state from the outside (e.g.
@@ -254,8 +264,8 @@ pub const Stream = struct {
             if (self.failed) return; // connection rejected (duplicates)
             self.uniKind = switch (t.streamType) {
                 0x00 => .control,
-                0x02 => .qpack_encoder,
-                0x03 => .qpack_decoder,
+                0x02 => .qpackEncoder,
+                0x03 => .qpackDecoder,
                 0x01 => {
                     // No-push policy: push streams are rejected.
                     self.fail(.frameUnexpected);
@@ -267,8 +277,8 @@ pub const Stream = struct {
         switch (self.uniKind) {
             .undecided => unreachable,
             .control => self.parseControl(),
-            .qpack_encoder => self.parseQpackEncoder(),
-            .qpack_decoder => self.parseQpackDecoder(),
+            .qpackEncoder => self.parseQpackEncoder(),
+            .qpackDecoder => self.parseQpackDecoder(),
             .push => unreachable, // failed at type parse
             .unknown => {
                 // Unknown unidirectional types: consume and ignore.

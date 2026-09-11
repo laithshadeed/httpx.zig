@@ -15,6 +15,7 @@ const Allocator = std.mem.Allocator;
 const frame_mod = @import("frame.zig");
 const qpack_mod = @import("qpack.zig");
 const varint = @import("../quic/varint.zig");
+const h3stream = @import("stream.zig");
 
 pub const CONTROL_STREAM_TYPE: u64 = 0x00;
 pub const PUSH_STREAM_TYPE: u64 = 0x01;
@@ -179,6 +180,12 @@ pub const Settings = PeerSettings;
 
 /// HTTP/3 connection state machine. Manages control stream lifecycle,
 /// SETTINGS exchange, QPACK integration, and stream multiplexing.
+///
+/// The QUIC transport is deliberately duck-typed (`quic: anytype` on the
+/// send methods): anything with `sendStreamChecked`, `sendResetStream`
+/// and a `sendStreamEnd` map works, so unit tests drive a recording mock
+/// while production passes the real QUIC connection. No import of the
+/// QUIC module here also keeps the module graph acyclic.
 pub const Connection = struct {
     allocator: Allocator,
     role: Role,
@@ -204,11 +211,48 @@ pub const Connection = struct {
     nextBidiId: u64,
     nextUniId: u64,
 
-    pub const Role = enum { client, server };
+    /// Live H3 streams by QUIC stream ID (request/response exchanges in
+    /// progress plus our unidirectional streams being fed).
+    streams: std.AutoHashMap(u64, h3stream.Stream) = undefined,
+    /// Peer's unidirectional streams by kind (duplicates are rejected).
+    controlIn: ?u64 = null,
+    encoderIn: ?u64 = null,
+    decoderIn: ?u64 = null,
+    /// Our unidirectional streams once opened.
+    controlOut: ?u64 = null,
+    encoderOut: ?u64 = null,
+    decoderOut: ?u64 = null,
+    /// Outward events for the runtime (client/server engine).
+    cbs: Callbacks = .{},
+    /// Precise failure for a stream that could never be created
+    /// (peer opened an illegal stream ID); the runtime drains this to
+    /// reset/close with the right code.
+    streamError: ?StreamError = null,
+
+    pub const Role = h3stream.Role;
+
+    /// Runtime-facing connection events.
+    pub const Callbacks = struct {
+        ctx: ?*anyopaque = null,
+        onHeaders: ?*const fn (ctx: ?*anyopaque, sid: u64, fields: []const qpack_mod.FieldLine, interim: bool) void = null,
+        onData: ?*const fn (ctx: ?*anyopaque, sid: u64, data: []const u8) void = null,
+        onTrailers: ?*const fn (ctx: ?*anyopaque, sid: u64, fields: []const qpack_mod.FieldLine) void = null,
+        onMessageEnd: ?*const fn (ctx: ?*anyopaque, sid: u64) void = null,
+        onStreamReset: ?*const fn (ctx: ?*anyopaque, sid: u64, code: u64) void = null,
+        /// A stream failed the H3 state machine; reset it with `code`.
+        onH3Error: ?*const fn (ctx: ?*anyopaque, sid: u64, code: frame_mod.H3Error) void = null,
+        /// Peer GOAWAY processed; stop opening streams at/above the ID.
+        onGoaway: ?*const fn (ctx: ?*anyopaque, lastStreamId: u64) void = null,
+    };
+
+    pub const StreamError = struct {
+        sid: u64,
+        code: frame_mod.H3Error,
+    };
 
     pub fn init(allocator: Allocator, role: Role) Connection {
         const initiator_bit: u64 = if (role == .client) 0 else 1;
-        return .{
+        var self = Connection{
             .allocator = allocator,
             .role = role,
             .qenc = qpack_mod.Encoder.init(allocator),
@@ -216,11 +260,24 @@ pub const Connection = struct {
             .nextBidiId = initiator_bit,
             .nextUniId = initiator_bit | 2,
         };
+        self.streams = std.AutoHashMap(u64, h3stream.Stream).init(allocator);
+        return self;
     }
 
     pub fn deinit(self: *Connection) void {
+        var it = self.streams.valueIterator();
+        while (it.next()) |stp| stp.deinit();
+        self.streams.deinit();
         self.qenc.deinit();
         self.qdec.deinit();
+    }
+
+    /// Drains a pending precise stream failure for the runtime to reset
+    /// or close with (null when none).
+    pub fn takeStreamError(self: *Connection) ?StreamError {
+        const e = self.streamError;
+        self.streamError = null;
+        return e;
     }
 
     /// Builds the control stream SETTINGS frame to send.
@@ -371,9 +428,669 @@ pub const Connection = struct {
             .qpack = &self.qenc,
         };
     }
+
+    /// Builds the callback set H3Streams get, forwarding into this
+    /// connection (which applies control state) and then the runtime.
+    fn streamCallbacks(self: *Connection) h3stream.Callbacks {
+        return .{
+            .ctx = self,
+            .onHeaders = fwdHeaders,
+            .onData = fwdData,
+            .onTrailers = fwdTrailers,
+            .onMessageEnd = fwdMessageEnd,
+            .onControlFrame = fwdControlFrame,
+            .onUniType = fwdUniType,
+            .onReset = fwdStreamReset,
+            .onError = fwdStreamError,
+        };
+    }
+
+    fn fwdHeaders(ctx: ?*anyopaque, sid: u64, fields: []const qpack_mod.FieldLine, interim: bool) void {
+        const self: *Connection = @ptrCast(@alignCast(ctx.?));
+        if (self.cbs.onHeaders) |cb| cb(self.cbs.ctx, sid, fields, interim);
+    }
+
+    fn fwdData(ctx: ?*anyopaque, sid: u64, data: []const u8) void {
+        const self: *Connection = @ptrCast(@alignCast(ctx.?));
+        if (self.cbs.onData) |cb| cb(self.cbs.ctx, sid, data);
+    }
+
+    fn fwdTrailers(ctx: ?*anyopaque, sid: u64, fields: []const qpack_mod.FieldLine) void {
+        const self: *Connection = @ptrCast(@alignCast(ctx.?));
+        if (self.cbs.onTrailers) |cb| cb(self.cbs.ctx, sid, fields);
+    }
+
+    fn fwdMessageEnd(ctx: ?*anyopaque, sid: u64) void {
+        const self: *Connection = @ptrCast(@alignCast(ctx.?));
+        if (self.cbs.onMessageEnd) |cb| cb(self.cbs.ctx, sid);
+    }
+
+    fn fwdStreamReset(ctx: ?*anyopaque, sid: u64, code: u64) void {
+        const self: *Connection = @ptrCast(@alignCast(ctx.?));
+        if (self.cbs.onStreamReset) |cb| cb(self.cbs.ctx, sid, code);
+    }
+
+    fn fwdStreamError(ctx: ?*anyopaque, sid: u64, code: frame_mod.H3Error) void {
+        const self: *Connection = @ptrCast(@alignCast(ctx.?));
+        if (self.cbs.onH3Error) |cb| cb(self.cbs.ctx, sid, code);
+    }
+
+    fn fwdUniType(_: ?*anyopaque, _: u64, _: u64) void {
+        // Observability only; duplicate/push validation happens in
+        // feedQuic, which owns the kind tracking.
+    }
+
+    fn fwdControlFrame(ctx: ?*anyopaque, sid: u64, frameType: u64, payload: []const u8) void {
+        const self: *Connection = @ptrCast(@alignCast(ctx.?));
+        const hadGoaway = self.goawayReceived;
+        self.processControlFrame(frameType, payload) catch |e| {
+            const code: frame_mod.H3Error = switch (e) {
+                error.InvalidSettings => .settingsError,
+                error.OutOfMemory => .internalError,
+                else => .frameUnexpected,
+            };
+            if (self.streams.getPtr(sid)) |stp| stp.failExtern(code);
+            return;
+        };
+        if (!hadGoaway and self.goawayReceived) {
+            if (self.cbs.onGoaway) |cb| cb(self.cbs.ctx, self.goawayStreamId);
+        }
+    }
+
+    /// Feeds bytes the QUIC layer received on `sid`. Creates the H3
+    /// stream on first sight (validating peer stream IDs); precise
+    /// failures for uncreatable streams are reported via
+    /// `takeStreamError`, per-stream failures via `onH3Error`.
+    pub fn feedQuic(self: *Connection, sid: u64, data: []const u8, fin: bool) Error!void {
+        if (self.streams.getPtr(sid)) |stp| {
+            stp.feed(data, fin);
+            return;
+        }
+        if (h3stream.checkPeerStreamId(self.role, sid)) |code| {
+            self.streamError = .{ .sid = sid, .code = code };
+            return Error.ProtocolViolation;
+        }
+        const bidi = (sid & 0x02) == 0;
+        const mode: h3stream.StreamMode = if (bidi) blk: {
+            // Only the server receives peer-initiated bidi streams;
+            // client bidi streams are created locally at open time.
+            if (self.role != .server) {
+                self.streamError = .{ .sid = sid, .code = .streamCreationError };
+                return Error.ProtocolViolation;
+            }
+            break :blk .requestRecv;
+        } else .uni;
+        if (!bidi) {
+            // Reject duplicate critical streams and push streams before
+            // creating state when the type arrives complete in this
+            // feed (fragmented types fall through to the post-feed
+            // check below).
+            if (h3stream.parseUniType(data) catch null) |t| {
+                const pre_dup = switch (t.streamType) {
+                    0x00 => self.controlIn != null,
+                    0x02 => self.encoderIn != null,
+                    0x03 => self.decoderIn != null,
+                    else => false,
+                };
+                if (t.streamType == 0x01 or pre_dup) {
+                    const code: frame_mod.H3Error = if (t.streamType == 0x01) .frameUnexpected else .streamCreationError;
+                    self.streamError = .{ .sid = sid, .code = code };
+                    return Error.ProtocolViolation;
+                }
+            }
+        }
+        var st = h3stream.Stream.init(
+            self.allocator,
+            sid,
+            mode,
+            self.role,
+            self.streamCallbacks(),
+            &self.qdec,
+            &self.qenc,
+        );
+        errdefer st.deinit();
+        try self.streams.put(sid, st);
+        const stp = self.streams.getPtr(sid).?;
+        stp.feed(data, fin);
+        if (stp.failed) {
+            var dead = self.streams.fetchRemove(sid).?;
+            dead.value.deinit();
+            return;
+        }
+        // Track peer unidirectional streams; duplicates and push
+        // streams are rejected (the pre-creation check above catches
+        // complete first feeds; this covers fragmented type varints).
+        if (!bidi) {
+            if (stp.uniKindKnown()) |kind| {
+                const dup = switch (kind) {
+                    .control => self.controlIn != null,
+                    .qpackEncoder => self.encoderIn != null,
+                    .qpackDecoder => self.decoderIn != null,
+                    else => false,
+                };
+                if (kind == .push or dup) {
+                    if (!stp.failed) {
+                        const code: frame_mod.H3Error = if (kind == .push) .frameUnexpected else .streamCreationError;
+                        stp.failExtern(code);
+                    }
+                    var gone = self.streams.fetchRemove(sid).?;
+                    gone.value.deinit();
+                    return;
+                }
+                switch (kind) {
+                    .control => self.controlIn = sid,
+                    .qpackEncoder => self.encoderIn = sid,
+                    .qpackDecoder => self.decoderIn = sid,
+                    else => {},
+                }
+            }
+        }
+    }
+
+    /// Signals a QUIC-level reset received for `sid`. Unknown streams
+    /// are ignored (nothing to abandon).
+    pub fn onQuicReset(self: *Connection, sid: u64, code: u64) void {
+        if (self.streams.getPtr(sid)) |stp| stp.onQuicReset(code);
+    }
+
+    /// Retries every section parked on QPACK blocking (call after
+    /// feeding encoder-stream bytes).
+    pub fn retryBlockedStreams(self: *Connection) void {
+        var it = self.streams.valueIterator();
+        while (it.next()) |stp| stp.retryBlocked();
+    }
+
+    /// Concatenates staged decoder-stream acknowledgments from every
+    /// stream; the runtime sends them on our decoder stream. Always
+    /// owned (free even when empty).
+    pub fn drainDecoderAcks(self: *Connection) ![]u8 {
+        var out = std.ArrayList(u8).empty;
+        errdefer out.deinit(self.allocator);
+        var it = self.streams.valueIterator();
+        while (it.next()) |stp| {
+            if (stp.decoderAck.items.len == 0) continue;
+            const ack = try stp.takeDecoderAck();
+            defer self.allocator.free(ack);
+            try out.appendSlice(self.allocator, ack);
+        }
+        if (out.items.len == 0) return try self.allocator.dupe(u8, &.{});
+        return out.toOwnedSlice(self.allocator);
+    }
+
+    /// Opens a client request stream, tracking it for the inbound
+    /// response. Fails when the peer went away.
+    pub fn openRequestStream(self: *Connection) Error!u64 {
+        if (self.role != .client) return Error.StreamClosed;
+        if (self.goawayReceived) return Error.StreamClosed;
+        const sid = self.nextBidiStreamId();
+        errdefer {
+            self.nextBidiId -= 4;
+        }
+        var st = h3stream.Stream.init(
+            self.allocator,
+            sid,
+            .responseRecv,
+            self.role,
+            self.streamCallbacks(),
+            &self.qdec,
+            &self.qenc,
+        );
+        errdefer st.deinit();
+        try self.streams.put(sid, st);
+        return sid;
+    }
+
+    /// Sends already-built bytes on `sid` at the current send offset.
+    /// `quic` is the QUIC connection (duck-typed for tests).
+    pub fn sendStreamBytes(self: *Connection, quic: anytype, sid: u64, bytes: []const u8, fin: bool, nowMs: u64) !void {
+        const off = quic.sendStreamEnd.get(sid) orelse 0;
+        try quic.sendStreamChecked(sid, off, bytes, fin, nowMs);
+        _ = self;
+    }
+
+    /// Sends our control stream (SETTINGS) on a fresh uni stream.
+    pub fn sendControl(self: *Connection, quic: anytype, nowMs: u64) !void {
+        const bytes = try self.buildControlStream();
+        defer self.allocator.free(bytes);
+        const sid = self.nextUniStreamId();
+        errdefer {
+            self.nextUniId -= 4;
+        }
+        try quic.sendStreamChecked(sid, 0, bytes, false, nowMs);
+        self.controlOut = sid;
+    }
+
+    /// Sends empty QPACK encoder/decoder stream prefixes.
+    pub fn sendQpackPrefixes(self: *Connection, quic: anytype, nowMs: u64) !void {
+        const enc = try buildQpackEncoderStreamPrefix(self.allocator);
+        defer self.allocator.free(enc);
+        const esid = self.nextUniStreamId();
+        errdefer {
+            self.nextUniId -= 4;
+        }
+        try quic.sendStreamChecked(esid, 0, enc, false, nowMs);
+        self.encoderOut = esid;
+        const dec = try buildQpackDecoderStreamPrefix(self.allocator);
+        defer self.allocator.free(dec);
+        const dsid = self.nextUniStreamId();
+        errdefer {
+            self.nextUniId -= 4;
+        }
+        try quic.sendStreamChecked(dsid, 0, dec, false, nowMs);
+        self.decoderOut = dsid;
+    }
+
+    /// Flushes pending encoder-stream instructions onto our encoder
+    /// stream (must follow `sendQpackPrefixes`).
+    pub fn flushQpackEncoder(self: *Connection, quic: anytype, nowMs: u64) !void {
+        const esid = self.encoderOut orelse return Error.StreamClosed;
+        const bytes = try self.qenc.takeEncoderBytes();
+        defer self.allocator.free(bytes);
+        if (bytes.len == 0) return;
+        const off = quic.sendStreamEnd.get(esid) orelse 0;
+        try quic.sendStreamChecked(esid, off, bytes, false, nowMs);
+    }
+
+    /// Flushes encoder instructions plus staged decoder acknowledgments.
+    pub fn pumpQpack(self: *Connection, quic: anytype, nowMs: u64) !void {
+        try self.flushQpackEncoder(quic, nowMs);
+        const dsid = self.decoderOut orelse return;
+        const ack = try self.drainDecoderAcks();
+        defer self.allocator.free(ack);
+        if (ack.len == 0) return;
+        const off = quic.sendStreamEnd.get(dsid) orelse 0;
+        try quic.sendStreamChecked(dsid, off, ack, false, nowMs);
+    }
+
+    /// Sends GOAWAY on our control stream.
+    pub fn sendGoaway(self: *Connection, quic: anytype, lastSid: u64, nowMs: u64) !void {
+        const cs = self.controlOut orelse return Error.StreamClosed;
+        const bytes = try self.buildGoawayFrame(lastSid);
+        defer self.allocator.free(bytes);
+        const off = quic.sendStreamEnd.get(cs) orelse 0;
+        try quic.sendStreamChecked(cs, off, bytes, false, nowMs);
+    }
+
+    /// Resets `sid` with an H3 code at the current send offset and
+    /// stops tracking the stream for inbound bytes.
+    pub fn resetStream(self: *Connection, quic: anytype, sid: u64, code: frame_mod.H3Error, nowMs: u64) !void {
+        const final_size = quic.sendStreamEnd.get(sid) orelse 0;
+        try quic.sendResetStream(sid, @intFromEnum(code), final_size, nowMs);
+        if (self.streams.getPtr(sid)) |stp| stp.failed = true;
+    }
 };
 
 // Tests
+
+const MockQuic = struct {
+    allocator: Allocator,
+    sent: std.ArrayList(MockSent) = .empty,
+    resets: std.ArrayList(MockReset) = .empty,
+    sendStreamEnd: std.AutoHashMap(u64, u64) = undefined,
+
+    const MockSent = struct { sid: u64, off: u64, len: usize, firstByte: u8, fin: bool };
+    const MockReset = struct { sid: u64, code: u64, finalSize: u64 };
+
+    fn init(a: Allocator) MockQuic {
+        var m = MockQuic{ .allocator = a };
+        m.sendStreamEnd = std.AutoHashMap(u64, u64).init(a);
+        return m;
+    }
+
+    fn deinit(self: *MockQuic) void {
+        self.sent.deinit(self.allocator);
+        self.resets.deinit(self.allocator);
+        self.sendStreamEnd.deinit();
+    }
+
+    pub fn sendStreamChecked(self: *MockQuic, sid: u64, off: u64, data: []const u8, fin: bool, nowMs: u64) !void {
+        _ = nowMs;
+        try self.sent.append(self.allocator, .{
+            .sid = sid,
+            .off = off,
+            .len = data.len,
+            .firstByte = if (data.len > 0) data[0] else 0,
+            .fin = fin,
+        });
+        const prev = self.sendStreamEnd.get(sid) orelse 0;
+        if (off + data.len > prev) try self.sendStreamEnd.put(sid, off + data.len);
+    }
+
+    pub fn sendResetStream(self: *MockQuic, sid: u64, code: u64, finalSize: u64, nowMs: u64) !void {
+        _ = nowMs;
+        try self.resets.append(self.allocator, .{ .sid = sid, .code = code, .finalSize = finalSize });
+    }
+};
+
+const ConnRec = struct {
+    headers: usize = 0,
+    dataBytes: usize = 0,
+    ends: usize = 0,
+    resets: usize = 0,
+    h3Errors: usize = 0,
+    lastH3Error: ?frame_mod.H3Error = null,
+    lastH3ErrorSid: u64 = 0,
+    goaways: usize = 0,
+    lastGoaway: u64 = 0,
+
+    fn cbs(self: *ConnRec) Connection.Callbacks {
+        return .{
+            .ctx = self,
+            .onHeaders = onH,
+            .onData = onD,
+            .onMessageEnd = onE,
+            .onStreamReset = onR,
+            .onH3Error = onHE,
+            .onGoaway = onG,
+        };
+    }
+    fn onH(ctx: ?*anyopaque, sid: u64, fields: []const qpack_mod.FieldLine, interim: bool) void {
+        _ = sid;
+        _ = fields;
+        _ = interim;
+        const r: *ConnRec = @ptrCast(@alignCast(ctx.?));
+        r.headers += 1;
+    }
+    fn onD(ctx: ?*anyopaque, sid: u64, data: []const u8) void {
+        _ = sid;
+        const r: *ConnRec = @ptrCast(@alignCast(ctx.?));
+        r.dataBytes += data.len;
+    }
+    fn onE(ctx: ?*anyopaque, sid: u64) void {
+        _ = sid;
+        const r: *ConnRec = @ptrCast(@alignCast(ctx.?));
+        r.ends += 1;
+    }
+    fn onR(ctx: ?*anyopaque, sid: u64, code: u64) void {
+        _ = sid;
+        _ = code;
+        const r: *ConnRec = @ptrCast(@alignCast(ctx.?));
+        r.resets += 1;
+    }
+    fn onHE(ctx: ?*anyopaque, sid: u64, code: frame_mod.H3Error) void {
+        const r: *ConnRec = @ptrCast(@alignCast(ctx.?));
+        r.h3Errors += 1;
+        r.lastH3Error = code;
+        r.lastH3ErrorSid = sid;
+    }
+    fn onG(ctx: ?*anyopaque, lastStreamId: u64) void {
+        const r: *ConnRec = @ptrCast(@alignCast(ctx.?));
+        r.goaways += 1;
+        r.lastGoaway = lastStreamId;
+    }
+};
+
+test "h3conn demuxes uni streams and rejects duplicates" {
+    const a = std.testing.allocator;
+    var rec = ConnRec{};
+    var conn = Connection.init(a, .server);
+    defer conn.deinit();
+    conn.cbs = rec.cbs();
+
+    const ctrl = try conn.buildControlStream();
+    defer a.free(ctrl);
+    try conn.feedQuic(2, ctrl, false);
+    try std.testing.expectEqual(@as(?u64, 2), conn.controlIn);
+    try std.testing.expect(conn.settingsReceived);
+    try std.testing.expect(rec.lastH3Error == null);
+
+    // A second control stream is a creation error, reported precisely
+    // without creating state.
+    try std.testing.expectError(Error.ProtocolViolation, conn.feedQuic(6, ctrl, false));
+    const dup_err = conn.takeStreamError().?;
+    try std.testing.expectEqual(@as(u64, 6), dup_err.sid);
+    try std.testing.expectEqual(frame_mod.H3Error.streamCreationError, dup_err.code);
+    try std.testing.expect(!conn.streams.contains(6));
+
+    // Push streams are rejected under the no-push policy.
+    try std.testing.expectError(Error.ProtocolViolation, conn.feedQuic(10, &.{0x01}, false));
+    const push_err = conn.takeStreamError().?;
+    try std.testing.expectEqual(@as(u64, 10), push_err.sid);
+    try std.testing.expectEqual(frame_mod.H3Error.frameUnexpected, push_err.code);
+    try std.testing.expect(!conn.streams.contains(10));
+
+    // A peer-owned illegal ID surfaces through takeStreamError.
+    try std.testing.expectError(Error.ProtocolViolation, conn.feedQuic(3, &.{0x00}, false));
+    const se = conn.takeStreamError().?;
+    try std.testing.expectEqual(@as(u64, 3), se.sid);
+    try std.testing.expectEqual(frame_mod.H3Error.streamCreationError, se.code);
+    try std.testing.expect(conn.takeStreamError() == null);
+}
+
+test "h3conn routes bidi request bytes to events" {
+    const a = std.testing.allocator;
+    var rec = ConnRec{};
+    var conn = Connection.init(a, .server);
+    defer conn.deinit();
+    conn.cbs = rec.cbs();
+
+    var rs = conn.createRequestStream(999);
+    // buildRequestHeaders returns a complete HEADERS frame already.
+    const hf = try rs.buildRequestHeaders("GET", "https", "example.com", "/", &.{});
+    defer a.free(hf);
+    var dfb: [16]u8 = undefined;
+    const dn = try frame_mod.encodeFrameHeader(&dfb, 0x0, 2);
+    var wire = std.ArrayList(u8).empty;
+    defer wire.deinit(a);
+    try wire.appendSlice(a, hf);
+    try wire.appendSlice(a, dfb[0..dn]);
+    try wire.appendSlice(a, "hi");
+    try conn.feedQuic(0, wire.items, true);
+    try std.testing.expect(rec.lastH3Error == null);
+    try std.testing.expectEqual(@as(usize, 1), rec.headers);
+    try std.testing.expectEqual(@as(usize, 2), rec.dataBytes);
+    try std.testing.expectEqual(@as(usize, 1), rec.ends);
+    try std.testing.expect(conn.streams.contains(0));
+}
+
+test "h3conn send path offsets prefixes and goaway gating" {
+    const a = std.testing.allocator;
+    var rec = ConnRec{};
+    var conn = Connection.init(a, .client);
+    defer conn.deinit();
+    conn.cbs = rec.cbs();
+    var mq = MockQuic.init(a);
+    defer mq.deinit();
+
+    try conn.sendControl(&mq, 100);
+    try std.testing.expectEqual(@as(?u64, 2), conn.controlOut);
+    try std.testing.expectEqual(@as(u64, 2), mq.sent.items[0].sid);
+    try std.testing.expectEqual(@as(u8, 0x00), mq.sent.items[0].firstByte);
+
+    try conn.sendQpackPrefixes(&mq, 101);
+    try std.testing.expectEqual(@as(?u64, 6), conn.encoderOut);
+    try std.testing.expectEqual(@as(?u64, 10), conn.decoderOut);
+    try std.testing.expectEqual(@as(u8, 0x02), mq.sent.items[1].firstByte);
+    try std.testing.expectEqual(@as(u8, 0x03), mq.sent.items[2].firstByte);
+
+    const sid = try conn.openRequestStream();
+    try std.testing.expectEqual(@as(u64, 0), sid);
+    try conn.sendStreamBytes(&mq, sid, "HEAD", false, 102);
+    try conn.sendStreamBytes(&mq, sid, "ERS", true, 103);
+    try std.testing.expectEqual(@as(u64, 0), mq.sent.items[3].off);
+    try std.testing.expectEqual(@as(u64, 4), mq.sent.items[4].off);
+
+    try conn.sendGoaway(&mq, 0, 104);
+    try std.testing.expect(conn.goawaySent);
+
+    // Peer GOAWAY arrives on the peer's control stream: runtime is told
+    // and no further streams open.
+    const go = try conn.buildGoawayFrame(0);
+    defer a.free(go);
+    var peer_ctrl = std.ArrayList(u8).empty;
+    defer peer_ctrl.deinit(a);
+    try peer_ctrl.append(a, 0x00);
+    const peer_settings = try conn.buildControlStream();
+    defer a.free(peer_settings);
+    try peer_ctrl.appendSlice(a, peer_settings[1..]); // settings frame without our type prefix
+    try peer_ctrl.appendSlice(a, go);
+    try conn.feedQuic(3, peer_ctrl.items, false);
+    try std.testing.expect(conn.goawayReceived);
+    try std.testing.expectEqual(@as(usize, 1), rec.goaways);
+    try std.testing.expectEqual(@as(u64, 0), rec.lastGoaway);
+    try std.testing.expectError(Error.StreamClosed, conn.openRequestStream());
+}
+
+test "h3conn reset sends offset and drops the stream" {
+    const a = std.testing.allocator;
+    var rec = ConnRec{};
+    var conn = Connection.init(a, .client);
+    defer conn.deinit();
+    conn.cbs = rec.cbs();
+    var mq = MockQuic.init(a);
+    defer mq.deinit();
+
+    const sid = try conn.openRequestStream();
+    const body = [_]u8{0xAA} ** 100;
+    try conn.sendStreamBytes(&mq, sid, &body, false, 100);
+    try conn.resetStream(&mq, sid, .requestCancelled, 101);
+    try std.testing.expectEqual(@as(usize, 1), mq.resets.items.len);
+    try std.testing.expectEqual(sid, mq.resets.items[0].sid);
+    try std.testing.expectEqual(@as(u64, 0x10C), mq.resets.items[0].code);
+    try std.testing.expectEqual(@as(u64, 100), mq.resets.items[0].finalSize);
+    // Inbound bytes afterwards are ignored, not delivered.
+    try conn.feedQuic(sid, "late", false);
+    try std.testing.expectEqual(@as(usize, 0), rec.dataBytes);
+    try std.testing.expect(rec.lastH3Error == null);
+}
+
+test "h3conn decoder acks drain concatenated" {
+    const a = std.testing.allocator;
+    var rec = ConnRec{};
+    var conn = Connection.init(a, .server);
+    defer conn.deinit();
+    conn.cbs = rec.cbs();
+    conn.localSettings.qpackMaxTableCapacity = 4096;
+    var mq = MockQuic.init(a);
+    defer mq.deinit();
+    try conn.sendControl(&mq, 100); // commits our decoder sizing
+
+    var penc = qpack_mod.Encoder.init(a);
+    defer penc.deinit();
+    penc.setMaxTableCapacity(4096);
+    penc.beginSection();
+    var f1 = std.ArrayList(u8).empty;
+    defer f1.deinit(a);
+    try penc.encodeField(&f1, ":method", "GET");
+    try penc.encodeField(&f1, ":scheme", "https");
+    try penc.encodeField(&f1, ":authority", "example.com");
+    try penc.encodeField(&f1, ":path", "/one");
+    try penc.encodeField(&f1, "x-n", "v1");
+    const ric1 = penc.sectionRic();
+    var s1 = std.ArrayList(u8).empty;
+    defer s1.deinit(a);
+    try penc.encodePrefix(&s1, ric1, ric1);
+    try s1.appendSlice(a, f1.items);
+    penc.beginSection();
+    var f2 = std.ArrayList(u8).empty;
+    defer f2.deinit(a);
+    try penc.encodeField(&f2, ":method", "GET");
+    try penc.encodeField(&f2, ":scheme", "https");
+    try penc.encodeField(&f2, ":authority", "example.com");
+    try penc.encodeField(&f2, ":path", "/two");
+    try penc.encodeField(&f2, "x-n", "v1");
+    const ric2 = penc.sectionRic();
+    var s2 = std.ArrayList(u8).empty;
+    defer s2.deinit(a);
+    try penc.encodePrefix(&s2, ric2, ric2);
+    try s2.appendSlice(a, f2.items);
+    const enc_bytes = try penc.takeEncoderBytes();
+    defer a.free(enc_bytes);
+
+    var ewire = std.ArrayList(u8).empty;
+    defer ewire.deinit(a);
+    try ewire.append(a, 0x02);
+    try ewire.appendSlice(a, enc_bytes);
+    try conn.feedQuic(6, ewire.items, false);
+
+    const wrap = struct {
+        fn f(a2: Allocator, section: []const u8) ![]u8 {
+            var out = std.ArrayList(u8).empty;
+            errdefer out.deinit(a2);
+            var fh: [16]u8 = undefined;
+            const n = try frame_mod.encodeFrameHeader(&fh, 0x1, section.len);
+            try out.appendSlice(a2, fh[0..n]);
+            try out.appendSlice(a2, section);
+            return out.toOwnedSlice(a2);
+        }
+    };
+    const w1 = try wrap.f(a, s1.items);
+    defer a.free(w1);
+    const w2 = try wrap.f(a, s2.items);
+    defer a.free(w2);
+    try conn.feedQuic(0, w1, true);
+    try conn.feedQuic(4, w2, true);
+    try std.testing.expectEqual(@as(usize, 2), rec.headers);
+    std.debug.print("DBG acks headers={d} icnt={d} err={s}\n", .{
+        rec.headers,
+        conn.qdec.insertCount(),
+        if (rec.lastH3Error) |e| @tagName(e) else "none",
+    });
+    try std.testing.expectEqual(@as(usize, 2), rec.headers);
+    try std.testing.expectEqual(@as(usize, 2), rec.ends);
+    const ack = try conn.drainDecoderAcks();
+    defer a.free(ack);
+    // One SectionAck per dynamic section, hash-map order: {0x80} for
+    // stream 0 and {0x84} for stream 4 (7-bit prefix holds small IDs).
+    try std.testing.expectEqual(@as(usize, 2), ack.len);
+    var saw_80 = false;
+    var saw_84 = false;
+    for (ack) |b| {
+        if (b == 0x80) saw_80 = true;
+        if (b == 0x84) saw_84 = true;
+    }
+    try std.testing.expect(saw_80 and saw_84);
+}
+
+test "h3conn blocked streams retry together" {
+    const a = std.testing.allocator;
+    var rec = ConnRec{};
+    var conn = Connection.init(a, .server);
+    defer conn.deinit();
+    conn.cbs = rec.cbs();
+    conn.localSettings.qpackMaxTableCapacity = 4096;
+    var mq = MockQuic.init(a);
+    defer mq.deinit();
+    try conn.sendControl(&mq, 100);
+
+    var penc = qpack_mod.Encoder.init(a);
+    defer penc.deinit();
+    penc.setMaxTableCapacity(4096);
+    penc.beginSection();
+    var f1 = std.ArrayList(u8).empty;
+    defer f1.deinit(a);
+    try penc.encodeField(&f1, ":method", "GET");
+    try penc.encodeField(&f1, ":scheme", "https");
+    try penc.encodeField(&f1, ":authority", "example.com");
+    try penc.encodeField(&f1, ":path", "/a");
+    try penc.encodeField(&f1, "x-b", "1");
+    const ric = penc.sectionRic();
+    var s1 = std.ArrayList(u8).empty;
+    defer s1.deinit(a);
+    try penc.encodePrefix(&s1, ric, ric);
+    try s1.appendSlice(a, f1.items);
+    const enc_bytes = try penc.takeEncoderBytes();
+    defer a.free(enc_bytes);
+
+    var hfb: [16]u8 = undefined;
+    const hn = try frame_mod.encodeFrameHeader(&hfb, 0x1, s1.items.len);
+    var wire = std.ArrayList(u8).empty;
+    defer wire.deinit(a);
+    try wire.appendSlice(a, hfb[0..hn]);
+    try wire.appendSlice(a, s1.items);
+    // Same dynamic section on two streams before any encoder bytes.
+    try conn.feedQuic(0, wire.items, false);
+    try conn.feedQuic(4, wire.items, false);
+    try std.testing.expectEqual(@as(usize, 0), rec.headers);
+
+    var ewire = std.ArrayList(u8).empty;
+    defer ewire.deinit(a);
+    try ewire.append(a, 0x02);
+    try ewire.appendSlice(a, enc_bytes);
+    try conn.feedQuic(6, ewire.items, false);
+    conn.retryBlockedStreams();
+    try std.testing.expectEqual(@as(usize, 2), rec.headers);
+}
 
 test "settings frame structure" {
     const a = std.testing.allocator;

@@ -402,8 +402,10 @@ pub const Encoder = struct {
     }
 
     /// Takes pending encoder-stream bytes; caller sends them on the
-    /// encoder unidirectional stream, then frees the slice.
+    /// encoder unidirectional stream, then frees the slice (always
+    /// owned, even when empty).
     pub fn takeEncoderBytes(self: *Encoder) ![]u8 {
+        if (self.pending.items.len == 0) return try self.allocator.dupe(u8, &.{});
         return try self.pending.toOwnedSlice(self.allocator);
     }
 
