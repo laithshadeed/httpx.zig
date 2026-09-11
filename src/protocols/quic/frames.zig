@@ -445,6 +445,10 @@ pub fn encodeAckFromBlocks(
 ) !void {
     if (blocks.len == 0) return error.InvalidFrame;
     const top = blocks[0];
+    // Every block covers [highest-len+1, highest]; empty blocks and
+    // blocks extending below packet 0 are malformed (never panic on
+    // tracker output: validate first).
+    if (top.len == 0 or top.len - 1 > top.highest) return error.InvalidFrame;
     const firstRange = top.highest - (top.highest -| (top.len - 1));
 
     const type_byte: u8 = if (ecn != null) 0x03 else 0x02;
@@ -454,13 +458,15 @@ pub fn encodeAckFromBlocks(
     try putV(out, gpa, firstRange);
     try putV(out, gpa, blocks.len - 1);
 
-    var prev_low: u64 = top.highest - top.len + 1;
+    var prev_low: u64 = top.highest -| (top.len -| 1);
     for (blocks[1..]) |b| {
         if (b.highest >= prev_low) return error.InvalidFrame;
+        if (b.len == 0 or b.highest +| 1 >= prev_low) return error.InvalidFrame; // adjacent would have coalesced
         const gap = prev_low - b.highest - 2;
         try putV(out, gpa, gap);
         try putV(out, gpa, b.len - 1);
-        prev_low = b.highest - b.len + 1;
+        if (b.len - 1 > b.highest) return error.InvalidFrame;
+        prev_low = b.highest -| (b.len -| 1);
     }
 
     if (ecn) |e| {
@@ -503,8 +509,33 @@ test "stream frame roundtrip with offset and fin" {
     try std.testing.expectEqualStrings("body!", f.stream.data);
 }
 
-test "ack frame roundtrip two blocks with gap" {
-    // Acked packets: {10}, {7,6,5}. Missing: 9, 8 -> gap 1 between 5..7 and 10.
+test "ack encode covers packet zero without overflow" {
+    // Regression: blocks covering PN 0 panicked on `highest - len + 1`.
+    var list = std.ArrayList(u8).empty;
+    defer list.deinit(std.testing.allocator);
+    const blocks = [_]AckBlock{.{ .highest = 1, .len = 2 }};
+    try encodeAckFromBlocks(&list, std.testing.allocator, 1, 0, &blocks, null);
+    var pos: usize = 0;
+    const f = try decode(list.items, &pos);
+    try std.testing.expectEqual(@as(u64, 1), f.ack.largestAcknowledged);
+    try std.testing.expectEqual(@as(u64, 1), f.ack.firstRange);
+
+    // Degenerate blocks are rejected, never panicking.
+    var bad = std.ArrayList(u8).empty;
+    defer bad.deinit(std.testing.allocator);
+    const empty_block = [_]AckBlock{.{ .highest = 5, .len = 0 }};
+    try std.testing.expectError(
+        error.InvalidFrame,
+        encodeAckFromBlocks(&bad, std.testing.allocator, 5, 0, &empty_block, null),
+    );
+    const below_zero = [_]AckBlock{.{ .highest = 0, .len = 2 }};
+    try std.testing.expectError(
+        error.InvalidFrame,
+        encodeAckFromBlocks(&bad, std.testing.allocator, 0, 0, &below_zero, null),
+    );
+}
+
+test "ack frame roundtrip two blocks with gap" { // Acked packets: {10}, {7,6,5}. Missing: 9, 8 -> gap 1 between 5..7 and 10.
     var list = std.ArrayList(u8).empty;
     defer list.deinit(std.testing.allocator);
     const blocks = [_]AckBlock{

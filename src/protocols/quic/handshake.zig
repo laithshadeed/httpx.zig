@@ -170,32 +170,32 @@ pub const Driver = struct {
         return if (probe.parseIp(host)) |_| null else |_| host;
     }
 
-    pub fn clientStart(ctx: ?*anyopaque, conn: *Connection) conn_mod.Error!void {
+    pub fn clientStart(ctx: ?*anyopaque, conn: *Connection, nowMs: u64) conn_mod.Error!void {
         const d: *Driver = @ptrCast(@alignCast(ctx.?));
         const ch = d.engine.produceClientHelloWithSni(&.{"h3"}, &.{}, sniFor(d.host)) catch
             return conn_mod.Error.TlsDriverFailed;
         defer conn.allocator.free(ch);
         d.flight.appendSlice(conn.allocator, ch) catch return conn_mod.Error.OutOfMemory;
         _ = conn.queueCrypto(.initial, ch) catch return conn_mod.Error.TlsDriverFailed;
-        try sendQueued(conn, .initial, 0);
+        try sendQueued(conn, .initial, nowMs);
     }
 
-    pub fn onData(ctx: ?*anyopaque, conn: *Connection, data: []const u8) conn_mod.Error!void {
+    pub fn onData(ctx: ?*anyopaque, conn: *Connection, data: []const u8, nowMs: u64) conn_mod.Error!void {
         const d: *Driver = @ptrCast(@alignCast(ctx.?));
         if (d.role == .client) {
-            clientOnData(d, conn, data) catch |e| {
+            clientOnData(d, conn, data, nowMs) catch |e| {
                 d.failed = true;
                 return e;
             };
         } else {
-            serverOnData(d, conn, data) catch |e| {
+            serverOnData(d, conn, data, nowMs) catch |e| {
                 d.failed = true;
                 return e;
             };
         }
     }
 
-    fn clientOnData(d: *Driver, conn: *Connection, data: []const u8) conn_mod.Error!void {
+    fn clientOnData(d: *Driver, conn: *Connection, data: []const u8, nowMs: u64) conn_mod.Error!void {
         const a = conn.allocator;
         d.incoming.appendSlice(a, data) catch return conn_mod.Error.OutOfMemory;
         d.peer_flight.appendSlice(a, data) catch return conn_mod.Error.OutOfMemory;
@@ -253,7 +253,7 @@ pub const Driver = struct {
                         return conn_mod.Error.TlsDriverFailed;
                     defer a.free(fin);
                     _ = conn.queueCrypto(.handshake, fin) catch return conn_mod.Error.TlsDriverFailed;
-                    try sendQueued(conn, .handshake, 0);
+                    try sendQueued(conn, .handshake, nowMs);
                 },
                 else => return conn_mod.Error.ProtocolViolation,
             }
@@ -261,7 +261,7 @@ pub const Driver = struct {
         }
     }
 
-    fn serverOnData(d: *Driver, conn: *Connection, data: []const u8) conn_mod.Error!void {
+    fn serverOnData(d: *Driver, conn: *Connection, data: []const u8, nowMs: u64) conn_mod.Error!void {
         const a = conn.allocator;
         if (d.flight_done) {
             // Post-flight: only the client's Finished is expected.
@@ -280,7 +280,7 @@ pub const Driver = struct {
                             return conn_mod.Error.OutOfMemory;
                     }
                 };
-                try conn.sendFrames(.application, DoneB.build, 0);
+                try conn.sendFrames(.application, DoneB.build, nowMs);
             }
             return;
         }
@@ -313,12 +313,12 @@ pub const Driver = struct {
         // ServerHello leaves in an Initial packet (RFC 9001 4.1 pattern);
         // EE..Finished follow in Handshake packets.
         _ = conn.queueCrypto(.initial, flight.serverHello) catch return conn_mod.Error.TlsDriverFailed;
-        try sendQueued(conn, .initial, 100);
+        try sendQueued(conn, .initial, nowMs);
         _ = conn.queueCrypto(.handshake, flight.encryptedExtensions) catch return conn_mod.Error.TlsDriverFailed;
         _ = conn.queueCrypto(.handshake, flight.certificate) catch return conn_mod.Error.TlsDriverFailed;
         _ = conn.queueCrypto(.handshake, flight.certificateVerify) catch return conn_mod.Error.TlsDriverFailed;
         _ = conn.queueCrypto(.handshake, flight.finished) catch return conn_mod.Error.TlsDriverFailed;
-        try sendQueued(conn, .handshake, 100);
+        try sendQueued(conn, .handshake, nowMs);
 
         const ch_sf = hashConcat(&.{ ch_msg, d.flight.items });
         const ap = qtls.applicationKeys(hs.hsSecret, ch_sf);
@@ -417,6 +417,13 @@ pub fn feedPumped(
             else => {}, // drop bad datagrams, keep going
         };
     }
+    // Loss and PTO timers fire here so every pump-driven runtime (client
+    // transport, server loops, tests) gets retransmission without extra
+    // plumbing. Best-effort like receives: only death propagates.
+    ep.conn.pollTimeouts(nowMs) catch |e| switch (e) {
+        error.Draining, error.ConnectionClosed => return e,
+        else => {},
+    };
     if (dest) |dst| {
         _ = ep.flush(dst) catch 0;
     } else {
@@ -519,9 +526,9 @@ pub fn performHandshake(
     dest: std.Io.net.IpAddress,
     deadlineMs: u64,
 ) !void {
-    try client_ep.conn.startHandshake();
-    _ = try client_ep.flush(dest);
     const start: u64 = @intCast(clock_mod.millisNow());
+    try client_ep.conn.startHandshake(start);
+    _ = try client_ep.flush(dest);
     var server_booted = server_ep == null;
     while (true) {
         const now: u64 = @intCast(clock_mod.millisNow());

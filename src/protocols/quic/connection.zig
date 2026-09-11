@@ -25,6 +25,7 @@ const crypto = @import("crypto.zig");
 const frames = @import("frames.zig");
 const acktr_mod = @import("acktr.zig");
 const loss_mod = @import("loss.zig");
+const cc_mod = @import("cc.zig");
 const params_mod = @import("params.zig");
 const qstream = @import("stream.zig");
 const tls_engine = @import("../tls/engine.zig");
@@ -67,24 +68,46 @@ pub const PnSpace = struct {
     keysTx: ?crypto.ProtectionKeys = null,
     /// Highest received PN for duplicate suppression.
     highestRxPn: i64 = -1,
+    gpa: Allocator,
+    /// ACK-eliciting packets sent and not yet acknowledged, with their
+    /// plaintext payloads retained for probe retransmission.
+    sent: std.ArrayList(loss_mod.SentPacket) = .empty,
+    sentData: std.ArrayList([]u8) = .empty,
+    inFlightBytes: usize = 0,
+    inFlightAckEliciting: u64 = 0,
+    lastAckElicitingTsMs: ?u64 = null,
+    /// Largest peer-acknowledged PN in this space (loss threshold).
+    ackedMax: ?u64 = null,
+    /// Earliest time a time-threshold loss check must run (null = none).
+    lossTimeMs: ?u64 = null,
+    // Outgoing ACK state (acknowledgment frequency).
+    ackQueued: bool = false,
+    ackElicitingCount: u64 = 0,
+    ackDeadlineMs: ?u64 = null,
+    largestRecvTsMs: u64 = 0,
 
     pub fn init(allocator: Allocator, kind: SpaceKind) PnSpace {
-        return .{ .kind = kind, .acktr = acktr_mod.AckTracker.init(allocator) };
+        return .{ .kind = kind, .acktr = acktr_mod.AckTracker.init(allocator), .gpa = allocator };
     }
 
     pub fn deinit(self: *PnSpace) void {
         self.acktr.deinit();
+        for (self.sentData.items) |p| self.gpa.free(p);
+        self.sentData.deinit(self.gpa);
+        self.sent.deinit(self.gpa);
     }
 };
 
 /// TLS driver seam: consumes ordered CRYPTO data, produces handshake
-/// bytes to transmit and installs keys when levels complete.
+/// bytes to transmit and installs keys when levels complete. `nowMs`
+/// threads the connection clock through so handshake sends carry real
+/// timestamps for loss recovery (never wall-clock-skewed literals).
 pub const TlsDriver = struct {
     ctx: ?*anyopaque = null,
     /// Feed handshake data received from the peer.
-    onData: ?*const fn (ctx: ?*anyopaque, conn: *Connection, data: []const u8) Error!void = null,
+    onData: ?*const fn (ctx: ?*anyopaque, conn: *Connection, data: []const u8, nowMs: u64) Error!void = null,
     /// Called after connection setup to kick off the client flight.
-    start: ?*const fn (ctx: ?*anyopaque, conn: *Connection) Error!void = null,
+    start: ?*const fn (ctx: ?*anyopaque, conn: *Connection, nowMs: u64) Error!void = null,
 };
 
 pub const Callbacks = struct {
@@ -173,7 +196,18 @@ pub const Connection = struct {
 
     // Loss detection.
     recovery: loss_mod.Recovery = .{},
-    sentPackets: std.ArrayList(loss_mod.SentPacket) = .empty,
+    /// Congestion window gating application-space sends (RFC 9002
+    /// NewReno). Handshake and control traffic always flows.
+    cc: cc_mod.NewReno = cc_mod.NewReno.init(1200),
+    /// ACK-eliciting bytes in flight across all spaces.
+    bytesInFlight: usize = 0,
+    /// Scratch for ACK range generation (reused per packet, no churn).
+    ackScratch: std.ArrayList(acktr_mod.Block) = .empty,
+    /// Scratch for newly-acked / declared-lost packets.
+    scratchSent: std.ArrayList(loss_mod.SentPacket) = .empty,
+    /// Set while dispatching the current datagram when any received
+    /// frame is ack-eliciting.
+    rxAckEliciting: bool = false,
 
     /// Control frames queued by the stack or the application, drained
     /// into the next outgoing packet so resets and window updates never
@@ -235,7 +269,6 @@ pub const Connection = struct {
         self.recvStreamEnd = std.AutoHashMap(u64, u64).init(allocator);
         self.sendStreamEnd = std.AutoHashMap(u64, u64).init(allocator);
         self.streams = std.AutoHashMap(u64, *qstream.Stream).init(allocator);
-        self.sentPackets = .empty;
 
         // Random local CIDs (8-byte default for initial handshake).
         self.scidLen = 8;
@@ -248,7 +281,7 @@ pub const Connection = struct {
     }
 
     pub fn deinit(self: *Connection) void {
-        for (&self.spaces) |*s| s.acktr.deinit();
+        for (&self.spaces) |*s| s.deinit();
         for (&self.cryptoBuf) |*b| b.deinit(self.allocator);
         for (&self.cryptoOut) |*b| b.deinit(self.allocator);
         for (&self.cryptoPending) |*b| {
@@ -270,7 +303,8 @@ pub const Connection = struct {
             self.allocator.destroy(sp.*);
         }
         self.streams.deinit();
-        self.sentPackets.deinit(self.allocator);
+        self.ackScratch.deinit(self.allocator);
+        self.scratchSent.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -456,6 +490,10 @@ pub const Connection = struct {
         const end = std.math.add(u64, offset, data.len) catch return Error.BufferTooSmall;
         if (end > stream_lim) return Error.SendBlocked;
         if (self.dataSent +| data.len > self.maxDataRemote) return Error.SendBlocked;
+        // Congestion gate (application bulk data only; handshake and
+        // control traffic always flows so recovery can never deadlock).
+        // The +128 covers header/tag/queued-control slack.
+        if (self.bytesInFlight + data.len + 128 > self.cc.bytesInFlightLimit()) return Error.SendBlocked;
         const old_end = self.sendStreamEnd.get(sid) orelse 0;
         if (end > old_end) {
             self.dataSent +|= end - old_end;
@@ -500,7 +538,6 @@ pub const Connection = struct {
         payload: *std.ArrayList(u8),
         nowMs: u64,
     ) Error!void {
-        _ = nowMs;
         switch (self.state) {
             .closing, .draining, .closed => return Error.ConnectionClosed,
             else => {},
@@ -512,6 +549,24 @@ pub const Connection = struct {
         if (self.role == .server and !self.addressValidated) {
             const budget = self.bytesReceived *| 3;
             if (self.bytesSent >= budget) return Error.AmplificationBlocked;
+        }
+
+        // Queued ACKs ride first so the peer can release its own
+        // recovery state promptly.
+        if (sp.ackQueued) {
+            self.ackScratch.clearRetainingCapacity();
+            sp.acktr.generateBlocks(&self.ackScratch, self.allocator, 32) catch return Error.OutOfMemory;
+            if (self.ackScratch.items.len > 0) {
+                const largest = self.ackScratch.items[0].highest;
+                const delay = nowMs -| sp.largestRecvTsMs;
+                frames.encodeAckFromBlocks(payload, self.allocator, largest, delay, self.ackScratch.items, null) catch |e| switch (e) {
+                    error.OutOfMemory => return Error.OutOfMemory,
+                    else => return Error.ProtocolViolation,
+                };
+            }
+            sp.ackQueued = false;
+            sp.ackElicitingCount = 0;
+            sp.ackDeadlineMs = null;
         }
 
         const pn = sp.nextPn;
@@ -580,7 +635,214 @@ pub const Connection = struct {
 
         try self.outbuf.appendSlice(self.allocator, buf[0..wireLen]);
         self.bytesSent += wireLen;
+        if (payloadHasAckEliciting(payload.items)) {
+            sp.sent.append(self.allocator, .{
+                .pn = sp.nextPn,
+                .tsMs = nowMs,
+                .inFlightBytes = wireLen,
+                .ackEliciting = true,
+            }) catch return Error.OutOfMemory;
+            const copy = self.allocator.dupe(u8, payload.items) catch return Error.OutOfMemory;
+            errdefer self.allocator.free(copy);
+            sp.sentData.append(self.allocator, copy) catch {
+                self.allocator.free(copy);
+                return Error.OutOfMemory;
+            };
+            sp.inFlightBytes +|= wireLen;
+            self.bytesInFlight +|= wireLen;
+            sp.inFlightAckEliciting +|= 1;
+            sp.lastAckElicitingTsMs = nowMs;
+        }
         sp.nextPn += 1;
+    }
+
+    /// True when the built payload carries anything beyond ACK, PADDING,
+    /// PING, and CONNECTION_CLOSE (which are never retransmitted).
+    fn payloadHasAckEliciting(payload: []const u8) bool {
+        var pos: usize = 0;
+        while (pos < payload.len) {
+            const f = frames.decode(payload, &pos) catch return true;
+            switch (f) {
+                .padding, .ping, .ack, .connectionClose => {},
+                else => return true,
+            }
+        }
+        return false;
+    }
+
+    /// Removes a tracked sent packet (acknowledged or superseded),
+    /// releasing its payload and window accounting.
+    fn removeSent(self: *Connection, sp: *PnSpace, idx: usize) void {
+        const p = sp.sent.items[idx];
+        const pay = sp.sentData.items[idx];
+        self.allocator.free(pay);
+        _ = sp.sent.swapRemove(idx);
+        _ = sp.sentData.swapRemove(idx);
+        sp.inFlightBytes -|= p.inFlightBytes;
+        self.bytesInFlight -|= p.inFlightBytes;
+        sp.inFlightAckEliciting -|= 1;
+    }
+
+    fn indexOfPn(list: []const loss_mod.SentPacket, pn: u64) ?usize {
+        for (list, 0..) |p, i| {
+            if (p.pn == pn) return i;
+        }
+        return null;
+    }
+
+    /// Removes newly-acked packets in [lo, hi], collecting copies for
+    /// congestion and RTT accounting.
+    fn ackRangeRemove(self: *Connection, sp: *PnSpace, lo: u64, hi: u64) Error!void {
+        var i: usize = 0;
+        while (i < sp.sent.items.len) {
+            const p = sp.sent.items[i];
+            if (p.pn >= lo and p.pn <= hi) {
+                try self.scratchSent.append(self.allocator, p);
+                self.removeSent(sp, i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Processes one received ACK frame: retires newly-acked packets
+    /// (RTT sample from the largest, per-packet CC growth), runs loss
+    /// detection over the remainder (congestion event plus immediate
+    /// retransmit on new loss), and frees the frame's range list.
+    fn onAckFrame(self: *Connection, sp: *PnSpace, a: frames.Ack, nowMs: u64) Error!void {
+        if (sp.ackedMax) |old| {
+            if (a.largestAcknowledged > old) sp.ackedMax = a.largestAcknowledged;
+        } else {
+            sp.ackedMax = a.largestAcknowledged;
+        }
+        if (self.recovery.largestAckedPn) |old| {
+            if (a.largestAcknowledged > old) self.recovery.largestAckedPn = a.largestAcknowledged;
+        } else {
+            self.recovery.largestAckedPn = a.largestAcknowledged;
+        }
+
+        self.scratchSent.clearRetainingCapacity();
+        const first_lo = a.largestAcknowledged -| a.firstRange;
+        try self.ackRangeRemove(sp, first_lo, a.largestAcknowledged);
+        var prev_low = first_lo;
+        for (a.ranges) |r| {
+            if (r.gap + 2 > prev_low) break;
+            const cur_high = prev_low - r.gap - 2;
+            const cur_lo = cur_high -| r.length;
+            try self.ackRangeRemove(sp, cur_lo, cur_high);
+            prev_low = cur_lo;
+        }
+
+        var sample_ts: ?u64 = null;
+        var sample_pn: u64 = 0;
+        for (self.scratchSent.items) |p| {
+            self.cc.onPacketAcked(p.inFlightBytes, p.tsMs);
+            if (sample_ts == null or p.pn > sample_pn) {
+                sample_pn = p.pn;
+                sample_ts = p.tsMs;
+            }
+        }
+        if (sample_ts) |ts| {
+            self.recovery.rtt.onAckReceived(ts, nowMs, self.recovery.cfg.maxAckDelayMs);
+            self.recovery.onAckOfInFlight();
+        }
+        try self.runLossDetection(sp, nowMs);
+        // Note: `a.ranges` is freed by the dispatch caller, not here.
+    }
+
+    /// Runs time/packet-threshold loss detection over a space: congestion
+    /// event (plus persistent-congestion collapse) and immediate
+    /// retransmit of newly declared lost packets.
+    fn runLossDetection(self: *Connection, sp: *PnSpace, nowMs: u64) Error!void {
+        self.recovery.largestAckedPn = sp.ackedMax;
+        self.recovery.lossTimeMs = sp.lossTimeMs;
+        self.recovery.detectLost(sp.sent.items, nowMs, &self.scratchSent, self.allocator) catch
+            return Error.OutOfMemory;
+        sp.lossTimeMs = self.recovery.lossTimeMs;
+        if (self.scratchSent.items.len == 0) return;
+        self.cc.onCongestionEvent(nowMs);
+        if (self.recovery.persistentCongestion()) self.cc.onPersistentCongestion();
+        for (self.scratchSent.items) |lost| {
+            const idx = indexOfPn(sp.sent.items, lost.pn) orelse continue;
+            try self.retransmitEntry(sp, idx, nowMs);
+        }
+    }
+
+    /// Re-emits one unacked packet's frames (minus ACK/PADDING) under a
+    /// fresh packet number, transferring payload ownership to the new
+    /// tracking entry.
+    fn retransmitEntry(self: *Connection, sp: *PnSpace, idx: usize, nowMs: u64) Error!void {
+        const stored = sp.sentData.items[idx];
+        var rebuilt = std.ArrayList(u8).empty;
+        defer rebuilt.deinit(self.allocator);
+        var pos: usize = 0;
+        var any = false;
+        while (pos < stored.len) {
+            const f = frames.decode(stored, &pos) catch break;
+            switch (f) {
+                .ack, .padding => {},
+                else => {
+                    frames.encode(&rebuilt, self.allocator, f) catch |e| switch (e) {
+                        error.OutOfMemory => return Error.OutOfMemory,
+                        else => return Error.ProtocolViolation,
+                    };
+                    any = true;
+                },
+            }
+        }
+        const kind: SpaceKind = sp.kind;
+        if (!any) {
+            // Nothing retransmittable (only ACK/PADDING): drop tracking.
+            self.removeSent(sp, idx);
+            return;
+        }
+        // Packetize first so a send failure keeps the old entry (and
+        // its payload) tracked for the next probe.
+        try self.packetize(kind, &rebuilt, nowMs);
+        self.removeSent(sp, idx);
+    }
+
+    /// Sends one PTO probe for a space: oldest unacked payload, else a
+    /// bare PING. Probes bypass the congestion gate (one packet only).
+    fn sendProbe(self: *Connection, space_idx: usize, nowMs: u64) Error!void {
+        const sp = &self.spaces[space_idx];
+        const kind: SpaceKind = @enumFromInt(space_idx);
+        if (sp.sent.items.len > 0) {
+            try self.retransmitEntry(sp, 0, nowMs);
+            return;
+        }
+        var payload = std.ArrayList(u8).empty;
+        defer payload.deinit(self.allocator);
+        frames.encode(&payload, self.allocator, .ping) catch |e| switch (e) {
+            error.OutOfMemory => return Error.OutOfMemory,
+            else => return Error.ProtocolViolation,
+        };
+        try self.packetize(kind, &payload, nowMs);
+    }
+
+    /// Drives loss and PTO timers; call every pump iteration with the
+    /// clock. Retransmits declare themselves through the normal send
+    /// path (fresh packet numbers, re-accounted windows).
+    pub fn pollTimeouts(self: *Connection, nowMs: u64) Error!void {
+        switch (self.state) {
+            .closing, .draining, .closed => return,
+            else => {},
+        }
+        for (&self.spaces, 0..) |*sp, idx| {
+            if (sp.lossTimeMs) |lt| {
+                if (nowMs >= lt and sp.sent.items.len > 0) {
+                    try self.runLossDetection(sp, nowMs);
+                }
+            }
+            if (sp.inFlightAckEliciting > 0) {
+                const pto = self.recovery.ptoDuration(sp.kind == .application);
+                const last = sp.lastAckElicitingTsMs orelse nowMs;
+                if (nowMs -| last >= pto) {
+                    self.recovery.onPtoExpired();
+                    try self.sendProbe(idx, nowMs);
+                }
+            }
+        }
     }
     // Receive path
 
@@ -673,10 +935,21 @@ pub const Connection = struct {
 
         sp.highestRxPn = @max(sp.highestRxPn, @as(i64, @intCast(@min(pn, 1 << 62))));
         sp.largestAcked = if (sp.largestAcked) |old| @max(old, pn) else pn;
-        sp.acktr.add(pn) catch return Error.OutOfMemory;
+        sp.acktr.add(pn) catch |e| switch (e) {
+            // Duplicates carry no new information: drop without
+            // redelivering to the application or arming ACKs.
+            error.DuplicatePacket => {
+                self.rxConsumed = declared_end;
+                return;
+            },
+            error.OutOfMemory => return Error.OutOfMemory,
+        };
+        sp.largestRecvTsMs = nowMs;
 
         self.rxConsumed = declared_end;
+        self.rxAckEliciting = false;
         try self.dispatchFrames(sp, pt[0..ctLen], nowMs);
+        self.afterPacketReceived(sp, pn, nowMs);
     }
     fn receiveShort(self: *Connection, dgram: []const u8, nowMs: u64) Error!void {
         const sp = &self.spaces[2];
@@ -723,9 +996,60 @@ pub const Connection = struct {
 
         sp.highestRxPn = @max(sp.highestRxPn, @as(i64, @intCast(@min(pn, 1 << 62))));
         sp.largestAcked = if (sp.largestAcked) |old| @max(old, pn) else pn;
-        sp.acktr.add(pn) catch return Error.OutOfMemory;
+        sp.acktr.add(pn) catch |e| switch (e) {
+            // Duplicates carry no new information: drop without
+            // redelivering to the application or arming ACKs.
+            error.DuplicatePacket => {
+                self.rxConsumed = dgram.len;
+                return;
+            },
+            error.OutOfMemory => return Error.OutOfMemory,
+        };
+        sp.largestRecvTsMs = nowMs;
+
         self.rxConsumed = dgram.len;
+        self.rxAckEliciting = false;
         try self.dispatchFrames(sp, pt[0..ctLen], nowMs);
+        self.afterPacketReceived(sp, pn, nowMs);
+    }
+
+    /// Updates acknowledgment state after one received packet.
+    /// Immediate ACK when the second eliciting packet arrives, on
+    /// reordering, or in handshake spaces (latency-sensitive); otherwise
+    /// arms the max-ack-delay timer drained by `pollAckTimers`.
+    fn afterPacketReceived(self: *Connection, sp: *PnSpace, pn: u64, nowMs: u64) void {
+        if (!self.rxAckEliciting) return;
+        sp.ackElicitingCount += 1;
+        const out_of_order = if (sp.acktr.largestSeen) |ls| pn < ls else false;
+        if (sp.ackElicitingCount >= 2 or out_of_order or sp.kind != .application) {
+            sp.ackQueued = true;
+            sp.ackElicitingCount = 0;
+            sp.ackDeadlineMs = null;
+        } else if (sp.ackDeadlineMs == null) {
+            sp.ackDeadlineMs = nowMs +| self.recovery.cfg.maxAckDelayMs;
+        }
+    }
+
+    /// Arms/drains ACK timers; call every pump iteration with the clock.
+    /// Pure state update: emission happens in `packetize`.
+    pub fn pollAckTimers(self: *Connection, nowMs: u64) void {
+        for (&self.spaces) |*sp| {
+            if (sp.ackQueued) continue;
+            if (sp.ackDeadlineMs) |dl| {
+                if (nowMs >= dl) {
+                    sp.ackQueued = true;
+                    sp.ackDeadlineMs = null;
+                    sp.ackElicitingCount = 0;
+                }
+            }
+        }
+    }
+
+    fn isAckElicitingFrame(f: frames.Frame) bool {
+        return switch (f) {
+            .padding, .ping, .ack, .connectionClose => false,
+            else => true,
+        };
     }
 
     fn dispatchFrames(self: *Connection, sp: *PnSpace, plaintext: []const u8, nowMs: u64) Error!void {
@@ -735,22 +1059,15 @@ pub const Connection = struct {
                 error.OutOfMemory => return Error.OutOfMemory,
                 else => return Error.ProtocolViolation,
             };
+            if (isAckElicitingFrame(f)) self.rxAckEliciting = true;
             switch (f) {
                 .padding, .ping => {},
                 .ack => |a| {
-                    self.recovery.largestAckedPn = if (self.recovery.largestAckedPn) |old|
-                        @max(old, a.largestAcknowledged)
-                    else
-                        a.largestAcknowledged;
-                    self.recovery.rtt.onAckReceived(
-                        self.lastActivityMs,
-                        self.lastActivityMs +| a.ackDelay,
-                        25,
-                    );
-                    self.recovery.onAckOfInFlight();
+                    try self.onAckFrame(sp, a, nowMs);
+                    if (a.ranges.len > 0) std.heap.page_allocator.free(a.ranges);
                 },
                 .crypto => |c| {
-                    try self.receiveCrypto(sp.kind, c.offset, c.data);
+                    try self.receiveCrypto(sp.kind, c.offset, c.data, nowMs);
                 },
                 .stream => |s| {
                     const bidi = (s.id & 0x02) == 0;
@@ -938,7 +1255,7 @@ pub const Connection = struct {
         }
     }
 
-    fn receiveCrypto(self: *Connection, kind: SpaceKind, offset: u64, data: []const u8) Error!void {
+    fn receiveCrypto(self: *Connection, kind: SpaceKind, offset: u64, data: []const u8, nowMs: u64) Error!void {
         const idx = @intFromEnum(kind);
         if (data.len == 0) return;
         const end = std.math.add(u64, offset, data.len) catch return Error.ProtocolViolation;
@@ -989,16 +1306,16 @@ pub const Connection = struct {
             self.cryptoRecvOff[idx] = std.math.add(u64, self.cryptoRecvOff[idx], contiguous.len) catch return Error.ProtocolViolation;
         }
         if (self.tls.onData) |cb| {
-            try cb(self.tls.ctx, self, self.cryptoBuf[idx].items);
+            try cb(self.tls.ctx, self, self.cryptoBuf[idx].items, nowMs);
             self.cryptoBuf[idx].clearRetainingCapacity();
         }
     }
 
     /// Kicks off the handshake (client role only).
-    pub fn startHandshake(self: *Connection) Error!void {
+    pub fn startHandshake(self: *Connection, nowMs: u64) Error!void {
         if (self.role != .client) return;
         self.installInitialKeys() catch return Error.TlsDriverFailed;
-        if (self.tls.start) |cb| try cb(self.tls.ctx, self);
+        if (self.tls.start) |cb| try cb(self.tls.ctx, self, nowMs);
     }
 
     /// Server-side entry: install Initial keys from the DCID seen on the
@@ -1057,7 +1374,7 @@ test "loopback connection pair completes protected handshake and stream" {
 
     const Hs = struct {
         // Server-side driver: on client flight -> install HS keys, reply.
-        fn serverOnData(ctx: ?*anyopaque, conn: *Connection, data: []const u8) Error!void {
+        fn serverOnData(ctx: ?*anyopaque, conn: *Connection, data: []const u8, nowMs: u64) Error!void {
             const role: *Role = @ptrCast(@alignCast(ctx.?));
             _ = role;
             if (!std.mem.eql(u8, data, TestDriverCtx.client_hello)) return;
@@ -1074,7 +1391,7 @@ test "loopback connection pair completes protected handshake and stream" {
                     try fe(gpa, payload, .{ .crypto = .{ .offset = 0, .data = TestDriverCtx.serverHello } });
                 }
             };
-            try conn.sendFrames(.handshake, B.build, 0);
+            try conn.sendFrames(.handshake, B.build, nowMs);
 
             // Also install app-space keys and confirm the handshake.
             const app_base = crypto.deriveSecret(t, "quic ap");
@@ -1084,11 +1401,11 @@ test "loopback connection pair completes protected handshake and stream" {
                     try fe(gpa, payload, .handshakeDone);
                 }
             };
-            try conn.sendFrames(.application, D.build, 0);
+            try conn.sendFrames(.application, D.build, nowMs);
         }
 
         // Client-side driver: emit flight, preinstall HS keys symmetrically.
-        fn clientStart(ctx: ?*anyopaque, conn: *Connection) Error!void {
+        fn clientStart(ctx: ?*anyopaque, conn: *Connection, nowMs: u64) Error!void {
             _ = ctx;
             try conn.installInitialKeys();
             const t = TestDriverCtx.transcript();
@@ -1102,10 +1419,10 @@ test "loopback connection pair completes protected handshake and stream" {
                     try fe(gpa, payload, .{ .crypto = .{ .offset = 0, .data = TestDriverCtx.client_hello } });
                 }
             };
-            try conn.sendFrames(.initial, B.build, 0);
+            try conn.sendFrames(.initial, B.build, nowMs);
         }
 
-        fn clientOnData(ctx: ?*anyopaque, conn: *Connection, data: []const u8) Error!void {
+        fn clientOnData(ctx: ?*anyopaque, conn: *Connection, data: []const u8, _: u64) Error!void {
             _ = ctx;
             if (std.mem.eql(u8, data, TestDriverCtx.serverHello)) {
                 // App keys arrive mirrored from server's choice.
@@ -1121,7 +1438,7 @@ test "loopback connection pair completes protected handshake and stream" {
     client.tls = .{ .start = Hs.clientStart, .onData = Hs.clientOnData };
 
     // Client begins: produces Initial datagram.
-    try client.startHandshake();
+    try client.startHandshake(50);
     const c_out = try client.takeOutput(a);
     defer a.free(c_out);
     try std.testing.expect(c_out.len >= 64);
@@ -1227,13 +1544,13 @@ const TlsHandshakeDriver = struct {
         try conn.sendFrames(kind, B.build, nowMs);
     }
 
-    fn clientStart(ctx: ?*anyopaque, conn: *Connection) Error!void {
+    fn clientStart(ctx: ?*anyopaque, conn: *Connection, nowMs: u64) Error!void {
         const d: *TlsHandshakeDriver = @ptrCast(@alignCast(ctx.?));
         const ch = d.engine.produceClientHello(&.{"h2"}, &.{}) catch return Error.TlsDriverFailed;
         defer conn.allocator.free(ch);
         d.flight.appendSlice(conn.allocator, ch) catch return Error.OutOfMemory;
         _ = try conn.queueCrypto(.initial, ch);
-        try sendQueued(conn, .initial, 0);
+        try sendQueued(conn, .initial, nowMs);
     }
 
     /// Consumes one complete handshake record from the front of `buf`.
@@ -1249,7 +1566,7 @@ const TlsHandshakeDriver = struct {
         buf.replaceRange(a, 0, n, &.{}) catch {};
     }
 
-    fn serverOnData(ctx: ?*anyopaque, conn: *Connection, data: []const u8) Error!void {
+    fn serverOnData(ctx: ?*anyopaque, conn: *Connection, data: []const u8, nowMs: u64) Error!void {
         const d: *TlsHandshakeDriver = @ptrCast(@alignCast(ctx.?));
         if (d.flight_done) return;
         d.incoming.appendSlice(conn.allocator, data) catch return Error.OutOfMemory;
@@ -1278,12 +1595,12 @@ const TlsHandshakeDriver = struct {
         // an Initial packet so the peer can open it with Initial keys and
         // derive Handshake keys; EE..Finished follow in Handshake packets.
         _ = try conn.queueCrypto(.initial, flight.serverHello);
-        try sendQueued(conn, .initial, 100);
+        try sendQueued(conn, .initial, nowMs);
         _ = try conn.queueCrypto(.handshake, flight.encryptedExtensions);
         _ = try conn.queueCrypto(.handshake, flight.certificate);
         _ = try conn.queueCrypto(.handshake, flight.certificateVerify);
         _ = try conn.queueCrypto(.handshake, flight.finished);
-        try sendQueued(conn, .handshake, 100);
+        try sendQueued(conn, .handshake, nowMs);
 
         const ch_sf = hashConcat(&.{ ch_msg, d.flight.items });
         const ap = qtls.applicationKeys(hs.hsSecret, ch_sf);
@@ -1298,11 +1615,11 @@ const TlsHandshakeDriver = struct {
                 try fe(gpa, payload, .handshakeDone);
             }
         };
-        try conn.sendFrames(.application, DoneB.build, 100);
+        try conn.sendFrames(.application, DoneB.build, nowMs);
         d.flight_done = true;
     }
 
-    fn clientOnData(ctx: ?*anyopaque, conn: *Connection, data: []const u8) Error!void {
+    fn clientOnData(ctx: ?*anyopaque, conn: *Connection, data: []const u8, _: u64) Error!void {
         const d: *TlsHandshakeDriver = @ptrCast(@alignCast(ctx.?));
         d.incoming.appendSlice(conn.allocator, data) catch return Error.OutOfMemory;
         d.peer_flight.appendSlice(conn.allocator, data) catch return Error.OutOfMemory;
@@ -1373,7 +1690,7 @@ fn runTlsHandshake(
     client.tls = .{ .ctx = cli_d, .start = TlsHandshakeDriver.clientStart, .onData = TlsHandshakeDriver.clientOnData };
     server.tls = .{ .ctx = srv_d, .onData = TlsHandshakeDriver.serverOnData };
 
-    try client.startHandshake();
+    try client.startHandshake(50);
     const c0 = try client.takeOutput(a);
     defer a.free(c0);
     try std.testing.expect(c0.len >= 64);
@@ -1765,12 +2082,12 @@ test "crypto receive reassembles reordered and overlapping segments" {
     var conn = try Connection.init(a, .client, .{}, 92);
     defer conn.deinit();
 
-    try conn.receiveCrypto(.initial, 5, " world");
+    try conn.receiveCrypto(.initial, 5, " world", 100);
     try std.testing.expectEqual(@as(u64, 0), conn.cryptoRecvOff[0]);
-    try conn.receiveCrypto(.initial, 0, "hello");
+    try conn.receiveCrypto(.initial, 0, "hello", 101);
     try std.testing.expectEqual(@as(u64, 11), conn.cryptoRecvOff[0]);
     try std.testing.expectEqualStrings("hello world", conn.cryptoBuf[0].items);
-    try conn.receiveCrypto(.initial, 3, "lo world");
+    try conn.receiveCrypto(.initial, 3, "lo world", 102);
     try std.testing.expectEqual(@as(u64, 11), conn.cryptoRecvOff[0]);
 }
 
@@ -2003,4 +2320,196 @@ test "max streams bumps advertise higher limits" {
     try std.testing.expectEqual(@as(u64, 256), pair.client.maxStreamsBidiLocal);
     try pair.pumpCS(a);
     try std.testing.expectEqual(@as(u64, 256), pair.server.maxStreamsBidiRemote);
+}
+
+// Reliability (RFC 9002): ACK generation, duplicate suppression, RTT
+// sampling, PTO probes, loss declaration with congestion response and
+// retransmission, and congestion-window send gating.
+
+const EmptyBuild = struct {
+    pub fn build(gpa: Allocator, payload: *std.ArrayList(u8)) Error!void {
+        _ = gpa;
+        _ = payload;
+    }
+};
+
+test "acks arm on second packet and roundtrip through peer" {
+    const a = std.testing.allocator;
+    var pair = try CtlPair.init(a);
+    defer pair.deinit();
+    const d = [_]u8{0x11} ** 10;
+
+    try pair.client.sendStreamChecked(0, 0, &d, false, 100);
+    try pair.pumpCS(a);
+    try std.testing.expect(!pair.server.spaces[2].ackQueued);
+    try pair.client.sendStreamChecked(0, 10, &d, false, 101);
+    try pair.pumpCS(a);
+    try std.testing.expect(pair.server.spaces[2].ackQueued);
+
+    try std.testing.expect(pair.client.spaces[2].sent.items.len > 0);
+    try std.testing.expect(pair.client.bytesInFlight > 0);
+    try pair.server.sendFrames(.application, EmptyBuild.build, 102);
+    try std.testing.expect(!pair.server.spaces[2].ackQueued);
+    try pair.pumpSC(a);
+    try std.testing.expectEqual(@as(usize, 0), pair.client.spaces[2].sent.items.len);
+    try std.testing.expectEqual(@as(usize, 0), pair.client.bytesInFlight);
+}
+
+test "duplicate packets drop without redelivery" {
+    const a = std.testing.allocator;
+    var pair = try CtlPair.init(a);
+    defer pair.deinit();
+    const d = [_]u8{0x22} ** 10;
+
+    try pair.client.sendStreamChecked(0, 0, &d, false, 100);
+    const out = try pair.client.takeOutput(a);
+    defer a.free(out);
+    try pair.server.receiveDatagram(out, 110);
+    const recv1 = pair.server.dataReceived;
+    const st = pair.server.streams.get(0) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u64, 10), st.recvOffset);
+    // Same datagram again: dropped, no state change, no error.
+    try pair.server.receiveDatagram(out, 120);
+    try std.testing.expectEqual(recv1, pair.server.dataReceived);
+    try std.testing.expectEqual(@as(u64, 10), st.recvOffset);
+}
+
+test "rtt samples use real send and ack timestamps" {
+    const a = std.testing.allocator;
+    var pair = try CtlPair.init(a);
+    defer pair.deinit();
+    const d = [_]u8{0x33} ** 10;
+
+    try pair.client.sendStreamChecked(0, 0, &d, false, 100);
+    {
+        const out = try pair.client.takeOutput(a);
+        defer a.free(out);
+        try pair.server.receiveDatagram(out, 110);
+    }
+    try pair.client.sendStreamChecked(0, 10, &d, false, 101);
+    {
+        const out = try pair.client.takeOutput(a);
+        defer a.free(out);
+        try pair.server.receiveDatagram(out, 111);
+    }
+    try pair.server.sendFrames(.application, EmptyBuild.build, 112);
+    {
+        const out = try pair.server.takeOutput(a);
+        defer a.free(out);
+        try pair.client.receiveDatagram(out, 150);
+    }
+    // Largest newly acked is pn 1 sent at 101, acked at 150.
+    try std.testing.expectEqual(@as(u64, 49), pair.client.recovery.rtt.minRttMs);
+    try std.testing.expectEqual(@as(u64, 49), pair.client.recovery.rtt.smoothedRttMs);
+}
+
+test "pto probe retransmits unacked data for real delivery" {
+    const a = std.testing.allocator;
+    var pair = try CtlPair.init(a);
+    defer pair.deinit();
+    const d = [_]u8{0x44} ** 10;
+
+    try pair.client.sendStreamChecked(0, 0, &d, false, 100);
+    const orig = try pair.client.takeOutput(a);
+    defer a.free(orig);
+    // PTO (499ms on fresh RTT state) fires: probe goes out, count bumps.
+    try pair.client.pollTimeouts(700);
+    try std.testing.expectEqual(@as(u32, 1), pair.client.recovery.ptoCount);
+    {
+        const probe = try pair.client.takeOutput(a);
+        defer a.free(probe);
+        try std.testing.expect(probe.len > 0);
+        try pair.server.receiveDatagram(probe, 701);
+    }
+    const st = pair.server.streams.get(0) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u64, 10), st.recvOffset);
+    // The original arriving late is a duplicate: no redelivery.
+    const before = pair.server.dataReceived;
+    try pair.server.receiveDatagram(orig, 702);
+    try std.testing.expectEqual(before, pair.server.dataReceived);
+    try std.testing.expectEqual(@as(u64, 10), st.recvOffset);
+}
+
+test "loss declaration halves cwnd and retransmits for real delivery" {
+    const a = std.testing.allocator;
+    var pair = try CtlPair.init(a);
+    defer pair.deinit();
+
+    var pkts: [5][]u8 = undefined;
+    var i: usize = 0;
+    while (i < 5) : (i += 1) {
+        const one = [_]u8{@intCast(0x50 + i)} ** 1;
+        try pair.client.sendStreamChecked(0, i, &one, false, 100 + i);
+        pkts[i] = try pair.client.takeOutput(a);
+    }
+    defer {
+        for (pkts) |p| a.free(p);
+    }
+    // Deliver all but pn 3 (offsets are 1:1 with pns here).
+    try pair.server.receiveDatagram(pkts[0], 110);
+    try pair.server.receiveDatagram(pkts[1], 111);
+    try pair.server.receiveDatagram(pkts[2], 112);
+    try pair.server.receiveDatagram(pkts[4], 113);
+    try pair.server.sendFrames(.application, EmptyBuild.build, 114);
+    {
+        const ack = try pair.server.takeOutput(a);
+        defer a.free(ack);
+        try pair.client.receiveDatagram(ack, 120);
+    }
+    // pn 3 unacked with largest 4: below packet threshold, time pending.
+    try std.testing.expect(pair.client.spaces[2].lossTimeMs != null);
+    const cwnd_before = pair.client.cc.cwnd;
+    try pair.client.pollTimeouts(500);
+    const cwnd_after = pair.client.cc.cwnd;
+    try std.testing.expect(cwnd_after < cwnd_before);
+    // The retransmit completes the stream byte range on the server.
+    {
+        const out = try pair.client.takeOutput(a);
+        defer a.free(out);
+        try std.testing.expect(out.len > 0);
+        try pair.server.receiveDatagram(out, 501);
+    }
+    const st = pair.server.streams.get(0) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u64, 5), st.recvOffset);
+}
+
+test "send blocks when congestion window exhausted" {
+    const a = std.testing.allocator;
+    var pair = try CtlPair.init(a);
+    defer pair.deinit();
+    const chunk = [_]u8{0xAA} ** 500;
+    var blocked_at: usize = 0;
+    var i: usize = 0;
+    while (i < 500) : (i += 1) {
+        pair.client.sendStreamChecked(0, i * 500, &chunk, false, 100) catch |e| {
+            try std.testing.expectEqual(Error.SendBlocked, e);
+            blocked_at = i;
+            break;
+        };
+    }
+    try std.testing.expect(blocked_at > 0);
+    try std.testing.expect(blocked_at < 500);
+}
+
+test "out of order receipt acks immediately" {
+    const a = std.testing.allocator;
+    var pair = try CtlPair.init(a);
+    defer pair.deinit();
+    const d = [_]u8{0x55} ** 10;
+
+    var outs: [6][]u8 = undefined;
+    var i: usize = 0;
+    while (i < 6) : (i += 1) {
+        try pair.client.sendStreamChecked(0, i * 10, &d, false, 100 + i);
+        outs[i] = try pair.client.takeOutput(a);
+    }
+    defer {
+        for (outs) |p| a.free(p);
+    }
+    // pn 5 first: single packet, in order so far, no immediate ack.
+    try pair.server.receiveDatagram(outs[5], 110);
+    try std.testing.expect(!pair.server.spaces[2].ackQueued);
+    // pn 3 arrives below the max seen: gap, ack immediately.
+    try pair.server.receiveDatagram(outs[3], 111);
+    try std.testing.expect(pair.server.spaces[2].ackQueued);
 }

@@ -1021,12 +1021,6 @@ test "h3conn decoder acks drain concatenated" {
     try conn.feedQuic(0, w1, true);
     try conn.feedQuic(4, w2, true);
     try std.testing.expectEqual(@as(usize, 2), rec.headers);
-    std.debug.print("DBG acks headers={d} icnt={d} err={s}\n", .{
-        rec.headers,
-        conn.qdec.insertCount(),
-        if (rec.lastH3Error) |e| @tagName(e) else "none",
-    });
-    try std.testing.expectEqual(@as(usize, 2), rec.headers);
     try std.testing.expectEqual(@as(usize, 2), rec.ends);
     const ack = try conn.drainDecoderAcks();
     defer a.free(ack);
