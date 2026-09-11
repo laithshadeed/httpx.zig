@@ -38,6 +38,9 @@ pub const Error = error{
     ProtocolViolation,
     AuthenticationFailed,
     FlowControlViolation,
+    /// Send window exhausted (connection or stream). Retry after the
+    /// peer raises MAX_DATA / MAX_STREAM_DATA.
+    SendBlocked,
     OutOfMemory,
     AmplificationBlocked,
     ConnectionClosed,
@@ -86,10 +89,19 @@ pub const TlsDriver = struct {
 
 pub const Callbacks = struct {
     ctx: ?*anyopaque = null,
+    /// Borrowed slices (`data`, `reason`) alias the packet plaintext
+    /// buffer and are valid only for the duration of the callback:
+    /// copy anything retained past return.
     onStreamData: ?*const fn (ctx: ?*anyopaque, sid: u64, data: []const u8, fin: bool) void = null,
     onNewStream: ?*const fn (ctx: ?*anyopaque, sid: u64) void = null,
     onClose: ?*const fn (ctx: ?*anyopaque, err_code: u64, reason: []const u8) void = null,
     onHandshakeDone: ?*const fn (ctx: ?*anyopaque) void = null,
+    /// Peer reset a stream. Connection-level `onClose` is reserved for
+    /// CONNECTION_CLOSE; stream resets route here.
+    onStreamReset: ?*const fn (ctx: ?*anyopaque, sid: u64, code: u64) void = null,
+    /// Peer asked us to stop sending on a stream. The stack already
+    /// queued the matching RESET_STREAM reply.
+    onStopSending: ?*const fn (ctx: ?*anyopaque, sid: u64, code: u64) void = null,
 };
 
 pub const Config = struct {
@@ -118,6 +130,13 @@ pub const CidEntry = struct {
     cidLen: u8 = 0,
     statelessResetToken: [16]u8 = undefined,
     retired: bool = false,
+};
+
+/// A control frame waiting for the next outgoing packet. Close reasons
+/// are owned (duped at queue time, freed on drain).
+pub const QueuedControl = struct {
+    frame: frames.Frame,
+    ownedReason: ?[]u8 = null,
 };
 
 pub const Connection = struct {
@@ -156,8 +175,16 @@ pub const Connection = struct {
     recovery: loss_mod.Recovery = .{},
     sentPackets: std.ArrayList(loss_mod.SentPacket) = .empty,
 
-    pendingPathResponse: ?[8]u8 = null,
-    pendingResetStream: ?struct { streamId: u64, errorCode: u64 } = null,
+    /// Control frames queued by the stack or the application, drained
+    /// into the next outgoing packet so resets and window updates never
+    /// starve behind bulk data.
+    queuedControl: std.ArrayList(QueuedControl) = .empty,
+    /// Highest stream send offset per stream (new-byte accounting for
+    /// connection flow control; resends do not consume window twice).
+    sendStreamEnd: std.AutoHashMap(u64, u64) = undefined,
+    /// Limits we advertise (bumped on STREAMS_BLOCKED).
+    maxStreamsBidiLocal: u64 = 128,
+    maxStreamsUniLocal: u64 = 128,
 
     // Packet-number spaces.
     spaces: [3]PnSpace = undefined,
@@ -206,6 +233,7 @@ pub const Connection = struct {
         self.peerCids = .empty;
         self.maxStreamData = std.AutoHashMap(u64, u64).init(allocator);
         self.recvStreamEnd = std.AutoHashMap(u64, u64).init(allocator);
+        self.sendStreamEnd = std.AutoHashMap(u64, u64).init(allocator);
         self.streams = std.AutoHashMap(u64, *qstream.Stream).init(allocator);
         self.sentPackets = .empty;
 
@@ -231,6 +259,11 @@ pub const Connection = struct {
         self.peerCids.deinit(self.allocator);
         self.maxStreamData.deinit();
         self.recvStreamEnd.deinit();
+        self.sendStreamEnd.deinit();
+        for (self.queuedControl.items) |*q| {
+            if (q.ownedReason) |r| self.allocator.free(r);
+        }
+        self.queuedControl.deinit(self.allocator);
         var it = self.streams.valueIterator();
         while (it.next()) |sp| {
             sp.*.deinit();
@@ -318,11 +351,153 @@ pub const Connection = struct {
 
     // Send path
 
+    /// Queues a control frame for the next outgoing packet. Close
+    /// reasons are copied; the caller retains its slice.
+    pub fn queueControlFrame(self: *Connection, f: frames.Frame) Error!void {
+        var owned: ?[]u8 = null;
+        if (f == .connectionClose) {
+            owned = try self.allocator.dupe(u8, f.connectionClose.reason);
+        }
+        errdefer if (owned) |r| self.allocator.free(r);
+        try self.queuedControl.append(self.allocator, .{ .frame = f, .ownedReason = owned });
+    }
+
+    /// Encodes all queued control frames into `payload`, freeing any
+    /// owned close reasons. Queued frames ride ahead of bulk data.
+    fn drainControlQueue(self: *Connection, payload: *std.ArrayList(u8)) Error!void {
+        for (self.queuedControl.items) |*q| {
+            if (q.frame == .connectionClose) {
+                q.frame.connectionClose.reason = q.ownedReason orelse "";
+            }
+            frames.encode(payload, self.allocator, q.frame) catch |e| switch (e) {
+                error.OutOfMemory => return Error.OutOfMemory,
+                else => return Error.ProtocolViolation,
+            };
+            if (q.ownedReason) |r| self.allocator.free(r);
+        }
+        self.queuedControl.clearRetainingCapacity();
+    }
+
+    /// Sends queued control frames immediately (no-op when empty).
+    pub fn flushControl(self: *Connection, kind: SpaceKind, nowMs: u64) Error!void {
+        if (self.queuedControl.items.len == 0) return;
+        var payload = std.ArrayList(u8).empty;
+        defer payload.deinit(self.allocator);
+        try self.drainControlQueue(&payload);
+        try self.packetize(kind, &payload, nowMs);
+    }
+
+    /// Sends RESET_STREAM immediately (stream error). `finalSize` must
+    /// equal the stream's send offset (RFC 9000 Section 19.4).
+    pub fn sendResetStream(self: *Connection, sid: u64, code: u64, finalSize: u64, nowMs: u64) Error!void {
+        try self.queueControlFrame(.{ .resetStream = .{ .streamId = sid, .errorCode = code, .finalSize = finalSize } });
+        try self.flushControl(.application, nowMs);
+    }
+
+    /// Sends STOP_SENDING immediately.
+    pub fn sendStopSending(self: *Connection, sid: u64, code: u64, nowMs: u64) Error!void {
+        try self.queueControlFrame(.{ .stopSending = .{ .streamId = sid, .errorCode = code } });
+        try self.flushControl(.application, nowMs);
+    }
+
+    /// Raises our receive window and sends MAX_DATA immediately.
+    pub fn sendMaxData(self: *Connection, maximum: u64, nowMs: u64) Error!void {
+        if (maximum > self.maxData) self.maxData = maximum;
+        try self.queueControlFrame(.{ .maxData = .{ .maximum = self.maxData } });
+        try self.flushControl(.application, nowMs);
+    }
+
+    /// Raises a stream receive window and sends MAX_STREAM_DATA.
+    pub fn sendMaxStreamData(self: *Connection, sid: u64, maximum: u64, nowMs: u64) Error!void {
+        if (self.streams.get(sid)) |st| {
+            if (maximum > st.recvMaxOffset) st.recvMaxOffset = maximum;
+        }
+        try self.queueControlFrame(.{ .maxStreamData = .{ .streamId = sid, .maximum = maximum } });
+        try self.flushControl(.application, nowMs);
+    }
+
+    /// Raises a stream-count limit and sends MAX_STREAMS.
+    pub fn sendMaxStreams(self: *Connection, bidi: bool, maximum: u64, nowMs: u64) Error!void {
+        if (bidi) {
+            if (maximum > self.maxStreamsBidiLocal) self.maxStreamsBidiLocal = maximum;
+        } else {
+            if (maximum > self.maxStreamsUniLocal) self.maxStreamsUniLocal = maximum;
+        }
+        try self.queueControlFrame(.{ .maxStreams = .{ .maximum = maximum, .bidi = bidi } });
+        try self.flushControl(.application, nowMs);
+    }
+
+    /// Sends CONNECTION_CLOSE immediately (`isApp` selects the
+    /// application variant carrying H3/QPACK codes).
+    pub fn sendConnectionClose(self: *Connection, code: u64, reason: []const u8, isApp: bool, nowMs: u64) Error!void {
+        try self.queueControlFrame(.{ .connectionClose = .{
+            .errorCode = code,
+            .triggeringFrameType = 0,
+            .reason = reason,
+            .application = isApp,
+        } });
+        try self.flushControl(.application, nowMs);
+    }
+
+    /// Sends STREAM bytes with flow-control gating and window
+    /// accounting. Resends of already-counted ranges do not consume
+    /// window twice. Returns `error.SendBlocked` when the connection or
+    /// stream window is exhausted; retry after MAX_DATA /
+    /// MAX_STREAM_DATA arrives.
+    pub fn sendStreamChecked(
+        self: *Connection,
+        sid: u64,
+        offset: u64,
+        data: []const u8,
+        fin: bool,
+        nowMs: u64,
+    ) Error!void {
+        const stream_lim = self.maxStreamData.get(sid) orelse 65536;
+        const end = std.math.add(u64, offset, data.len) catch return Error.BufferTooSmall;
+        if (end > stream_lim) return Error.SendBlocked;
+        if (self.dataSent +| data.len > self.maxDataRemote) return Error.SendBlocked;
+        const old_end = self.sendStreamEnd.get(sid) orelse 0;
+        if (end > old_end) {
+            self.dataSent +|= end - old_end;
+            try self.sendStreamEnd.put(sid, end);
+        }
+        var payload = std.ArrayList(u8).empty;
+        defer payload.deinit(self.allocator);
+        try self.drainControlQueue(&payload);
+        frames.encode(&payload, self.allocator, .{ .stream = .{
+            .id = sid,
+            .offset = offset,
+            .data = data,
+            .fin = fin,
+        } }) catch |e| switch (e) {
+            error.OutOfMemory => return Error.OutOfMemory,
+            else => return Error.ProtocolViolation,
+        };
+        try self.packetize(.application, &payload, nowMs);
+    }
+
     /// Queues one protected packet into outbuf.
     pub fn sendFrames(
         self: *Connection,
         kind: SpaceKind,
         builder: anytype,
+        nowMs: u64,
+    ) Error!void {
+        var payload = std.ArrayList(u8).empty;
+        defer payload.deinit(self.allocator);
+        try self.drainControlQueue(&payload);
+        try builder(self.allocator, &payload);
+        if (payload.items.len == 0) {
+            frames.encode(&payload, self.allocator, .ping) catch return Error.ProtocolViolation;
+        }
+        try self.packetize(kind, &payload, nowMs);
+    }
+
+    /// Protects one packet from already-built frames into outbuf.
+    fn packetize(
+        self: *Connection,
+        kind: SpaceKind,
+        payload: *std.ArrayList(u8),
         nowMs: u64,
     ) Error!void {
         _ = nowMs;
@@ -337,13 +512,6 @@ pub const Connection = struct {
         if (self.role == .server and !self.addressValidated) {
             const budget = self.bytesReceived *| 3;
             if (self.bytesSent >= budget) return Error.AmplificationBlocked;
-        }
-
-        var payload = std.ArrayList(u8).empty;
-        defer payload.deinit(self.allocator);
-        try builder(self.allocator, &payload);
-        if (payload.items.len == 0) {
-            frames.encode(&payload, self.allocator, .ping) catch return Error.ProtocolViolation;
         }
 
         const pn = sp.nextPn;
@@ -561,7 +729,6 @@ pub const Connection = struct {
     }
 
     fn dispatchFrames(self: *Connection, sp: *PnSpace, plaintext: []const u8, nowMs: u64) Error!void {
-        _ = nowMs;
         var pos: usize = 0;
         while (pos < plaintext.len) {
             const f = frames.decode(plaintext, &pos) catch |e| switch (e) {
@@ -620,6 +787,8 @@ pub const Connection = struct {
                         self.dataReceived +|= end - old_end;
                         try self.recvStreamEnd.put(s.id, end);
                     }
+                    if (self.dataReceived > self.maxData) return Error.FlowControlViolation;
+                    try self.maybeBumpMaxData();
                     if (s.fin and st.finOffset != null and st.recvOffset == st.finOffset.?) {
                         if (self.cbs.onStreamData) |cb| cb(self.cbs.ctx, s.id, &.{}, true);
                     }
@@ -634,8 +803,10 @@ pub const Connection = struct {
                 },
                 .pathChallenge => |p| {
                     // Echo back as PATH_RESPONSE per RFC 9000 section 19.3.
-                    // Store for send in next outgoing packet.
-                    self.pendingPathResponse = p.data;
+                    self.queueControlFrame(.{ .pathResponse = .{ .data = p.data } }) catch |e| switch (e) {
+                        error.OutOfMemory => return Error.OutOfMemory,
+                        else => return Error.ProtocolViolation,
+                    };
                 },
                 .maxData => |m| {
                     self.maxDataRemote = m.maximum;
@@ -651,13 +822,45 @@ pub const Connection = struct {
                     }
                 },
                 .dataBlocked => {
-                    // Peer is blocked on our maxData; send MAX_DATA update.
+                    // Peer is blocked on our maxData: raise the window and
+                    // answer immediately (the peer is waiting on this).
+                    self.maxData = @min(self.maxData *| 2, 1 << 30);
+                    self.queueControlFrame(.{ .maxData = .{ .maximum = self.maxData } }) catch |e| switch (e) {
+                        error.OutOfMemory => return Error.OutOfMemory,
+                        else => return Error.ProtocolViolation,
+                    };
+                    self.flushControl(.application, nowMs) catch {};
                 },
-                .streamDataBlocked => {
-                    // Peer is blocked on stream-level flow control; send MAX_STREAM_DATA.
+                .streamDataBlocked => |b| {
+                    // Peer is blocked on a stream receive window: raise it
+                    // and answer immediately.
+                    if (self.streams.get(b.streamId)) |st| {
+                        const raised = @min(st.recvMaxOffset *| 2, 1 << 30);
+                        st.recvMaxOffset = raised;
+                        self.queueControlFrame(.{ .maxStreamData = .{ .streamId = b.streamId, .maximum = raised } }) catch |e| switch (e) {
+                            error.OutOfMemory => return Error.OutOfMemory,
+                            else => return Error.ProtocolViolation,
+                        };
+                        self.flushControl(.application, nowMs) catch {};
+                    }
                 },
-                .streamsBlocked => {
-                    // Peer is blocked on stream count; send MAX_STREAMS update.
+                .streamsBlocked => |b| {
+                    // Peer is blocked on stream count: raise our advertised
+                    // limit and answer immediately.
+                    if (b.bidi) {
+                        self.maxStreamsBidiLocal = @min(self.maxStreamsBidiLocal + 64, 65536);
+                        self.queueControlFrame(.{ .maxStreams = .{ .maximum = self.maxStreamsBidiLocal, .bidi = true } }) catch |e| switch (e) {
+                            error.OutOfMemory => return Error.OutOfMemory,
+                            else => return Error.ProtocolViolation,
+                        };
+                    } else {
+                        self.maxStreamsUniLocal = @min(self.maxStreamsUniLocal + 64, 65536);
+                        self.queueControlFrame(.{ .maxStreams = .{ .maximum = self.maxStreamsUniLocal, .bidi = false } }) catch |e| switch (e) {
+                            error.OutOfMemory => return Error.OutOfMemory,
+                            else => return Error.ProtocolViolation,
+                        };
+                    }
+                    self.flushControl(.application, nowMs) catch {};
                 },
                 .newConnectionId => |n| {
                     // RFC 9000 section 19.15: store peer's new CID.
@@ -687,13 +890,27 @@ pub const Connection = struct {
                     // Mark our CID with the given sequence as retired.
                 },
                 .stopSending => |s| {
-                    // RFC 9000 section 19.5: respond with RESET_STREAM.
-                    // Store for send in next outgoing packet.
-                    self.pendingResetStream = .{ .streamId = s.streamId, .errorCode = s.errorCode };
+                    // RFC 9000 section 19.5: answer with RESET_STREAM at
+                    // once, then tell the application to abandon the
+                    // stream. Final size is our send offset, if known.
+                    const final_size = self.sendStreamEnd.get(s.streamId) orelse 0;
+                    self.queueControlFrame(.{ .resetStream = .{
+                        .streamId = s.streamId,
+                        .errorCode = s.errorCode,
+                        .finalSize = final_size,
+                    } }) catch |e| switch (e) {
+                        error.OutOfMemory => return Error.OutOfMemory,
+                        else => return Error.ProtocolViolation,
+                    };
+                    if (self.cbs.onStopSending) |cb| cb(self.cbs.ctx, s.streamId, s.errorCode);
+                    self.flushControl(.application, nowMs) catch {};
                 },
                 .resetStream => |r| {
-                    // Peer reset a stream; notify application.
-                    if (self.cbs.onClose) |cb| cb(self.cbs.ctx, r.errorCode, "");
+                    // Peer reset a stream: mark stream state and route to
+                    // the per-stream callback (connection-level onClose is
+                    // reserved for CONNECTION_CLOSE).
+                    if (self.streams.get(r.streamId)) |st| st.onReset(r.errorCode);
+                    if (self.cbs.onStreamReset) |cb| cb(self.cbs.ctx, r.streamId, r.errorCode);
                 },
                 .newToken => {
                     // RFC 9000 section 19.7: store token for future address validation.
@@ -703,6 +920,16 @@ pub const Connection = struct {
                 },
             }
         }
+    }
+
+    /// Raises our receive window once it is more than half consumed,
+    /// keeping the pipe full without waiting for DATA_BLOCKED. The
+    /// update rides the next outgoing packet (no immediate flush).
+    fn maybeBumpMaxData(self: *Connection) Error!void {
+        if (self.maxData >= 1 << 30) return;
+        if (self.dataReceived *| 2 <= self.maxData) return;
+        self.maxData = @min(self.maxData *| 2, 1 << 30);
+        try self.queueControlFrame(.{ .maxData = .{ .maximum = self.maxData } });
     }
 
     fn maybeDiscardInitial(self: *Connection) void {
@@ -1545,4 +1772,235 @@ test "crypto receive reassembles reordered and overlapping segments" {
     try std.testing.expectEqualStrings("hello world", conn.cryptoBuf[0].items);
     try conn.receiveCrypto(.initial, 3, "lo world");
     try std.testing.expectEqual(@as(u64, 11), conn.cryptoRecvOff[0]);
+}
+
+// Control-plane send APIs: queued frames drain into packets, resets
+// route per-stream, and flow-control windows gate sends while
+// DATA_BLOCKED-style signals raise them immediately on both ends.
+
+const CtlPair = struct {
+    client: *Connection,
+    server: *Connection,
+
+    fn init(a: Allocator) !CtlPair {
+        const client = try Connection.init(a, .client, .{}, 77);
+        errdefer client.deinit();
+        const server = try Connection.init(a, .server, .{}, 78);
+        errdefer server.deinit();
+        // Mirrored 1-RTT secrets (same loopback convention as the
+        // handshake tests); CIDs need no alignment for short headers.
+        const secret = [_]u8{0xA5} ** 32;
+        try client.installKeys(.application, secret, secret);
+        try server.installKeys(.application, secret, secret);
+        server.addressValidated = true;
+        return .{ .client = client, .server = server };
+    }
+
+    fn deinit(self: *CtlPair) void {
+        self.client.deinit();
+        self.server.deinit();
+    }
+
+    fn pumpCS(self: *CtlPair, a: Allocator) !void {
+        const out = try self.client.takeOutput(a);
+        defer a.free(out);
+        try self.server.receiveDatagram(out, 900);
+    }
+
+    fn pumpSC(self: *CtlPair, a: Allocator) !void {
+        const out = try self.server.takeOutput(a);
+        defer a.free(out);
+        try self.client.receiveDatagram(out, 901);
+    }
+};
+
+const CtlRec = struct {
+    reset_sid: ?u64 = null,
+    reset_code: u64 = 0,
+    stop_sid: ?u64 = null,
+    stop_code: u64 = 0,
+    close_code: ?u64 = null,
+    close_reason_buf: [64]u8 = undefined,
+    close_reason_len: usize = 0,
+    close_reason: []const u8 = "",
+
+    fn cbs(self: *CtlRec) Callbacks {
+        return .{
+            .ctx = self,
+            .onStreamReset = onReset,
+            .onStopSending = onStop,
+            .onClose = onClose,
+        };
+    }
+    fn onReset(ctx: ?*anyopaque, sid: u64, code: u64) void {
+        const r: *CtlRec = @ptrCast(@alignCast(ctx.?));
+        r.reset_sid = sid;
+        r.reset_code = code;
+    }
+    fn onStop(ctx: ?*anyopaque, sid: u64, code: u64) void {
+        const r: *CtlRec = @ptrCast(@alignCast(ctx.?));
+        r.stop_sid = sid;
+        r.stop_code = code;
+    }
+    fn onClose(ctx: ?*anyopaque, code: u64, reason: []const u8) void {
+        const r: *CtlRec = @ptrCast(@alignCast(ctx.?));
+        r.close_code = code;
+        // The reason borrows packet plaintext: copy before return.
+        const n = @min(reason.len, r.close_reason_buf.len);
+        @memcpy(r.close_reason_buf[0..n], reason[0..n]);
+        r.close_reason_len = n;
+        r.close_reason = r.close_reason_buf[0..n];
+    }
+};
+
+test "control queue drains into next packet and applies remotely" {
+    const a = std.testing.allocator;
+    var pair = try CtlPair.init(a);
+    defer pair.deinit();
+
+    try pair.client.queueControlFrame(.{ .maxData = .{ .maximum = 2 << 20 } });
+    try std.testing.expectEqual(@as(usize, 1), pair.client.queuedControl.items.len);
+    const Empty = struct {
+        pub fn build(gpa: Allocator, payload: *std.ArrayList(u8)) Error!void {
+            _ = gpa;
+            _ = payload;
+        }
+    };
+    try pair.client.sendFrames(.application, Empty.build, 100);
+    try std.testing.expectEqual(@as(usize, 0), pair.client.queuedControl.items.len);
+    try pair.pumpCS(a);
+    try std.testing.expectEqual(@as(u64, 2 << 20), pair.server.maxDataRemote);
+}
+
+test "stop sending triggers immediate reset reply" {
+    const a = std.testing.allocator;
+    var pair = try CtlPair.init(a);
+    defer pair.deinit();
+    var crec = CtlRec{};
+    var srec = CtlRec{};
+    pair.client.cbs = crec.cbs();
+    pair.server.cbs = srec.cbs();
+
+    try pair.client.sendStopSending(4, 0x100, 100);
+    try pair.pumpCS(a);
+    try std.testing.expectEqual(@as(?u64, 4), srec.stop_sid);
+    try std.testing.expectEqual(@as(u64, 0x100), srec.stop_code);
+    // The server answered with RESET_STREAM in the same exchange.
+    try pair.pumpSC(a);
+    try std.testing.expectEqual(@as(?u64, 4), crec.reset_sid);
+    try std.testing.expectEqual(@as(u64, 0x100), crec.reset_code);
+    try std.testing.expect(crec.close_code == null);
+}
+
+test "reset routes to stream callback and stream state, not close" {
+    const a = std.testing.allocator;
+    var pair = try CtlPair.init(a);
+    defer pair.deinit();
+    var srec = CtlRec{};
+    pair.server.cbs = srec.cbs();
+
+    // Open stream 0 first so reset state has a stream to mark.
+    try pair.client.sendStreamChecked(0, 0, "hello", false, 100);
+    try pair.pumpCS(a);
+    try pair.client.sendResetStream(0, 0x10C, 5, 101);
+    try pair.pumpCS(a);
+    try std.testing.expectEqual(@as(?u64, 0), srec.reset_sid);
+    try std.testing.expectEqual(@as(u64, 0x10C), srec.reset_code);
+    try std.testing.expect(srec.close_code == null);
+    const st = pair.server.streams.get(0) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(?u64, 0x10C), st.resetError);
+}
+
+test "send stream checked gates windows and accounts once" {
+    const a = std.testing.allocator;
+    var pair = try CtlPair.init(a);
+    defer pair.deinit();
+    const data = [_]u8{0xAB} ** 100;
+
+    try pair.client.sendStreamChecked(0, 0, &data, false, 100);
+    try std.testing.expectEqual(@as(u64, 100), pair.client.dataSent);
+    try std.testing.expectEqual(@as(u64, 100), pair.client.sendStreamEnd.get(0).?);
+    // Resending the same range does not consume window twice.
+    try pair.client.sendStreamChecked(0, 0, &data, false, 101);
+    try std.testing.expectEqual(@as(u64, 100), pair.client.dataSent);
+
+    pair.client.maxDataRemote = 50;
+    try std.testing.expectError(Error.SendBlocked, pair.client.sendStreamChecked(4, 0, &data, false, 102));
+    pair.client.maxDataRemote = 1 << 20;
+    try pair.client.maxStreamData.put(4, 10);
+    try std.testing.expectError(Error.SendBlocked, pair.client.sendStreamChecked(4, 0, &data, false, 103));
+    try pair.client.maxStreamData.put(4, 1 << 20);
+    try pair.client.sendStreamChecked(4, 0, &data, false, 104);
+    try std.testing.expectEqual(@as(u64, 200), pair.client.dataSent);
+}
+
+test "data blocked raises window immediately on both ends" {
+    const a = std.testing.allocator;
+    var pair = try CtlPair.init(a);
+    defer pair.deinit();
+
+    try pair.client.queueControlFrame(.{ .dataBlocked = .{ .limit = 1 << 20 } });
+    try pair.client.flushControl(.application, 100);
+    try pair.pumpCS(a);
+    try std.testing.expectEqual(@as(u64, 2 << 20), pair.server.maxData);
+    // The server answered with MAX_DATA without waiting for other sends.
+    try pair.pumpSC(a);
+    try std.testing.expectEqual(@as(u64, 2 << 20), pair.client.maxDataRemote);
+}
+
+test "receive flow control violation enforced" {
+    const a = std.testing.allocator;
+    var pair = try CtlPair.init(a);
+    defer pair.deinit();
+    pair.server.maxData = 10;
+
+    const data = [_]u8{0xCD} ** 100;
+    try pair.client.sendStreamChecked(0, 0, &data, false, 100);
+    const out = try pair.client.takeOutput(a);
+    defer a.free(out);
+    try std.testing.expectError(Error.FlowControlViolation, pair.server.receiveDatagram(out, 101));
+}
+
+test "connection close roundtrip carries code and reason" {
+    const a = std.testing.allocator;
+    var pair = try CtlPair.init(a);
+    defer pair.deinit();
+    var srec = CtlRec{};
+    pair.server.cbs = srec.cbs();
+
+    try pair.client.sendConnectionClose(0x100, "going away", true, 100);
+    try pair.pumpCS(a);
+    try std.testing.expectEqual(State.draining, pair.server.state);
+    try std.testing.expectEqual(@as(?u64, 0x100), srec.close_code);
+    try std.testing.expectEqualStrings("going away", srec.close_reason);
+}
+
+test "stream data blocked raises the stream window" {
+    const a = std.testing.allocator;
+    var pair = try CtlPair.init(a);
+    defer pair.deinit();
+
+    const data = [_]u8{0xEF} ** 10;
+    try pair.client.sendStreamChecked(0, 0, &data, false, 100);
+    try pair.pumpCS(a);
+    const st = pair.server.streams.get(0) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u64, 65535), st.recvMaxOffset);
+
+    try pair.client.queueControlFrame(.{ .streamDataBlocked = .{ .streamId = 0, .limit = 65535 } });
+    try pair.client.flushControl(.application, 101);
+    try pair.pumpCS(a);
+    try std.testing.expectEqual(@as(u64, 131070), st.recvMaxOffset);
+    try pair.pumpSC(a);
+    try std.testing.expectEqual(@as(u64, 131070), pair.client.maxStreamData.get(0).?);
+}
+
+test "max streams bumps advertise higher limits" {
+    const a = std.testing.allocator;
+    var pair = try CtlPair.init(a);
+    defer pair.deinit();
+
+    try pair.client.sendMaxStreams(true, 256, 100);
+    try std.testing.expectEqual(@as(u64, 256), pair.client.maxStreamsBidiLocal);
+    try pair.pumpCS(a);
+    try std.testing.expectEqual(@as(u64, 256), pair.server.maxStreamsBidiRemote);
 }
