@@ -942,8 +942,8 @@ pub const Decoder = struct {
     pub fn decodeSectionCounted(
         self: *Decoder,
         data: []const u8,
-        stream_id: u64,
-        ack_out: ?*std.ArrayList(u8),
+        streamId: u64,
+        ackOut: ?*std.ArrayList(u8),
     ) Error![]FieldLine {
         if (data.len > std.math.add(u64, self.maxFieldSectionSize, 16) catch std.math.maxInt(u64)) {
             return Error.InvalidInstruction;
@@ -966,9 +966,9 @@ pub const Decoder = struct {
         const fields = try self.decodeSectionInner(data[offset..], base, ric);
         errdefer self.freeFields(fields);
         if (ric != 0) {
-            if (ack_out) |out| {
+            if (ackOut) |out| {
                 var ib: [16]u8 = undefined;
-                const n = try encodeInt(&ib, 7, stream_id);
+                const n = try encodeInt(&ib, 7, streamId);
                 ib[0] |= 0x80;
                 try out.appendSlice(self.allocator, ib[0..n]);
             }
@@ -1075,9 +1075,9 @@ pub const Decoder = struct {
 
     /// Emits a Stream Cancellation for an abandoned section (decoder
     /// stream), e.g. after RESET_STREAM on a blocked request stream.
-    pub fn cancelSection(self: *Decoder, out: *std.ArrayList(u8), stream_id: u64) !void {
+    pub fn cancelSection(self: *Decoder, out: *std.ArrayList(u8), streamId: u64) !void {
         var ib: [16]u8 = undefined;
-        const m = try encodeInt(&ib, 6, stream_id);
+        const m = try encodeInt(&ib, 6, streamId);
         ib[0] |= 0x40;
         try out.appendSlice(self.allocator, ib[0..m]);
     }

@@ -66,16 +66,16 @@ const RespState = struct {
     fin: bool = false,
     overflow: bool = false,
     status: u16 = 0,
-    head_done: bool = false,
+    headDone: bool = false,
 };
 
 pub const Client = struct {
     allocator: Allocator,
     ep: *quic_ep.Endpoint,
     h3: h3conn.Connection,
-    control_done: bool = false,
+    controlDone: bool = false,
     resp: RespState = .{},
-    max_bytes: usize = 64 * 1024 * 1024,
+    maxBytes: usize = 64 * 1024 * 1024,
 
     pub fn init(allocator: Allocator, ep: *quic_ep.Endpoint) Client {
         return .{ .allocator = allocator, .ep = ep, .h3 = h3conn.Connection.init(allocator, .client) };
@@ -89,7 +89,7 @@ pub const Client = struct {
     fn onStream(ctx: ?*anyopaque, sid: u64, data: []const u8, fin: bool) void {
         const self: *Client = @ptrCast(@alignCast(ctx.?));
         if (sid != self.resp.sid) return;
-        if (self.resp.buf.items.len + data.len > self.max_bytes) {
+        if (self.resp.buf.items.len + data.len > self.maxBytes) {
             self.resp.overflow = true;
             return;
         }
@@ -102,7 +102,7 @@ pub const Client = struct {
 
     /// Sends our control + QPACK unidirectional streams (once per conn).
     fn setupStreams(self: *Client, nowMs: u64) !void {
-        if (self.control_done) return;
+        if (self.controlDone) return;
         const a = self.allocator;
         const ctl = try self.h3.buildControlStream();
         defer a.free(ctl);
@@ -113,7 +113,7 @@ pub const Client = struct {
         const dec = try h3conn.buildQpackDecoderStreamPrefix(a);
         defer a.free(dec);
         try sendStream(self.ep.conn, 10, 0, dec, false, nowMs);
-        self.control_done = true;
+        self.controlDone = true;
     }
 
     /// One GET-style exchange over an already-started pump. Against an

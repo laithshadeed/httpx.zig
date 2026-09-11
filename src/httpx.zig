@@ -140,7 +140,7 @@ pub const http3 = struct {
     pub const RequestStream = connection.RequestStream;
     pub const Settings = connection.Settings;
     pub const stream = @import("protocols/http3/stream.zig");
-    pub const H3Stream = stream.H3Stream;
+    pub const Stream = stream.Stream;
     pub const transport = @import("protocols/http3/transport.zig");
     pub const Client = transport.Client;
 };

@@ -867,7 +867,7 @@ tls_listener.stop()                        // Immediate shutdown
 // Protocol APIs
 httpx.http1            // HTTP/1.x parser, writer, semantics
 httpx.http2            // HTTP/2 frame, hpack, stream, connection, transport
-httpx.http3            // HTTP/3 frame, qpack, connection
+httpx.http3            // HTTP/3 frame, qpack, connection, stream, transport
 httpx.quic             // QUIC varint, packet, crypto, frames, connection
 
 // Network APIs

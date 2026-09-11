@@ -32,9 +32,9 @@ pub const Role = enum { client, server };
 /// Which half of the exchange this stream receives.
 pub const StreamMode = enum {
     /// Server side: the peer sends a request.
-    request_recv,
+    requestRecv,
     /// Client side: the peer sends a response.
-    response_recv,
+    responseRecv,
     /// Unidirectional stream; the type varint is parsed from the stream.
     uni,
 };
@@ -87,13 +87,13 @@ pub fn checkPeerStreamId(our_role: Role, sid: u64) ?H3Error {
     const client_init = (sid & 0x01) == 0;
     if (bidi) {
         // Only clients initiate request streams.
-        if (our_role == .client) return .h3_stream_creation_error;
-        if (!client_init) return .h3_stream_creation_error;
+        if (our_role == .client) return .streamCreationError;
+        if (!client_init) return .streamCreationError;
         return null;
     }
     // Unidirectional: the peer must own the stream.
-    if (our_role == .client and client_init) return .h3_stream_creation_error;
-    if (our_role == .server and !client_init) return .h3_stream_creation_error;
+    if (our_role == .client and client_init) return .streamCreationError;
+    if (our_role == .server and !client_init) return .streamCreationError;
     return null;
 }
 
@@ -116,7 +116,7 @@ pub fn findField(fields: []const FieldLine, name: []const u8) ?[]const u8 {
     return null;
 }
 
-pub const H3Stream = struct {
+pub const Stream = struct {
     allocator: Allocator,
     id: u64,
     mode: StreamMode,
@@ -133,25 +133,25 @@ pub const H3Stream = struct {
     failed: bool = false,
     done: bool = false,
 
-    uni_kind: UniKind = .undecided,
-    http_state: HttpState = .need_headers,
+    uniKind: UniKind = .undecided,
+    httpState: HttpState = .need_headers,
     /// A QPACK section parked on `error.Blocked`; retried when encoder
     /// data arrives or more stream bytes feed in.
     blocked: bool = false,
     /// SETTINGS seen on this control stream (SETTINGS-first rule).
-    control_saw_settings: bool = false,
+    controlSawSettings: bool = false,
     /// Extended-CONNECT allowed by peer settings (connection sets this).
-    connect_allowed: bool = false,
+    connectAllowed: bool = false,
     /// Decoder-stream acknowledgments staged by dynamic decodes; the
     /// connection layer drains these onto the decoder stream.
     decoderAck: std.ArrayList(u8) = .empty,
     /// Bytes of unknown unidirectional type skipped (visibility for
     /// future excessive-load accounting).
-    unknown_skipped: u64 = 0,
+    unknownSkipped: u64 = 0,
 
     // HTTP message validation state.
-    content_length: ?u64 = null,
-    body_received: u64 = 0,
+    contentLength: ?u64 = null,
+    bodyReceived: u64 = 0,
 
     pub fn init(
         allocator: Allocator,
@@ -161,7 +161,7 @@ pub const H3Stream = struct {
         cbs: Callbacks,
         qdec: *qpack_mod.Decoder,
         qenc: *qpack_mod.Encoder,
-    ) H3Stream {
+    ) Stream {
         return .{
             .allocator = allocator,
             .id = id,
@@ -173,35 +173,35 @@ pub const H3Stream = struct {
         };
     }
 
-    pub fn deinit(self: *H3Stream) void {
+    pub fn deinit(self: *Stream) void {
         self.buf.deinit(self.allocator);
         self.decoderAck.deinit(self.allocator);
     }
 
     /// Takes staged decoder-stream acknowledgment bytes; caller sends
     /// them on the decoder stream, then frees the slice.
-    pub fn takeDecoderAck(self: *H3Stream) ![]u8 {
+    pub fn takeDecoderAck(self: *Stream) ![]u8 {
         return try self.decoderAck.toOwnedSlice(self.allocator);
     }
 
     /// Forces the stream into the failed state from the outside (e.g.
     /// duplicate critical stream detected by the connection layer).
-    pub fn failExtern(self: *H3Stream, code: H3Error) void {
+    pub fn failExtern(self: *Stream, code: H3Error) void {
         self.fail(code);
     }
 
     /// Signals a QUIC-level reset received for this stream.
-    pub fn onQuicReset(self: *H3Stream, code: u64) void {
+    pub fn onQuicReset(self: *Stream, code: u64) void {
         if (self.failed or self.done) return;
         self.failed = true;
         if (self.cbs.onReset) |cb| cb(self.cbs.ctx, self.id, code);
     }
 
     /// Feeds received stream bytes (`fin` = QUIC FIN observed).
-    pub fn feed(self: *H3Stream, data: []const u8, fin: bool) void {
+    pub fn feed(self: *Stream, data: []const u8, fin: bool) void {
         if (self.failed or self.done) return;
         self.buf.appendSlice(self.allocator, data) catch {
-            self.fail(.h3_internal_error);
+            self.fail(.internalError);
             return;
         };
         if (fin) self.fin = true;
@@ -210,24 +210,24 @@ pub const H3Stream = struct {
 
     /// Retries a section parked on `error.Blocked` after encoder-stream
     /// bytes arrived. No-op unless blocked.
-    pub fn retryBlocked(self: *H3Stream) void {
+    pub fn retryBlocked(self: *Stream) void {
         if (!self.blocked or self.failed or self.done) return;
         self.blocked = false;
         self.parse();
     }
 
-    fn fail(self: *H3Stream, code: H3Error) void {
+    fn fail(self: *Stream, code: H3Error) void {
         if (self.failed or self.done) return;
         self.failed = true;
         if (self.cbs.onError) |cb| cb(self.cbs.ctx, self.id, code);
     }
 
-    fn finishMessage(self: *H3Stream) void {
+    fn finishMessage(self: *Stream) void {
         self.done = true;
         if (self.cbs.onMessageEnd) |cb| cb(self.cbs.ctx, self.id);
     }
 
-    fn parse(self: *H3Stream) void {
+    fn parse(self: *Stream) void {
         if (self.failed or self.done) return;
         if (self.mode == .uni) {
             self.parseUni();
@@ -236,35 +236,35 @@ pub const H3Stream = struct {
         self.parseBidi();
     }
 
-    fn parseUni(self: *H3Stream) void {
-        if (self.uni_kind == .undecided) {
+    fn parseUni(self: *Stream) void {
+        if (self.uniKind == .undecided) {
             const avail = self.buf.items[self.off..];
             const t = parseUniType(avail) catch |e| switch (e) {
                 error.Truncated => {
-                    if (self.fin) self.fail(.h3_frame_error);
+                    if (self.fin) self.fail(.frameError);
                     return;
                 },
                 else => {
-                    self.fail(.h3_frame_error);
+                    self.fail(.frameError);
                     return;
                 },
             };
             self.off += t.len;
             if (self.cbs.onUniType) |cb| cb(self.cbs.ctx, self.id, t.streamType);
             if (self.failed) return; // connection rejected (duplicates)
-            self.uni_kind = switch (t.streamType) {
+            self.uniKind = switch (t.streamType) {
                 0x00 => .control,
                 0x02 => .qpack_encoder,
                 0x03 => .qpack_decoder,
                 0x01 => {
                     // No-push policy: push streams are rejected.
-                    self.fail(.h3_frame_unexpected);
+                    self.fail(.frameUnexpected);
                     return;
                 },
                 else => .unknown,
             };
         }
-        switch (self.uni_kind) {
+        switch (self.uniKind) {
             .undecided => unreachable,
             .control => self.parseControl(),
             .qpack_encoder => self.parseQpackEncoder(),
@@ -272,34 +272,34 @@ pub const H3Stream = struct {
             .push => unreachable, // failed at type parse
             .unknown => {
                 // Unknown unidirectional types: consume and ignore.
-                self.unknown_skipped +|= self.buf.items.len - self.off;
+                self.unknownSkipped +|= self.buf.items.len - self.off;
                 self.off = self.buf.items.len;
                 if (self.fin) self.done = true;
             },
         }
     }
 
-    fn parseControl(self: *H3Stream) void {
+    fn parseControl(self: *Stream) void {
         while (self.off < self.buf.items.len) {
             const start = self.off;
             const header = frame_mod.parseFrameHeader(self.buf.items, &self.off) catch |e| switch (e) {
                 error.Truncated => {
                     self.off = start;
-                    if (self.fin) self.fail(.h3_frame_error);
+                    if (self.fin) self.fail(.frameError);
                     return;
                 },
                 else => {
-                    self.fail(.h3_frame_error);
+                    self.fail(.frameError);
                     return;
                 },
             };
             const n = std.math.cast(usize, header.length) orelse {
-                self.fail(.h3_frame_error);
+                self.fail(.frameError);
                 return;
             };
             if (self.buf.items.len - self.off < n) {
                 self.off = start;
-                if (self.fin) self.fail(.h3_frame_error);
+                if (self.fin) self.fail(.frameError);
                 return;
             }
             const payload = self.buf.items[self.off..][0..n];
@@ -308,15 +308,15 @@ pub const H3Stream = struct {
                 self.fail(code);
                 return;
             }
-            if (header.frameType == 0x4 and self.control_saw_settings) {
+            if (header.frameType == 0x4 and self.controlSawSettings) {
                 // Second SETTINGS: connection state rejects it; flag here
                 // so the error surfaces even without the connection layer.
-                self.fail(.h3_settings_error);
+                self.fail(.settingsError);
                 return;
             }
-            if (header.frameType == 0x4) self.control_saw_settings = true;
-            if (!self.control_saw_settings) {
-                self.fail(.h3_missing_settings);
+            if (header.frameType == 0x4) self.controlSawSettings = true;
+            if (!self.controlSawSettings) {
+                self.fail(.missingSettings);
                 return;
             }
             if (self.cbs.onControlFrame) |cb| cb(self.cbs.ctx, self.id, header.frameType, payload);
@@ -324,18 +324,18 @@ pub const H3Stream = struct {
         }
         if (self.fin) {
             // A control stream never ends cleanly; FIN is abrupt.
-            self.fail(.h3_closed_critical_stream);
+            self.fail(.closedCriticalStream);
         }
     }
 
-    fn parseQpackEncoder(self: *H3Stream) void {
+    fn parseQpackEncoder(self: *Stream) void {
         const avail = self.buf.items[self.off..];
         if (avail.len == 0) {
             if (self.fin) self.done = true;
             return;
         }
         self.qdec.readEncoderStream(avail, self.fin) catch {
-            self.fail(.qpack_encoder_stream_error);
+            self.fail(.qpackEncoderStreamError);
             return;
         };
         // readEncoderStream buffers internally; everything fed is consumed.
@@ -343,41 +343,41 @@ pub const H3Stream = struct {
         if (self.fin) self.done = true;
     }
 
-    fn parseQpackDecoder(self: *H3Stream) void {
+    fn parseQpackDecoder(self: *Stream) void {
         const avail = self.buf.items[self.off..];
         if (avail.len == 0) {
             if (self.fin) self.done = true;
             return;
         }
         self.qenc.readDecoderStream(avail, self.fin) catch {
-            self.fail(.qpack_decoder_stream_error);
+            self.fail(.qpackDecoderStreamError);
             return;
         };
         self.off = self.buf.items.len;
         if (self.fin) self.done = true;
     }
 
-    fn parseBidi(self: *H3Stream) void {
+    fn parseBidi(self: *Stream) void {
         while (self.off < self.buf.items.len) {
             const start = self.off;
             const header = frame_mod.parseFrameHeader(self.buf.items, &self.off) catch |e| switch (e) {
                 error.Truncated => {
                     self.off = start;
-                    if (self.fin) self.fail(.h3_frame_error);
+                    if (self.fin) self.fail(.frameError);
                     return;
                 },
                 else => {
-                    self.fail(.h3_frame_error);
+                    self.fail(.frameError);
                     return;
                 },
             };
             const n = std.math.cast(usize, header.length) orelse {
-                self.fail(.h3_frame_error);
+                self.fail(.frameError);
                 return;
             };
             if (self.buf.items.len - self.off < n) {
                 self.off = start;
-                if (self.fin) self.fail(.h3_frame_error);
+                if (self.fin) self.fail(.frameError);
                 return;
             }
             const payload = self.buf.items[self.off..][0..n];
@@ -398,7 +398,7 @@ pub const H3Stream = struct {
         if (self.fin) self.endOfStream();
     }
 
-    fn dispatchBidiFrame(self: *H3Stream, frameType: u64, payload: []const u8) void {
+    fn dispatchBidiFrame(self: *Stream, frameType: u64, payload: []const u8) void {
         switch (frameType) {
             0x1 => self.onHeadersFrame(payload),
             0x0 => self.onDataFrame(payload),
@@ -406,7 +406,7 @@ pub const H3Stream = struct {
         }
     }
 
-    fn onHeadersFrame(self: *H3Stream, payload: []const u8) void {
+    fn onHeadersFrame(self: *Stream, payload: []const u8) void {
         const fields = self.qdec.decodeSectionCounted(payload, self.id, &self.decoderAck) catch |e| switch (e) {
             error.Blocked => {
                 // Park: the section bytes stay at the cursor; the
@@ -416,20 +416,20 @@ pub const H3Stream = struct {
             },
             else => {
                 // 0x200: QPACK decompression failure on a request stream.
-                self.fail(.qpack_general_error);
+                self.fail(.qpackGeneralError);
                 return;
             },
         };
         defer self.qdec.freeFields(fields);
         self.blocked = false;
 
-        if (self.http_state == .need_headers) {
-            if (self.mode == .request_recv) {
+        if (self.httpState == .need_headers) {
+            if (self.mode == .requestRecv) {
                 if (self.validateRequest(fields)) |code| {
                     self.fail(code);
                     return;
                 }
-                self.http_state = .headers;
+                self.httpState = .headers;
                 if (self.cbs.onHeaders) |cb| cb(self.cbs.ctx, self.id, fields, false);
             } else {
                 // 1xx sections keep the stream in need_headers (a DATA
@@ -440,54 +440,54 @@ pub const H3Stream = struct {
                     self.fail(code);
                     return;
                 }
-                if (!interim) self.http_state = .headers;
+                if (!interim) self.httpState = .headers;
                 if (self.cbs.onHeaders) |cb| cb(self.cbs.ctx, self.id, fields, interim);
             }
             return;
         }
-        if (self.http_state == .headers or self.http_state == .data) {
+        if (self.httpState == .headers or self.httpState == .data) {
             // Second HEADERS section: trailers (legal with or without a
             // DATA frame in between).
             if (self.validateTrailers(fields)) |code| {
                 self.fail(code);
                 return;
             }
-            self.http_state = .trailers;
+            self.httpState = .trailers;
             if (self.cbs.onTrailers) |cb| cb(self.cbs.ctx, self.id, fields);
             return;
         }
         // HEADERS in data/trailers/done state.
-        self.fail(.h3_message_error);
+        self.fail(.messageError);
     }
 
-    fn onDataFrame(self: *H3Stream, payload: []const u8) void {
-        if (self.http_state != .headers and self.http_state != .data) {
-            self.fail(.h3_message_error);
+    fn onDataFrame(self: *Stream, payload: []const u8) void {
+        if (self.httpState != .headers and self.httpState != .data) {
+            self.fail(.messageError);
             return;
         }
-        self.http_state = .data;
-        if (self.content_length) |expected| {
-            self.body_received +|= payload.len;
-            if (self.body_received > expected) {
-                self.fail(.h3_message_error);
+        self.httpState = .data;
+        if (self.contentLength) |expected| {
+            self.bodyReceived +|= payload.len;
+            if (self.bodyReceived > expected) {
+                self.fail(.messageError);
                 return;
             }
         } else {
-            self.body_received +|= payload.len;
+            self.bodyReceived +|= payload.len;
         }
         if (self.cbs.onData) |cb| cb(self.cbs.ctx, self.id, payload);
     }
 
-    fn endOfStream(self: *H3Stream) void {
+    fn endOfStream(self: *Stream) void {
         // Stream FIN with a partial frame already failed above; an empty
         // stream (or FIN before any HEADERS) is malformed messaging.
-        if (self.http_state == .need_headers) {
-            self.fail(.h3_message_error);
+        if (self.httpState == .need_headers) {
+            self.fail(.messageError);
             return;
         }
-        if (self.content_length) |expected| {
-            if (self.body_received != expected) {
-                self.fail(.h3_message_error);
+        if (self.contentLength) |expected| {
+            if (self.bodyReceived != expected) {
+                self.fail(.messageError);
                 return;
             }
         }
@@ -505,7 +505,7 @@ pub const H3Stream = struct {
     }
 
     /// Validates request HEADERS; null when valid, else the H3 error.
-    fn validateRequest(self: *H3Stream, fields: []const FieldLine) ?H3Error {
+    fn validateRequest(self: *Stream, fields: []const FieldLine) ?H3Error {
         var seen_regular = false;
         var method: ?[]const u8 = null;
         var scheme: ?[]const u8 = null;
@@ -514,141 +514,141 @@ pub const H3Stream = struct {
         var protocol: ?[]const u8 = null;
         var host: ?[]const u8 = null;
         for (fields) |f| {
-            if (f.name.len == 0) return .h3_message_error;
+            if (f.name.len == 0) return .messageError;
             for (f.name) |c| {
-                if (c >= 'A' and c <= 'Z') return .h3_message_error;
+                if (c >= 'A' and c <= 'Z') return .messageError;
             }
             if (f.name[0] == ':') {
-                if (seen_regular) return .h3_message_error;
+                if (seen_regular) return .messageError;
                 if (std.mem.eql(u8, f.name, ":method")) {
-                    if (method != null or f.value.len == 0) return .h3_message_error;
+                    if (method != null or f.value.len == 0) return .messageError;
                     for (f.value) |c| {
-                        if (c <= ' ' or c == 0x7F) return .h3_message_error;
+                        if (c <= ' ' or c == 0x7F) return .messageError;
                     }
                     method = f.value;
                 } else if (std.mem.eql(u8, f.name, ":scheme")) {
-                    if (scheme != null) return .h3_message_error;
+                    if (scheme != null) return .messageError;
                     scheme = f.value;
                 } else if (std.mem.eql(u8, f.name, ":authority")) {
-                    if (authority != null or f.value.len == 0) return .h3_message_error;
+                    if (authority != null or f.value.len == 0) return .messageError;
                     authority = f.value;
                 } else if (std.mem.eql(u8, f.name, ":path")) {
-                    if (path != null or f.value.len == 0) return .h3_message_error;
+                    if (path != null or f.value.len == 0) return .messageError;
                     path = f.value;
                 } else if (std.mem.eql(u8, f.name, ":protocol")) {
-                    if (protocol != null) return .h3_message_error;
+                    if (protocol != null) return .messageError;
                     protocol = f.value;
                 } else {
-                    return .h3_message_error; // unknown pseudo-header
+                    return .messageError; // unknown pseudo-header
                 }
             } else {
                 seen_regular = true;
                 if (std.mem.eql(u8, f.name, "host")) {
-                    if (host != null) return .h3_message_error;
+                    if (host != null) return .messageError;
                     host = f.value;
                 }
                 if (self.checkRegularHeader(f.name, f.value)) |code| return code;
             }
         }
-        const m = method orelse return .h3_message_error;
+        const m = method orelse return .messageError;
         const is_connect = std.mem.eql(u8, m, "CONNECT");
         if (is_connect) {
             // CONNECT omits :scheme/:path and requires :authority.
-            if (scheme != null or path != null) return .h3_message_error;
-            if (authority == null) return .h3_message_error;
-            if (protocol != null and !self.connect_allowed) return .h3_message_error;
+            if (scheme != null or path != null) return .messageError;
+            if (authority == null) return .messageError;
+            if (protocol != null and !self.connectAllowed) return .messageError;
         } else {
-            if (scheme == null or path == null) return .h3_message_error;
-            if (authority == null and host == null) return .h3_message_error;
-            if (protocol != null) return .h3_message_error;
+            if (scheme == null or path == null) return .messageError;
+            if (authority == null and host == null) return .messageError;
+            if (protocol != null) return .messageError;
             const p = path.?;
-            if (p.len == 0) return .h3_message_error;
-            if (p[0] != '/' and !(p.len == 1 and p[0] == '*')) return .h3_message_error;
-            if (p[0] == '*' and !std.mem.eql(u8, m, "OPTIONS")) return .h3_message_error;
+            if (p.len == 0) return .messageError;
+            if (p[0] != '/' and !(p.len == 1 and p[0] == '*')) return .messageError;
+            if (p[0] == '*' and !std.mem.eql(u8, m, "OPTIONS")) return .messageError;
         }
         if (self.captureContentLength(fields)) |code| return code;
         return null;
     }
 
-    fn validateResponse(self: *H3Stream, fields: []const FieldLine, interim: bool) ?H3Error {
+    fn validateResponse(self: *Stream, fields: []const FieldLine, interim: bool) ?H3Error {
         var seen_regular = false;
         var status: ?[]const u8 = null;
         for (fields) |f| {
-            if (f.name.len == 0) return .h3_message_error;
+            if (f.name.len == 0) return .messageError;
             for (f.name) |c| {
-                if (c >= 'A' and c <= 'Z') return .h3_message_error;
+                if (c >= 'A' and c <= 'Z') return .messageError;
             }
             if (f.name[0] == ':') {
-                if (seen_regular) return .h3_message_error;
+                if (seen_regular) return .messageError;
                 if (std.mem.eql(u8, f.name, ":status")) {
-                    if (status != null) return .h3_message_error;
-                    if (f.value.len != 3) return .h3_message_error;
+                    if (status != null) return .messageError;
+                    if (f.value.len != 3) return .messageError;
                     for (f.value) |c| {
-                        if (c < '0' or c > '9') return .h3_message_error;
+                        if (c < '0' or c > '9') return .messageError;
                     }
                     const code = (f.value[0] - '0') * 100 + (f.value[1] - '0') * 10 + (f.value[2] - '0');
-                    if (code < 100 or code > 999) return .h3_message_error;
+                    if (code < 100 or code > 999) return .messageError;
                     const is_1xx = f.value[0] == '1';
-                    if (interim != is_1xx) return .h3_message_error;
+                    if (interim != is_1xx) return .messageError;
                     status = f.value;
                 } else {
-                    return .h3_message_error; // unknown pseudo-header
+                    return .messageError; // unknown pseudo-header
                 }
             } else {
                 seen_regular = true;
                 if (self.checkRegularHeader(f.name, f.value)) |code| return code;
             }
         }
-        if (status == null) return .h3_message_error;
+        if (status == null) return .messageError;
         if (!interim) {
             if (self.captureContentLength(fields)) |code| return code;
         }
         return null;
     }
 
-    fn validateTrailers(self: *H3Stream, fields: []const FieldLine) ?H3Error {
+    fn validateTrailers(self: *Stream, fields: []const FieldLine) ?H3Error {
         for (fields) |f| {
-            if (f.name.len == 0) return .h3_message_error;
-            if (f.name[0] == ':') return .h3_message_error; // no pseudos in trailers
+            if (f.name.len == 0) return .messageError;
+            if (f.name[0] == ':') return .messageError; // no pseudos in trailers
             for (f.name) |c| {
-                if (c >= 'A' and c <= 'Z') return .h3_message_error;
+                if (c >= 'A' and c <= 'Z') return .messageError;
             }
             if (self.checkRegularHeader(f.name, f.value)) |code| return code;
         }
         return null;
     }
 
-    fn checkRegularHeader(_: *H3Stream, name: []const u8, value: []const u8) ?H3Error {
+    fn checkRegularHeader(_: *Stream, name: []const u8, value: []const u8) ?H3Error {
         if (std.mem.eql(u8, name, "connection") or
             std.mem.eql(u8, name, "keep-alive") or
             std.mem.eql(u8, name, "proxy-connection") or
             std.mem.eql(u8, name, "transfer-encoding") or
             std.mem.eql(u8, name, "upgrade"))
         {
-            return .h3_message_error;
+            return .messageError;
         }
         if (std.mem.eql(u8, name, "te") and !std.mem.eql(u8, value, "trailers")) {
-            return .h3_message_error;
+            return .messageError;
         }
         return null;
     }
 
-    fn captureContentLength(self: *H3Stream, fields: []const FieldLine) ?H3Error {
+    fn captureContentLength(self: *Stream, fields: []const FieldLine) ?H3Error {
         var seen: ?[]const u8 = null;
         for (fields) |f| {
             if (!std.mem.eql(u8, f.name, "content-length")) continue;
-            if (f.value.len == 0) return .h3_message_error;
+            if (f.value.len == 0) return .messageError;
             for (f.value) |c| {
-                if (c < '0' or c > '9') return .h3_message_error;
+                if (c < '0' or c > '9') return .messageError;
             }
             if (seen) |prev| {
-                if (!std.mem.eql(u8, prev, f.value)) return .h3_message_error;
+                if (!std.mem.eql(u8, prev, f.value)) return .messageError;
                 continue;
             }
             seen = f.value;
         }
         if (seen) |v| {
-            self.content_length = std.fmt.parseInt(u64, v, 10) catch return .h3_message_error;
+            self.contentLength = std.fmt.parseInt(u64, v, 10) catch return .messageError;
         }
         return null;
     }
@@ -659,15 +659,15 @@ pub const H3Stream = struct {
 const TestRec = struct {
     headers: usize = 0,
     interim: usize = 0,
-    data_bytes: usize = 0,
+    dataBytes: usize = 0,
     trailers: usize = 0,
     ends: usize = 0,
-    control_frames: usize = 0,
-    last_control_type: u64 = 0,
-    uni_types: usize = 0,
-    last_uni_type: u64 = 0,
-    last_err: ?H3Error = null,
-    saw_get: bool = false,
+    controlFrames: usize = 0,
+    lastControlType: u64 = 0,
+    uniTypes: usize = 0,
+    lastUniType: u64 = 0,
+    lastErr: ?H3Error = null,
+    sawGet: bool = false,
 
     fn cbs(self: *TestRec) Callbacks {
         return .{
@@ -687,13 +687,13 @@ const TestRec = struct {
         r.headers += 1;
         if (interim) r.interim += 1;
         if (findField(fields, ":method")) |m| {
-            if (std.mem.eql(u8, m, "GET")) r.saw_get = true;
+            if (std.mem.eql(u8, m, "GET")) r.sawGet = true;
         }
     }
     fn onD(ctx: ?*anyopaque, sid: u64, data: []const u8) void {
         _ = sid;
         const r: *TestRec = @ptrCast(@alignCast(ctx.?));
-        r.data_bytes += data.len;
+        r.dataBytes += data.len;
     }
     fn onT(ctx: ?*anyopaque, sid: u64, fields: []const FieldLine) void {
         _ = sid;
@@ -710,19 +710,19 @@ const TestRec = struct {
         _ = sid;
         _ = payload;
         const r: *TestRec = @ptrCast(@alignCast(ctx.?));
-        r.control_frames += 1;
-        r.last_control_type = frameType;
+        r.controlFrames += 1;
+        r.lastControlType = frameType;
     }
     fn onU(ctx: ?*anyopaque, sid: u64, streamType: u64) void {
         _ = sid;
         const r: *TestRec = @ptrCast(@alignCast(ctx.?));
-        r.uni_types += 1;
-        r.last_uni_type = streamType;
+        r.uniTypes += 1;
+        r.lastUniType = streamType;
     }
     fn onErr(ctx: ?*anyopaque, sid: u64, code: H3Error) void {
         _ = sid;
         const r: *TestRec = @ptrCast(@alignCast(ctx.?));
-        r.last_err = code;
+        r.lastErr = code;
     }
 };
 
@@ -753,8 +753,8 @@ fn testSection(
     return out.toOwnedSlice(a);
 }
 
-fn testBidi(a: Allocator, rec: *TestRec, sid: u64, mode: StreamMode, qdec: *qpack_mod.Decoder, qenc: *qpack_mod.Encoder) H3Stream {
-    return H3Stream.init(a, sid, mode, if (mode == .request_recv) .server else .client, rec.cbs(), qdec, qenc);
+fn testBidi(a: Allocator, rec: *TestRec, sid: u64, mode: StreamMode, qdec: *qpack_mod.Decoder, qenc: *qpack_mod.Encoder) Stream {
+    return Stream.init(a, sid, mode, if (mode == .requestRecv) .server else .client, rec.cbs(), qdec, qenc);
 }
 
 test "h3stream control accepts settings then rejects data" {
@@ -764,7 +764,7 @@ test "h3stream control accepts settings then rejects data" {
     defer qdec.deinit();
     var qenc = qpack_mod.Encoder.init(a);
     defer qenc.deinit();
-    var s = H3Stream.init(a, 2, .uni, .server, rec.cbs(), &qdec, &qenc);
+    var s = Stream.init(a, 2, .uni, .server, rec.cbs(), &qdec, &qenc);
     defer s.deinit();
 
     var settings_payload = std.ArrayList(u8).empty;
@@ -777,15 +777,15 @@ test "h3stream control accepts settings then rejects data" {
     defer a.free(sf);
     try settings_payload.appendSlice(a, sf);
     s.feed(settings_payload.items, false);
-    try std.testing.expectEqual(@as(usize, 1), rec.uni_types);
-    try std.testing.expectEqual(@as(usize, 1), rec.control_frames);
-    try std.testing.expectEqual(@as(u64, 0x4), rec.last_control_type);
-    try std.testing.expect(rec.last_err == null);
+    try std.testing.expectEqual(@as(usize, 1), rec.uniTypes);
+    try std.testing.expectEqual(@as(usize, 1), rec.controlFrames);
+    try std.testing.expectEqual(@as(u64, 0x4), rec.lastControlType);
+    try std.testing.expect(rec.lastErr == null);
 
     const df = try testFrame(a, 0x0, "x");
     defer a.free(df);
     s.feed(df, false);
-    try std.testing.expectEqual(H3Error.h3_frame_unexpected, rec.last_err.?);
+    try std.testing.expectEqual(H3Error.frameUnexpected, rec.lastErr.?);
 }
 
 test "h3stream fragmented uni type then unknown skip" {
@@ -795,24 +795,24 @@ test "h3stream fragmented uni type then unknown skip" {
     defer qdec.deinit();
     var qenc = qpack_mod.Encoder.init(a);
     defer qenc.deinit();
-    var s = H3Stream.init(a, 3, .uni, .client, rec.cbs(), &qdec, &qenc);
+    var s = Stream.init(a, 3, .uni, .client, rec.cbs(), &qdec, &qenc);
     defer s.deinit();
 
     s.feed(&.{0x40}, false); // 2-byte varint, incomplete
-    try std.testing.expectEqual(@as(usize, 0), rec.uni_types);
-    try std.testing.expect(rec.last_err == null);
+    try std.testing.expectEqual(@as(usize, 0), rec.uniTypes);
+    try std.testing.expect(rec.lastErr == null);
     s.feed(&.{ 0x40, 0x05, 'h', 'e', 'l', 'l', 'o' }, true); // type 64
-    try std.testing.expectEqual(@as(usize, 1), rec.uni_types);
-    try std.testing.expectEqual(@as(u64, 64), rec.last_uni_type);
-    try std.testing.expect(rec.last_err == null);
+    try std.testing.expectEqual(@as(usize, 1), rec.uniTypes);
+    try std.testing.expectEqual(@as(u64, 64), rec.lastUniType);
+    try std.testing.expect(rec.lastErr == null);
     try std.testing.expect(s.done);
 
     // Truncated type at FIN is a frame error.
     var rec2 = TestRec{};
-    var s2 = H3Stream.init(a, 7, .uni, .client, rec2.cbs(), &qdec, &qenc);
+    var s2 = Stream.init(a, 7, .uni, .client, rec2.cbs(), &qdec, &qenc);
     defer s2.deinit();
     s2.feed(&.{0x40}, true);
-    try std.testing.expectEqual(H3Error.h3_frame_error, rec2.last_err.?);
+    try std.testing.expectEqual(H3Error.frameError, rec2.lastErr.?);
 }
 
 test "h3stream push streams are rejected" {
@@ -822,10 +822,10 @@ test "h3stream push streams are rejected" {
     defer qdec.deinit();
     var qenc = qpack_mod.Encoder.init(a);
     defer qenc.deinit();
-    var s = H3Stream.init(a, 2, .uni, .server, rec.cbs(), &qdec, &qenc);
+    var s = Stream.init(a, 2, .uni, .server, rec.cbs(), &qdec, &qenc);
     defer s.deinit();
     s.feed(&.{0x01}, false);
-    try std.testing.expectEqual(H3Error.h3_frame_unexpected, rec.last_err.?);
+    try std.testing.expectEqual(H3Error.frameUnexpected, rec.lastErr.?);
 }
 
 test "h3stream request headers data fin" {
@@ -837,7 +837,7 @@ test "h3stream request headers data fin" {
     defer qenc.deinit();
     var qenc_peer = qpack_mod.Encoder.init(a);
     defer qenc_peer.deinit();
-    var s = testBidi(a, &rec, 0, .request_recv, &qdec, &qenc);
+    var s = testBidi(a, &rec, 0, .requestRecv, &qdec, &qenc);
     defer s.deinit();
 
     const section = try testSection(a, &qenc_peer, &.{
@@ -856,10 +856,10 @@ test "h3stream request headers data fin" {
     try wire.appendSlice(a, hf);
     try wire.appendSlice(a, df);
     s.feed(wire.items, true);
-    try std.testing.expect(rec.last_err == null);
+    try std.testing.expect(rec.lastErr == null);
     try std.testing.expectEqual(@as(usize, 1), rec.headers);
-    try std.testing.expect(rec.saw_get);
-    try std.testing.expectEqual(@as(usize, 2), rec.data_bytes);
+    try std.testing.expect(rec.sawGet);
+    try std.testing.expectEqual(@as(usize, 2), rec.dataBytes);
     try std.testing.expectEqual(@as(usize, 1), rec.ends);
 }
 
@@ -872,7 +872,7 @@ test "h3stream trailers delivered after data" {
     defer qenc.deinit();
     var qp = qpack_mod.Encoder.init(a);
     defer qp.deinit();
-    var s = testBidi(a, &rec, 0, .request_recv, &qdec, &qenc);
+    var s = testBidi(a, &rec, 0, .requestRecv, &qdec, &qenc);
     defer s.deinit();
 
     const h1 = try testSection(a, &qp, &.{ .{ ":method", "POST" }, .{ ":scheme", "https" }, .{ ":authority", "x" }, .{ ":path", "/" } });
@@ -891,9 +891,9 @@ test "h3stream trailers delivered after data" {
     try wire.appendSlice(a, fd);
     try wire.appendSlice(a, f2);
     s.feed(wire.items, true);
-    try std.testing.expect(rec.last_err == null);
+    try std.testing.expect(rec.lastErr == null);
     try std.testing.expectEqual(@as(usize, 1), rec.headers);
-    try std.testing.expectEqual(@as(usize, 4), rec.data_bytes);
+    try std.testing.expectEqual(@as(usize, 4), rec.dataBytes);
     try std.testing.expectEqual(@as(usize, 1), rec.trailers);
     try std.testing.expectEqual(@as(usize, 1), rec.ends);
 }
@@ -907,7 +907,7 @@ test "h3stream interim 1xx then final" {
     defer qenc.deinit();
     var qp = qpack_mod.Encoder.init(a);
     defer qp.deinit();
-    var s = testBidi(a, &rec, 0, .response_recv, &qdec, &qenc);
+    var s = testBidi(a, &rec, 0, .responseRecv, &qdec, &qenc);
     defer s.deinit();
 
     const h1 = try testSection(a, &qp, &.{.{ ":status", "103" }});
@@ -926,10 +926,10 @@ test "h3stream interim 1xx then final" {
     try wire.appendSlice(a, f2);
     try wire.appendSlice(a, fd);
     s.feed(wire.items, true);
-    try std.testing.expect(rec.last_err == null);
+    try std.testing.expect(rec.lastErr == null);
     try std.testing.expectEqual(@as(usize, 2), rec.headers);
     try std.testing.expectEqual(@as(usize, 1), rec.interim);
-    try std.testing.expectEqual(@as(usize, 2), rec.data_bytes);
+    try std.testing.expectEqual(@as(usize, 2), rec.dataBytes);
     try std.testing.expectEqual(@as(usize, 1), rec.ends);
 }
 
@@ -940,12 +940,12 @@ test "h3stream data before headers is malformed" {
     defer qdec.deinit();
     var qenc = qpack_mod.Encoder.init(a);
     defer qenc.deinit();
-    var s = testBidi(a, &rec, 0, .request_recv, &qdec, &qenc);
+    var s = testBidi(a, &rec, 0, .requestRecv, &qdec, &qenc);
     defer s.deinit();
     const df = try testFrame(a, 0x0, "early");
     defer a.free(df);
     s.feed(df, false);
-    try std.testing.expectEqual(H3Error.h3_message_error, rec.last_err.?);
+    try std.testing.expectEqual(H3Error.messageError, rec.lastErr.?);
 }
 
 test "h3stream header validation matrix" {
@@ -983,7 +983,7 @@ test "h3stream header validation matrix" {
         defer qenc.deinit();
         var qp = qpack_mod.Encoder.init(a);
         defer qp.deinit();
-        var s = testBidi(a, &rec, 0, .request_recv, &qdec, &qenc);
+        var s = testBidi(a, &rec, 0, .requestRecv, &qdec, &qenc);
         defer s.deinit();
         const section = try testSection(a, &qp, c.heads);
         defer a.free(section);
@@ -991,10 +991,10 @@ test "h3stream header validation matrix" {
         defer a.free(hf);
         s.feed(hf, true);
         if (c.ok) {
-            try std.testing.expect(rec.last_err == null);
+            try std.testing.expect(rec.lastErr == null);
             try std.testing.expectEqual(@as(usize, 1), rec.ends);
         } else {
-            try std.testing.expectEqual(H3Error.h3_message_error, rec.last_err.?);
+            try std.testing.expectEqual(H3Error.messageError, rec.lastErr.?);
         }
     }
 }
@@ -1008,7 +1008,7 @@ test "h3stream content length mismatch fails at fin" {
     defer qenc.deinit();
     var qp = qpack_mod.Encoder.init(a);
     defer qp.deinit();
-    var s = testBidi(a, &rec, 0, .request_recv, &qdec, &qenc);
+    var s = testBidi(a, &rec, 0, .requestRecv, &qdec, &qenc);
     defer s.deinit();
     const section = try testSection(a, &qp, &.{ .{ ":method", "POST" }, .{ ":scheme", "https" }, .{ ":authority", "x" }, .{ ":path", "/" }, .{ "content-length", "10" } });
     defer a.free(section);
@@ -1021,7 +1021,7 @@ test "h3stream content length mismatch fails at fin" {
     try wire.appendSlice(a, hf);
     try wire.appendSlice(a, df);
     s.feed(wire.items, true); // declares 10, delivers 2
-    try std.testing.expectEqual(H3Error.h3_message_error, rec.last_err.?);
+    try std.testing.expectEqual(H3Error.messageError, rec.lastErr.?);
 }
 
 test "h3stream qpack blocked parks then resumes" {
@@ -1032,7 +1032,7 @@ test "h3stream qpack blocked parks then resumes" {
     qdec.setMaxTableCapacity(4096);
     var qenc = qpack_mod.Encoder.init(a);
     defer qenc.deinit();
-    var s = testBidi(a, &rec, 0, .request_recv, &qdec, &qenc);
+    var s = testBidi(a, &rec, 0, .requestRecv, &qdec, &qenc);
     defer s.deinit();
 
     // Peer encoder side (shares nothing with our decoder yet): a full
@@ -1061,21 +1061,21 @@ test "h3stream qpack blocked parks then resumes" {
     s.feed(hf, false);
     try std.testing.expect(s.blocked);
     try std.testing.expectEqual(@as(usize, 0), rec.headers);
-    try std.testing.expect(rec.last_err == null);
+    try std.testing.expect(rec.lastErr == null);
 
     // Encoder bytes arrive on the encoder stream; the bidi retries.
-    var es = H3Stream.init(a, 6, .uni, .server, rec.cbs(), &qdec, &qenc);
+    var es = Stream.init(a, 6, .uni, .server, rec.cbs(), &qdec, &qenc);
     defer es.deinit();
     var ewire = std.ArrayList(u8).empty;
     defer ewire.deinit(a);
     try ewire.append(a, 0x02);
     try ewire.appendSlice(a, enc_bytes);
     es.feed(ewire.items, false);
-    try std.testing.expect(rec.last_err == null);
+    try std.testing.expect(rec.lastErr == null);
     s.retryBlocked();
     try std.testing.expect(!s.blocked);
     try std.testing.expectEqual(@as(usize, 1), rec.headers);
-    try std.testing.expect(rec.saw_get);
+    try std.testing.expect(rec.sawGet);
     const ack = try s.takeDecoderAck();
     defer a.free(ack);
     try std.testing.expect(ack.len > 0);
@@ -1088,17 +1088,17 @@ test "h3stream fin mid-frame and empty fin" {
     defer qdec.deinit();
     var qenc = qpack_mod.Encoder.init(a);
     defer qenc.deinit();
-    var s = testBidi(a, &rec, 0, .request_recv, &qdec, &qenc);
+    var s = testBidi(a, &rec, 0, .requestRecv, &qdec, &qenc);
     defer s.deinit();
     // HEADERS header declares 10 payload bytes, stream ends after 2.
     s.feed(&.{ 0x01, 0x0A, 0x00, 0x00 }, true);
-    try std.testing.expectEqual(H3Error.h3_frame_error, rec.last_err.?);
+    try std.testing.expectEqual(H3Error.frameError, rec.lastErr.?);
 
     var rec2 = TestRec{};
-    var s2 = testBidi(a, &rec2, 4, .request_recv, &qdec, &qenc);
+    var s2 = testBidi(a, &rec2, 4, .requestRecv, &qdec, &qenc);
     defer s2.deinit();
     s2.feed(&.{}, true);
-    try std.testing.expectEqual(H3Error.h3_message_error, rec2.last_err.?);
+    try std.testing.expectEqual(H3Error.messageError, rec2.lastErr.?);
 }
 
 test "h3stream check peer stream ids" {

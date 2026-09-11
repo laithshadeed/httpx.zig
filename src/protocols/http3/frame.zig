@@ -11,28 +11,29 @@ const std = @import("std");
 const varint = @import("../quic/varint.zig");
 const Allocator = std.mem.Allocator;
 
-/// HTTP/3 error codes (RFC 9114 section 8.1).
+/// HTTP/3 error codes (RFC 9114 section 8.1; 0x200 range is RFC 9204).
+/// These values are the QUIC application wire codes verbatim.
 pub const H3Error = enum(u64) {
-    h3_no_error = 0x0100,
-    h3_general_protocol_error = 0x0101,
-    h3_internal_error = 0x0102,
-    h3_stream_creation_error = 0x0103,
-    h3_closed_critical_stream = 0x0104,
-    h3_frame_unexpected = 0x0105,
-    h3_frame_error = 0x0106,
-    h3_excessive_load = 0x0107,
-    h3_id_error = 0x0108,
-    h3_settings_error = 0x0109,
-    h3_missing_settings = 0x010a,
-    h3_request_rejected = 0x010b,
-    h3_request_cancelled = 0x010c,
-    h3_request_incomplete = 0x010d,
-    h3_message_error = 0x010e,
-    h3_connect_error = 0x010f,
-    h3_version_fallback = 0x0110,
-    qpack_general_error = 0x0200,
-    qpack_encoder_stream_error = 0x0201,
-    qpack_decoder_stream_error = 0x0202,
+    noError = 0x0100,
+    generalProtocolError = 0x0101,
+    internalError = 0x0102,
+    streamCreationError = 0x0103,
+    closedCriticalStream = 0x0104,
+    frameUnexpected = 0x0105,
+    frameError = 0x0106,
+    excessiveLoad = 0x0107,
+    idError = 0x0108,
+    settingsError = 0x0109,
+    missingSettings = 0x010A,
+    requestRejected = 0x010B,
+    requestCancelled = 0x010C,
+    requestIncomplete = 0x010D,
+    messageError = 0x010E,
+    connectError = 0x010F,
+    versionFallback = 0x0110,
+    qpackGeneralError = 0x0200,
+    qpackEncoderStreamError = 0x0201,
+    qpackDecoderStreamError = 0x0202,
 };
 
 /// Stream type identifiers for unidirectional streams.
@@ -46,7 +47,7 @@ pub const UniStreamType = struct {
 pub const FrameType = enum(u64) {
     data = 0x0,
     headers = 0x1,
-    cancel_push = 0x3,
+    cancelPush = 0x3,
     settings = 0x4,
     pushPromise = 0x5,
     goaway = 0x7,
@@ -91,26 +92,26 @@ pub const StreamKind = enum {
 /// types return null on every stream kind: the caller must length-skip
 /// and ignore them per RFC 9114 Section 7.2.8.
 pub fn checkFrameAllowed(kind: StreamKind, frameType: u64) ?H3Error {
-    if (isReservedFrameType(frameType)) return .h3_frame_unexpected;
+    if (isReservedFrameType(frameType)) return .frameUnexpected;
     switch (kind) {
         .control => switch (frameType) {
             0x4, 0x7, 0x3, 0xD, 0x0F0700 => return null,
-            0x0, 0x1, 0x5, 0x0F0701 => return .h3_frame_unexpected,
+            0x0, 0x1, 0x5, 0x0F0701 => return .frameUnexpected,
             else => return null, // unknown: skip + ignore
         },
         .request_bidi => switch (frameType) {
             0x0, 0x1 => return null,
-            0x4, 0x7, 0x3, 0xD, 0x5, 0x0F0700, 0x0F0701 => return .h3_frame_unexpected,
+            0x4, 0x7, 0x3, 0xD, 0x5, 0x0F0700, 0x0F0701 => return .frameUnexpected,
             else => return null, // unknown: skip + ignore
         },
         // No-push policy: push streams and PUSH_PROMISE are rejected
         // everywhere; unknown types are still skipped.
         .push => switch (frameType) {
-            0x0, 0x1, 0x4, 0x7, 0x3, 0xD, 0x5, 0x0F0700, 0x0F0701 => return .h3_frame_unexpected,
+            0x0, 0x1, 0x4, 0x7, 0x3, 0xD, 0x5, 0x0F0700, 0x0F0701 => return .frameUnexpected,
             else => return null,
         },
-        .qpack_encoder => return .qpack_encoder_stream_error,
-        .qpack_decoder => return .qpack_decoder_stream_error,
+        .qpack_encoder => return .qpackEncoderStreamError,
+        .qpack_decoder => return .qpackDecoderStreamError,
     }
 }
 
@@ -123,8 +124,8 @@ pub fn checkFrameAllowed(kind: StreamKind, frameType: u64) ?H3Error {
 /// when the declared length can never be satisfied.
 pub fn mapCodecError(err: Error) H3Error {
     return switch (err) {
-        error.Truncated, error.TooLarge, error.InvalidFrame => .h3_frame_error,
-        error.BufferTooSmall, error.OutOfMemory => .h3_internal_error,
+        error.Truncated, error.TooLarge, error.InvalidFrame => .frameError,
+        error.BufferTooSmall, error.OutOfMemory => .internalError,
     };
 }
 
@@ -385,8 +386,8 @@ test "reserved frame types are rejected, not skipped" {
     for ([_]u64{ 0x2, 0x6, 0x8, 0x9 }) |t| {
         try std.testing.expect(isReservedFrameType(t));
         try std.testing.expectError(Error.InvalidFrame, validateFramePayload(a, t, ""));
-        try std.testing.expectEqual(H3Error.h3_frame_unexpected, checkFrameAllowed(.control, t).?);
-        try std.testing.expectEqual(H3Error.h3_frame_unexpected, checkFrameAllowed(.request_bidi, t).?);
+        try std.testing.expectEqual(H3Error.frameUnexpected, checkFrameAllowed(.control, t).?);
+        try std.testing.expectEqual(H3Error.frameUnexpected, checkFrameAllowed(.request_bidi, t).?);
     }
     try std.testing.expect(!isReservedFrameType(0x0));
     try std.testing.expect(!isReservedFrameType(0x21));
@@ -440,35 +441,35 @@ test "frame legality by stream kind" {
         try std.testing.expect(checkFrameAllowed(.control, t) == null);
     }
     for ([_]u64{ 0x0, 0x1, 0x5, 0x0F0701 }) |t| {
-        try std.testing.expectEqual(H3Error.h3_frame_unexpected, checkFrameAllowed(.control, t).?);
+        try std.testing.expectEqual(H3Error.frameUnexpected, checkFrameAllowed(.control, t).?);
     }
     // Request streams: only DATA/HEADERS.
     try std.testing.expect(checkFrameAllowed(.request_bidi, 0x0) == null);
     try std.testing.expect(checkFrameAllowed(.request_bidi, 0x1) == null);
     for ([_]u64{ 0x4, 0x7, 0x3, 0xD, 0x5, 0x0F0700, 0x0F0701 }) |t| {
-        try std.testing.expectEqual(H3Error.h3_frame_unexpected, checkFrameAllowed(.request_bidi, t).?);
+        try std.testing.expectEqual(H3Error.frameUnexpected, checkFrameAllowed(.request_bidi, t).?);
     }
     // No-push policy: defined frames rejected on push streams.
-    try std.testing.expectEqual(H3Error.h3_frame_unexpected, checkFrameAllowed(.push, 0x1).?);
+    try std.testing.expectEqual(H3Error.frameUnexpected, checkFrameAllowed(.push, 0x1).?);
     try std.testing.expect(checkFrameAllowed(.push, 0x2A) == null);
     // QPACK streams never carry HTTP/3 frames.
-    try std.testing.expectEqual(H3Error.qpack_encoder_stream_error, checkFrameAllowed(.qpack_encoder, 0x4).?);
-    try std.testing.expectEqual(H3Error.qpack_decoder_stream_error, checkFrameAllowed(.qpack_decoder, 0x4).?);
+    try std.testing.expectEqual(H3Error.qpackEncoderStreamError, checkFrameAllowed(.qpack_encoder, 0x4).?);
+    try std.testing.expectEqual(H3Error.qpackDecoderStreamError, checkFrameAllowed(.qpack_decoder, 0x4).?);
     // Priority variants are known frame types.
     try std.testing.expectEqual(FrameType.priorityUpdate, FrameType.fromInt(0x0F0700));
     try std.testing.expectEqual(FrameType.priorityUpdatePush, FrameType.fromInt(0x0F0701));
 }
 
 test "codec errors map to connection error codes" {
-    try std.testing.expectEqual(H3Error.h3_frame_error, mapCodecError(Error.Truncated));
-    try std.testing.expectEqual(H3Error.h3_frame_error, mapCodecError(Error.InvalidFrame));
-    try std.testing.expectEqual(H3Error.h3_frame_error, mapCodecError(Error.TooLarge));
-    try std.testing.expectEqual(H3Error.h3_internal_error, mapCodecError(Error.OutOfMemory));
-    try std.testing.expectEqual(H3Error.h3_internal_error, mapCodecError(Error.BufferTooSmall));
+    try std.testing.expectEqual(H3Error.frameError, mapCodecError(Error.Truncated));
+    try std.testing.expectEqual(H3Error.frameError, mapCodecError(Error.InvalidFrame));
+    try std.testing.expectEqual(H3Error.frameError, mapCodecError(Error.TooLarge));
+    try std.testing.expectEqual(H3Error.internalError, mapCodecError(Error.OutOfMemory));
+    try std.testing.expectEqual(H3Error.internalError, mapCodecError(Error.BufferTooSmall));
     // H3Error values are the QUIC application wire codes.
-    try std.testing.expectEqual(@as(u64, 0x0105), @intFromEnum(H3Error.h3_frame_unexpected));
-    try std.testing.expectEqual(@as(u64, 0x0100), @intFromEnum(H3Error.h3_no_error));
-    try std.testing.expectEqual(@as(u64, 0x0201), @intFromEnum(H3Error.qpack_encoder_stream_error));
+    try std.testing.expectEqual(@as(u64, 0x0105), @intFromEnum(H3Error.frameUnexpected));
+    try std.testing.expectEqual(@as(u64, 0x0100), @intFromEnum(H3Error.noError));
+    try std.testing.expectEqual(@as(u64, 0x0201), @intFromEnum(H3Error.qpackEncoderStreamError));
 }
 
 test "frame header codec reports exhaustion" {
