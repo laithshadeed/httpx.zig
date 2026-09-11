@@ -9,14 +9,14 @@ const Allocator = std.mem.Allocator;
 // Subtypes
 
 pub const Subtype = enum {
-    form_data,
+    formData,
     mixed,
     related,
     alternative,
 
     pub fn label(self: Subtype) []const u8 {
         return switch (self) {
-            .form_data => "form-data",
+            .formData => "form-data",
             .mixed => "mixed",
             .related => "related",
             .alternative => "alternative",
@@ -29,9 +29,9 @@ pub const Subtype = enum {
 pub const Part = struct {
     name: []const u8,
     filename: ?[]const u8 = null,
-    filename_star: ?FilenameStar = null,
-    content_type: []const u8 = "application/octet-stream",
-    content_transfer_encoding: ?[]const u8 = null,
+    filenameStar: ?FilenameStar = null,
+    contentType: []const u8 = "application/octet-stream",
+    contentTransferEncoding: ?[]const u8 = null,
     data: []const u8,
     headers: ?[]const Header = null,
 };
@@ -52,23 +52,23 @@ pub const Header = struct {
 pub const Multipart = struct {
     allocator: Allocator,
     parts: std.ArrayList(Part),
-    boundary_buf: [32]u8,
+    boundaryBuf: [32]u8,
     boundary: []const u8,
     subtype: Subtype,
 
     pub fn init(allocator: Allocator) Multipart {
-        return initWithSubtype(allocator, .form_data);
+        return initWithSubtype(allocator, .formData);
     }
 
     pub fn initWithSubtype(allocator: Allocator, subtype: Subtype) Multipart {
         var mb = Multipart{
             .allocator = allocator,
             .parts = .empty,
-            .boundary_buf = undefined,
+            .boundaryBuf = undefined,
             .boundary = undefined,
             .subtype = subtype,
         };
-        mb.boundary = generateBoundary(&mb.boundary_buf);
+        mb.boundary = generateBoundary(&mb.boundaryBuf);
         return mb;
     }
 
@@ -91,9 +91,9 @@ pub const Multipart = struct {
         try self.parts.append(self.allocator, .{
             .name = name,
             .filename = opts.filename,
-            .filename_star = opts.filename_star,
-            .content_type = opts.content_type orelse "application/octet-stream",
-            .content_transfer_encoding = opts.content_transfer_encoding,
+            .filenameStar = opts.filenameStar,
+            .contentType = opts.contentType orelse "application/octet-stream",
+            .contentTransferEncoding = opts.contentTransferEncoding,
             .data = data,
             .headers = opts.headers,
         });
@@ -118,21 +118,21 @@ pub const Multipart = struct {
 
 pub const FileOptions = struct {
     filename: ?[]const u8 = null,
-    filename_star: ?FilenameStar = null,
-    content_type: ?[]const u8 = null,
-    content_transfer_encoding: ?[]const u8 = null,
+    filenameStar: ?FilenameStar = null,
+    contentType: ?[]const u8 = null,
+    contentTransferEncoding: ?[]const u8 = null,
     headers: ?[]const Header = null,
 };
 
 // Boundary
 
-var boundary_counter = std.atomic.Value(u64).init(0);
+var boundary_counter = std.atomic.Value(usize).init(0);
 
 pub fn generateBoundary(buf: *[32]u8) []const u8 {
-    const n = boundary_counter.fetchAdd(1, .monotonic);
+    const n: usize = boundary_counter.fetchAdd(1, .monotonic);
     var raw: [16]u8 = @splat(0);
-    std.mem.writeInt(u64, raw[0..8], n, .little);
-    std.mem.writeInt(u64, raw[8..16], @intFromPtr(buf) & std.math.maxInt(u64), .little);
+    std.mem.writeInt(usize, raw[0..@sizeOf(usize)], n, .little);
+    std.mem.writeInt(usize, raw[@sizeOf(usize)..][0..@sizeOf(usize)], @intFromPtr(buf), .little);
     const hex = "0123456789abcdef";
     for (raw, 0..) |b, i| {
         buf[i * 2] = hex[b >> 4];
@@ -187,20 +187,20 @@ fn writeHeader(w: anytype, part: Part) EncodeError!void {
         w.writeAll("\"") catch return EncodeError.WriteFailed;
     }
 
-    if (part.filename_star) |fs| {
+    if (part.filenameStar) |fs| {
         w.writeAll("; filename*=UTF-8''") catch return EncodeError.WriteFailed;
         w.writeAll(fs.value) catch return EncodeError.WriteFailed;
     }
 
     w.writeAll("\r\n") catch return EncodeError.WriteFailed;
 
-    if (part.filename != null or part.content_type.len > 0) {
+    if (part.filename != null or part.contentType.len > 0) {
         w.writeAll("Content-Type: ") catch return EncodeError.WriteFailed;
-        w.writeAll(part.content_type) catch return EncodeError.WriteFailed;
+        w.writeAll(part.contentType) catch return EncodeError.WriteFailed;
         w.writeAll("\r\n") catch return EncodeError.WriteFailed;
     }
 
-    if (part.content_transfer_encoding) |enc| {
+    if (part.contentTransferEncoding) |enc| {
         w.writeAll("Content-Transfer-Encoding: ") catch return EncodeError.WriteFailed;
         w.writeAll(enc) catch return EncodeError.WriteFailed;
         w.writeAll("\r\n") catch return EncodeError.WriteFailed;
@@ -312,7 +312,7 @@ test "encodes field and file with canonical framing" {
     defer out.deinit();
     const parts = [_]Part{
         .{ .name = "field", .data = "v" },
-        .{ .name = "file", .filename = "a.bin", .content_type = "application/x-foo", .data = &.{ 0, 1, 2 } },
+        .{ .name = "file", .filename = "a.bin", .contentType = "application/x-foo", .data = &.{ 0, 1, 2 } },
     };
     try encodeParts(&out.writer, b, &parts);
 
@@ -331,7 +331,7 @@ test "builder API works" {
     try form.field("name", "Alice");
     try form.file("avatar", "png-data", .{
         .filename = "avatar.png",
-        .content_type = "image/png",
+        .contentType = "image/png",
     });
 
     const body = try form.encodeAlloc();
@@ -347,7 +347,7 @@ test "custom subtype works" {
     var form = Multipart.initWithSubtype(std.testing.allocator, .related);
     defer form.deinit();
 
-    try form.file("data", "payload", .{ .content_type = "application/json" });
+    try form.file("data", "payload", .{ .contentType = "application/json" });
 
     var ct_buf: [128]u8 = undefined;
     const ct = form.contentType(&ct_buf);
@@ -364,7 +364,7 @@ test "filename* RFC 5987 encoding" {
         .{
             .name = "file",
             .filename = "test.txt",
-            .filename_star = .{ .value = "test-%C3%A9.txt" },
+            .filenameStar = .{ .value = "test-%C3%A9.txt" },
             .data = "content",
         },
     };
@@ -382,7 +382,7 @@ test "Content-Transfer-Encoding header" {
     const parts = [_]Part{
         .{
             .name = "data",
-            .content_transfer_encoding = "base64",
+            .contentTransferEncoding = "base64",
             .data = "aGVsbG8=",
         },
     };

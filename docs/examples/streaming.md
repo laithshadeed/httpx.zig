@@ -20,19 +20,20 @@ pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    var server = httpx.Server.init(allocator);
+    var server = try httpx.Server.init(allocator, io, .{});
     defer server.deinit();
 
     try server.get("/stream", stream);
-    try server.listen();
+    server.run();
 }
 ```
 
 ## Run
 
 ```bash
-zig build run-all-streaming
+zig build run-streaming
 ```
 
 ## What to Verify

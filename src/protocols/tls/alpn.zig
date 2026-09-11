@@ -50,6 +50,21 @@ pub const Protocol = enum {
         if (std.mem.eql(u8, name, "h3")) return .h3;
         return null;
     }
+
+    /// Bridges the client-facing version selector to its ALPN identifier.
+    /// `.auto` has no wire form and maps to null; every concrete version
+    /// maps through the single `HttpVersion.wireName` table, so the two
+    /// enums cannot drift apart (see round-trip test below).
+    pub fn fromHttpVersion(v: @import("../../common/http_version.zig").HttpVersion) ?Protocol {
+        const wire = v.wireName() orelse return null;
+        return fromWire(wire);
+    }
+
+    /// Bridges an ALPN identifier back to the client-facing selector.
+    /// Total over `Protocol`: every variant maps to a concrete version.
+    pub fn toHttpVersion(self: Protocol) @import("../../common/http_version.zig").HttpVersion {
+        return @import("../../common/http_version.zig").HttpVersion.fromWire(self.wireName()).?;
+    }
 };
 
 /// Server default preference: h3 > h2 > http/1.1 > http/1.0
@@ -62,11 +77,6 @@ pub const DEFAULT_TCP_PREFERENCE = [_]Protocol{ .h2, .@"http/1.1", .@"http/1.0" 
 /// Parses an ALPN ProtocolNameList body (without extension header):
 /// sequence of u8-length-prefixed names.
 pub fn parseList(allocator: Allocator, body: []const u8) Error![]const []const u8 {
-    return parseListWithAllocator(allocator, body);
-}
-
-/// Parses an ALPN ProtocolNameList body with explicit allocator.
-pub fn parseListWithAllocator(allocator: Allocator, body: []const u8) Error![]const []const u8 {
     if (body.len > MAX_LIST_LENGTH) return Error.ListTooLarge;
     var names = std.ArrayList([]const u8).empty;
     errdefer names.deinit(allocator);
@@ -88,9 +98,9 @@ pub fn parseListWithAllocator(allocator: Allocator, body: []const u8) Error![]co
 pub fn buildList(allocator: Allocator, protocols: []const Protocol) ![]u8 {
     var size: usize = 0;
     for (protocols) |p| {
-        const name_len = p.wireName().len;
-        if (name_len == 0 or name_len > MAX_PROTOCOL_NAME_LENGTH) return Error.ListTooLarge;
-        size = std.math.add(usize, size, 1 + name_len) catch return Error.ListTooLarge;
+        const nameLen = p.wireName().len;
+        if (nameLen == 0 or nameLen > MAX_PROTOCOL_NAME_LENGTH) return Error.ListTooLarge;
+        size = std.math.add(usize, size, 1 + nameLen) catch return Error.ListTooLarge;
         if (size > MAX_LIST_LENGTH) return Error.ListTooLarge;
     }
 
@@ -108,9 +118,9 @@ pub fn buildList(allocator: Allocator, protocols: []const Protocol) ![]u8 {
 
 /// Server-side negotiation: pick first client-offered protocol that we support,
 /// honoring OUR preference order (server preference wins per RFC 7301 3.2).
-pub fn negotiateServer(ours: []const Protocol, theirs_wire: []const []const u8) ?Protocol {
+pub fn negotiateServer(ours: []const Protocol, theirsWire: []const []const u8) ?Protocol {
     for (ours) |candidate| {
-        for (theirs_wire) |offered| {
+        for (theirsWire) |offered| {
             if (std.mem.eql(u8, candidate.wireName(), offered)) return candidate;
         }
     }
@@ -118,9 +128,9 @@ pub fn negotiateServer(ours: []const Protocol, theirs_wire: []const []const u8) 
 }
 
 /// Client-side validation: the selected protocol must be one we offered.
-pub fn validateClientSelection(we_offered: []const Protocol, selected_wire: []const u8) ?Protocol {
-    for (we_offered) |p| {
-        if (std.mem.eql(u8, p.wireName(), selected_wire)) return p;
+pub fn validateClientSelection(weOffered: []const Protocol, selectedWire: []const u8) ?Protocol {
+    for (weOffered) |p| {
+        if (std.mem.eql(u8, p.wireName(), selectedWire)) return p;
     }
     return null;
 }
@@ -133,6 +143,22 @@ test "protocol wire names roundtrip" {
         const back = Protocol.fromWire(p.wireName());
         try std.testing.expectEqual(p, back.?);
     }
+}
+
+test "http version and ALPN identifiers stay in sync" {
+    const HttpVersion = @import("../../common/http_version.zig").HttpVersion;
+    const pairs = [_]struct { v: HttpVersion, p: Protocol }{
+        .{ .v = .http10, .p = .@"http/1.0" },
+        .{ .v = .http11, .p = .@"http/1.1" },
+        .{ .v = .http2, .p = .h2 },
+        .{ .v = .http3, .p = .h3 },
+    };
+    for (pairs) |pair| {
+        try std.testing.expectEqual(pair.p, Protocol.fromHttpVersion(pair.v).?);
+        try std.testing.expectEqual(pair.v, pair.p.toHttpVersion());
+        try std.testing.expectEqualStrings(pair.v.wireName().?, pair.p.wireName());
+    }
+    try std.testing.expect(Protocol.fromHttpVersion(.auto) == null);
 }
 
 test "build and parse ALPN list" {

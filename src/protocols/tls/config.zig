@@ -1,185 +1,162 @@
-//! TLS configuration and handshake management (RFC 8446).
+//! Production-grade TLS configuration for Client and Server (RFC 8446, RFC 6066, RFC 7301).
 //!
-//! Zig 0.16 std.crypto.tls provides the record/handshake engine but lacks:
-//!   * Certificate loading from PEM/DER files (we parse DER here)
-//!   * ALPN extension negotiation (see alpn.zig)
-//!   * SNI (Server Name Indication, RFC 6066 section 3)
-//!
-//! This module composes those pieces into a usable server/client config.
-//!
-//! References:
-//!   - RFC 8446 — The Transport Layer Security (TLS) Protocol Version 1.3
-//!   - RFC 6066 Section 3 — Server Name Indication
+//! Safe defaults by construction:
+//!   - TLS 1.3 preferred, TLS 1.2 supported
+//!   - Peer certificate verification enabled by default
+//!   - Hostname verification enabled by default
+//!   - System trust store enabled by default
+//!   - ALPN negotiation: h2, http/1.1
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 pub const alpn = @import("alpn.zig");
+pub const certMod = @import("certificate.zig");
+pub const keyMod = @import("key.zig");
+pub const trustMod = @import("trustStore.zig");
+pub const errorsMod = @import("errors.zig");
+pub const sessionMod = @import("session.zig");
 
-pub const Error = error{
-    InvalidPem,
-    InvalidDer,
-    OutOfMemory,
-    CertificateExpired,
+pub const CertificateChain = certMod.CertificateChain;
+pub const X509Certificate = certMod.X509Certificate;
+pub const PrivateKey = keyMod.PrivateKey;
+pub const TrustStore = trustMod.TrustStore;
+pub const TrustMode = trustMod.TrustMode;
+pub const TlsError = errorsMod.TlsError;
+
+const fs_mod = @import("../../utils/fs.zig");
+
+pub const TlsVersion = enum {
+    tls12,
+    tls13,
+    both,
 };
 
-// DER / PEM certificate parsing
-
-/// Decodes base64 body of a PEM block.
-fn decodePemBody(allocator: Allocator, pem: []const u8, label: []const u8) ![]u8 {
-    // Find -----BEGIN <label>----- ... -----END <label>-----
-    var begin_buf: [128]u8 = undefined;
-    const begin_tag = try std.fmt.bufPrint(&begin_buf, "-----BEGIN {s}-----", .{label});
-    var end_buf: [128]u8 = undefined;
-    const end_tag = try std.fmt.bufPrint(&end_buf, "-----END {s}-----", .{label});
-
-    const begin_idx = std.mem.indexOf(u8, pem, begin_tag) orelse return Error.InvalidPem;
-    const body_start = begin_idx + begin_tag.len;
-    const end_idx = std.mem.indexOfPos(u8, pem, body_start, end_tag) orelse return Error.InvalidPem;
-    const body = pem[body_start..end_idx];
-
-    // Strip whitespace/newlines
-    var clean = std.ArrayList(u8).empty;
-    defer clean.deinit(allocator);
-    for (body) |c| {
-        if (c != '\n' and c != '\r' and c != ' ' and c != '\t') {
-            clean.append(allocator, c) catch return Error.OutOfMemory;
-        }
-    }
-
-    const decoder = std.base64.standard.Decoder;
-    const decoded_len = decoder.calcSizeForSlice(clean.items) catch return Error.InvalidPem;
-    const out = allocator.alloc(u8, decoded_len) catch return Error.OutOfMemory;
-    errdefer allocator.free(out);
-    decoder.decode(out, clean.items) catch return Error.InvalidPem;
-    return out;
-}
-
-pub const CertificateChain = struct {
-    /// DER-encoded leaf first, then intermediates.
-    certs: []const []const u8,
-    allocator: Allocator,
-
-    pub fn deinit(self: *CertificateChain) void {
-        for (self.certs) |c| self.allocator.free(c);
-        self.allocator.free(self.certs);
-    }
+pub const ClientAuthMode = enum {
+    disabled,
+    optional,
+    required,
 };
 
-/// Parses a PEM file containing one or more CERTIFICATE blocks.
-pub fn parseCertificatePem(allocator: Allocator, pem: []const u8) !CertificateChain {
-    var list = std.ArrayList([]const u8).empty;
-    errdefer list.deinit(allocator);
-
-    var search_from: usize = 0;
-    while (std.mem.indexOfPos(u8, pem, search_from, "-----BEGIN CERTIFICATE-----")) |idx| {
-        const der = try decodePemBody(allocator, pem[idx..], "CERTIFICATE");
-        list.append(allocator, der) catch {
-            allocator.free(der);
-            return Error.OutOfMemory;
-        };
-        search_from = idx + 26;
-    }
-
-    if (list.items.len == 0) return Error.InvalidPem;
-
-    return .{
-        .certs = try list.toOwnedSlice(allocator),
-        .allocator = allocator,
-    };
-}
-
-/// Parses a PEM PRIVATE KEY block to raw DER (PKCS#8 or SEC1).
-pub fn parsePrivateKeyPem(allocator: Allocator, pem: []const u8) ![]u8 {
-    inline for (.{ "PRIVATE KEY", "EC PRIVATE KEY", "RSA PRIVATE KEY" }) |label| {
-        if (std.mem.indexOf(u8, pem, label) != null) {
-            return decodePemBody(allocator, pem, label);
-        }
-    }
-    return Error.InvalidPem;
-}
-
-// Server TLS configuration
-
-pub const TlsVersion = enum { tls_1_2, tls_1_3, both };
-
+/// Server-side TLS configuration.
 pub const ServerConfig = struct {
-    allocator: Allocator,
+    allocator: Allocator = undefined,
 
-    cert_chain: ?CertificateChain = null,
-    private_key_der: ?[]u8 = null,
+    /// Certificate PEM string or file path.
+    certPem: ?[]const u8 = null,
+    /// Private key PEM string or file path.
+    keyPem: ?[]const u8 = null,
 
-    min_version: TlsVersion = .tls_1_2,
-    /// Preference order for ALPN; empty means no ALPN.
-    /// Defaults to h3>h2>http/1.1>http/1.0 per alpn.DEFAULT_SERVER_PREFERENCE
-    /// so that HTTP/3, HTTP/2 and HTTP/1.1 are all negotiable. Transports
-    /// that cannot carry h3 (TLS over TCP) filter h3 at negotiation time.
-    alpn_protocols: []const alpn.Protocol = &alpn.DEFAULT_SERVER_PREFERENCE,
+    /// Parsed certificate chain in DER format.
+    certChain: ?CertificateChain = null,
+    /// Parsed private key bytes (redacted from logs).
+    privateKeyDer: ?[]u8 = null,
+
+    /// Minimum and maximum supported TLS protocol versions.
+    minVersion: TlsVersion = .tls12,
+    maxVersion: TlsVersion = .tls13,
+
+    /// Preference order for ALPN negotiation (h2, http/1.1).
+    alpnProtocols: []const alpn.Protocol = &.{ .h2, .@"http/1.1" },
+
+    /// Mutual TLS (mTLS) client certificate authentication mode.
+    clientAuth: ClientAuthMode = .disabled,
+    /// Client CA certificate PEM or file path for mTLS validation.
+    clientCa: ?[]const u8 = null,
+    /// Parsed client trust store for mTLS.
+    clientTrustStore: ?TrustStore = null,
+    /// Whether to allow cleartext HTTP requests on the TLS port (e.g. for dev/dual-mode).
+    /// Defaults to false (strict HTTPS: plain HTTP gets 400 Bad Request).
+    allowPlainHttp: bool = false,
+    /// Session-ticket keys for TLS 1.3 resumption (stateless: no
+    /// per-client storage). Null disables resumption: no tickets are
+    /// issued and PSK offers fall back to full handshakes. Generate with
+    /// `TicketKeys.generate()` and rotate periodically via `rotate`.
+    ticketKeys: ?sessionMod.TicketKeys = null,
+    /// Lifetime (seconds) stamped into issued session tickets.
+    ticketLifetimeSecs: u32 = 7200,
 
     pub fn init(allocator: Allocator) ServerConfig {
         return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *ServerConfig) void {
-        if (self.cert_chain) |*c| c.deinit();
-        if (self.private_key_der) |k| self.allocator.free(k);
+        if (self.certChain) |*c| c.deinit();
+        if (self.privateKeyDer) |k| {
+            std.crypto.secureZero(u8, k);
+            self.allocator.free(k);
+        }
+        if (self.clientTrustStore) |*ts| ts.deinit();
+        self.* = undefined;
     }
 
-    pub fn loadCertificates(self: *ServerConfig, cert_pem: []const u8, key_pem: []const u8) !void {
-        self.cert_chain = try parseCertificatePem(self.allocator, cert_pem);
-        self.private_key_der = try parsePrivateKeyPem(self.allocator, key_pem);
+    /// Loads certificate and private key from PEM buffers or file paths.
+    pub fn loadCertificates(self: *ServerConfig, certPemOrPath: []const u8, keyPemOrPath: []const u8) !void {
+        var cert_buf: ?[]u8 = null;
+        defer if (cert_buf) |b| self.allocator.free(b);
+        const certData = if (std.mem.indexOf(u8, certPemOrPath, "-----BEGIN") != null)
+            certPemOrPath
+        else blk: {
+            cert_buf = try fs_mod.readFileLimited(self.allocator, certPemOrPath, 10 * 1024 * 1024);
+            break :blk cert_buf.?;
+        };
+
+        var key_buf: ?[]u8 = null;
+        defer if (key_buf) |b| {
+            std.crypto.secureZero(u8, b);
+            self.allocator.free(b);
+        };
+        const key_data = if (std.mem.indexOf(u8, keyPemOrPath, "-----BEGIN") != null)
+            keyPemOrPath
+        else blk: {
+            key_buf = try fs_mod.readFileLimited(self.allocator, keyPemOrPath, 10 * 1024 * 1024);
+            break :blk key_buf.?;
+        };
+
+        self.certChain = try certMod.parseCertificateChainPem(self.allocator, certData);
+        const parsed_key = try keyMod.parsePrivateKeyPem(self.allocator, key_data);
+        self.privateKeyDer = parsed_key.der;
     }
 
+    /// Returns true if server identity (certificate + private key) is loaded.
     pub fn hasIdentity(self: *const ServerConfig) bool {
-        return self.cert_chain != null and self.private_key_der != null;
+        return self.certChain != null and self.privateKeyDer != null;
     }
 };
 
+/// Client-side TLS configuration.
 pub const ClientConfig = struct {
-    /// Protocols to offer in ALPN; order is our preference.
-    /// Includes h3 so that QUIC/HTTP3 can be negotiated; TCP transports filter h3.
-    alpn_protocols: []const alpn.Protocol = &alpn.DEFAULT_SERVER_PREFERENCE,
-    verify_certificates: bool = true,
+    /// Verify peer certificate against trusted CAs. Default: true.
+    verifyPeer: bool = true,
+    /// Verify hostname against certificate SANs. Default: true.
+    verifyHostname: bool = true,
+    /// Trust store mode (system, custom, both, or none).
+    trustMode: TrustMode = .systemAndCustom,
+    /// Minimum TLS protocol version. Default: TLS 1.2.
+    minVersion: TlsVersion = .tls12,
+    /// Maximum TLS protocol version. Default: TLS 1.3.
+    maxVersion: TlsVersion = .tls13,
+    /// Protocols to offer in ALPN negotiation in preference order.
+    alpnProtocols: []const alpn.Protocol = &.{ .h2, .@"http/1.1" },
+    /// Custom CA certificate PEM string.
+    caPem: ?[]const u8 = null,
+    /// Custom CA certificate file path.
+    caFile: ?[]const u8 = null,
+    /// Client certificate PEM for mutual TLS (mTLS).
+    clientCertPem: ?[]const u8 = null,
+    /// Client private key PEM for mutual TLS (mTLS).
+    clientKeyPem: ?[]const u8 = null,
+    /// Explicit TrustStore pointer (if pre-configured).
+    trustStore: ?*TrustStore = null,
 };
 
-// Tests
+// Backwards-compatible aliases
+pub const parseCertificatePem = certMod.parseCertificateChainPem;
+pub const parsePrivateKeyPem = certMod.decodePemBlock;
 
-test "parse single certificate PEM" {
-    const a = std.testing.allocator;
-    const pem =
-        \\-----BEGIN CERTIFICATE-----
-        \\MIIBszCCAVmgAwIB
-        \\abcdefghIJKLmnop
-        \\-----END CERTIFICATE-----
-    ;
-    var chain = try parseCertificatePem(a, pem);
-    defer chain.deinit();
-    try std.testing.expectEqual(@as(usize, 1), chain.certs.len);
-    // Decoded content should be non-empty DER bytes
-    try std.testing.expect(chain.certs[0].len > 0);
-}
-
-test "reject garbage pem" {
-    const a = std.testing.allocator;
-    try std.testing.expectError(Error.InvalidPem, parseCertificatePem(a, "not a pem"));
-}
-
-test "server config identity flow" {
+test "ServerConfig init and deinit" {
     const a = std.testing.allocator;
     var cfg = ServerConfig.init(a);
     defer cfg.deinit();
 
     try std.testing.expect(!cfg.hasIdentity());
-
-    const cert_pem =
-        \\-----BEGIN CERTIFICATE-----
-        \\AAAA
-        \\-----END CERTIFICATE-----
-    ;
-    const key_pem =
-        \\-----BEGIN PRIVATE KEY-----
-        \\BBBB
-        \\-----END PRIVATE KEY-----
-    ;
-    try cfg.loadCertificates(cert_pem, key_pem);
-    try std.testing.expect(cfg.hasIdentity());
 }

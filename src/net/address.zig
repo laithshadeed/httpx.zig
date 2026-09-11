@@ -70,14 +70,14 @@ pub const Address = struct {
     }
 
     /// Parses "host" or "[v6]:port" or "host:port" or bare host.
-    pub fn parse(text: []const u8, default_port: u16) Error!struct { addr: []const u8, port: u16 } {
-        _ = default_port;
+    /// Bare hosts without an explicit port use `defaultPort`.
+    pub fn parse(text: []const u8, defaultPort: u16) Error!struct { addr: []const u8, port: u16 } {
         // Bracketed IPv6 [::1]:8080
         if (text.len > 0 and text[0] == '[') {
             const close = std.mem.indexOfScalar(u8, text, ']') orelse return Error.InvalidAddress;
             const rest = text[close + 1 ..];
             if (rest.len == 0) {
-                return .{ .addr = text[1..close], .port = 0 };
+                return .{ .addr = text[1..close], .port = defaultPort };
             }
             if (rest[0] != ':') return Error.InvalidAddress;
             const p = std.fmt.parseInt(u16, rest[1..], 10) catch return Error.InvalidPort;
@@ -94,7 +94,7 @@ pub const Address = struct {
             return .{ .addr = text[0..colon], .port = p };
         }
         // Raw host or unbracketed IPv6 without port
-        return .{ .addr = text, .port = 0 };
+        return .{ .addr = text, .port = defaultPort };
     }
 
     pub fn parseIp(self: *const Address, text: []const u8) Error!Address {
@@ -108,8 +108,16 @@ pub const Address = struct {
         return parseIp6Text(text);
     }
 
+    /// Standard Zig format method: enables `{f}` formatting in Zig 0.16.0.
+    /// Example: `std.debug.print("{f}\n", .{addr})` or `std.fmt.allocPrint(a, "{f}", .{addr})`.
+    pub fn format(self: Address, writer: anytype) !void {
+        var buf: [64]u8 = undefined;
+        const s = self.formatBuf(&buf);
+        try writer.writeAll(s);
+    }
+
     /// Formats into buf per RFC 5952. Returns formatted slice.
-    pub fn format(self: *const Address, buf: []u8) []const u8 {
+    pub fn formatBuf(self: *const Address, buf: []u8) []const u8 {
         switch (self.family) {
             .ip4 => return std.fmt.bufPrint(buf, "{d}.{d}.{d}.{d}", .{
                 self.bytes[0], self.bytes[1], self.bytes[2], self.bytes[3],
@@ -171,6 +179,27 @@ pub const Address = struct {
                 return buf[0..pos];
             },
         }
+    }
+
+    /// Formats the address and port (e.g. "127.0.0.1:80" or "[::1]:443") into buf.
+    pub fn formatWithPort(self: *const Address, buf: []u8) []const u8 {
+        switch (self.family) {
+            .ip4 => {
+                var ip_buf: [32]u8 = undefined;
+                const ip_s = self.formatBuf(&ip_buf);
+                return std.fmt.bufPrint(buf, "{s}:{d}", .{ ip_s, self.port }) catch buf[0..0];
+            },
+            .ip6 => {
+                var ip_buf: [64]u8 = undefined;
+                const ip_s = self.formatBuf(&ip_buf);
+                return std.fmt.bufPrint(buf, "[{s}]:{d}", .{ ip_s, self.port }) catch buf[0..0];
+            },
+        }
+    }
+
+    /// Allocates and formats the address as an owned string.
+    pub fn toString(self: Address, allocator: Allocator) ![]u8 {
+        return std.fmt.allocPrint(allocator, "{f}", .{self});
     }
 
     /// Converts to Zig std IpAddress for socket operations.
@@ -241,9 +270,9 @@ fn parseIp6Text(text_in: []const u8) Error!Address {
     // Find "::" compression point
     const double_colon = std.mem.indexOf(u8, text, "::");
     var head_groups: [8]u16 = [_]u16{0} ** 8;
-    var head_count: usize = 0;
+    var headCount: usize = 0;
     var tail_groups: [8]u16 = [_]u16{0} ** 8;
-    var tail_count: usize = 0;
+    var tailCount: usize = 0;
 
     var head_part: []const u8 = "";
     var tail_part: []const u8 = "";
@@ -257,32 +286,32 @@ fn parseIp6Text(text_in: []const u8) Error!Address {
     var fit = std.mem.splitScalar(u8, head_part, ':');
     while (fit.next()) |g| {
         if (g.len == 0) continue;
-        if (head_count >= 8) return Error.InvalidAddress;
-        head_groups[head_count] = std.fmt.parseInt(u16, g, 16) catch return Error.InvalidAddress;
-        head_count += 1;
+        if (headCount >= 8) return Error.InvalidAddress;
+        head_groups[headCount] = std.fmt.parseInt(u16, g, 16) catch return Error.InvalidAddress;
+        headCount += 1;
     }
 
     if (double_colon != null) {
         var tit = std.mem.splitScalar(u8, tail_part, ':');
         while (tit.next()) |g| {
             if (g.len == 0) continue;
-            if (tail_count >= 8) return Error.InvalidAddress;
-            tail_groups[tail_count] = std.fmt.parseInt(u16, g, 16) catch return Error.InvalidAddress;
-            tail_count += 1;
+            if (tailCount >= 8) return Error.InvalidAddress;
+            tail_groups[tailCount] = std.fmt.parseInt(u16, g, 16) catch return Error.InvalidAddress;
+            tailCount += 1;
         }
     } else {
         // No compression: must have exactly 8 groups (or 6 + v4 tail)
-        if (head_count != 8 and !(tail_v4 != null and head_count == 6)) return Error.InvalidAddress;
+        if (headCount != 8 and !(tail_v4 != null and headCount == 6)) return Error.InvalidAddress;
     }
 
     var out = Address{ .family = .ip6, .port = 0 };
-    const total_from_text = head_count + tail_count;
+    const total_from_text = headCount + tailCount;
     const v4_extra: usize = if (tail_v4 != null) 2 else 0;
     const zeros = 8 - total_from_text - v4_extra;
     if (zeros < 0 or total_from_text + v4_extra > 8) return Error.InvalidAddress;
 
     var pos: usize = 0;
-    for (head_groups[0..head_count]) |g| {
+    for (head_groups[0..headCount]) |g| {
         out.bytes[pos * 2] = @intCast(g >> 8);
         out.bytes[pos * 2 + 1] = @intCast(g & 0xFF);
         pos += 1;
@@ -290,7 +319,7 @@ fn parseIp6Text(text_in: []const u8) Error!Address {
     for (0..@intCast(zeros)) |_| {
         pos += 1;
     }
-    for (tail_groups[0..tail_count]) |g| {
+    for (tail_groups[0..tailCount]) |g| {
         out.bytes[pos * 2] = @intCast(g >> 8);
         out.bytes[pos * 2 + 1] = @intCast(g & 0xFF);
         pos += 1;
@@ -314,7 +343,12 @@ test "parse ipv4 dotted quad" {
     const a = addrAny.parseIp("192.168.1.100") catch unreachable;
     try std.testing.expectEqual(Family.ip4, a.family);
     try std.testing.expectEqualSlices(u8, &.{ 192, 168, 1, 100 }, a.bytes[0..4]);
-    try std.testing.expectEqualStrings("192.168.1.100", a.format(&buf));
+    try std.testing.expectEqualStrings("192.168.1.100", a.formatBuf(&buf));
+
+    // Test native std.fmt printing
+    const str = try a.toString(std.testing.allocator);
+    defer std.testing.allocator.free(str);
+    try std.testing.expectEqualStrings("192.168.1.100", str);
 }
 
 test "reject malformed ipv4" {
@@ -330,7 +364,11 @@ test "parse full-form ipv6" {
     var buf: [64]u8 = undefined;
     const a = addrAny.parseIp("2001:0db8:0000:0000:0000:0000:0000:0001") catch unreachable;
     try std.testing.expectEqual(Family.ip6, a.family);
-    try std.testing.expectEqualStrings("2001:db8::1", a.format(&buf));
+    try std.testing.expectEqualStrings("2001:db8::1", a.formatBuf(&buf));
+
+    const str = try a.toString(std.testing.allocator);
+    defer std.testing.allocator.free(str);
+    try std.testing.expectEqualStrings("2001:db8::1", str);
 }
 
 test "parse compressed ipv6" {
@@ -342,25 +380,28 @@ test "parse compressed ipv6" {
     for (cases) |c| {
         const a = try addrAny.parseIp(c);
         try std.testing.expectEqual(Family.ip6, a.family);
-        _ = a.format(&buf);
+        _ = a.formatBuf(&buf);
     }
 }
 
 test "ipv6 loopback roundtrip" {
     var buf: [64]u8 = undefined;
     const a = Address.loopback6(443);
-    try std.testing.expectEqualStrings("::1", a.format(&buf));
+    try std.testing.expectEqualStrings("::1", a.formatBuf(&buf));
+
+    var port_buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("[::1]:443", a.formatWithPort(&port_buf));
 }
 
 test "v4 mapped ipv6" {
     var buf: [64]u8 = undefined;
     const a = addrAny.parseIp("::ffff:192.168.1.1") catch unreachable;
     try std.testing.expect(a.isV4Mapped());
-    try std.testing.expectEqualStrings("::ffff:192.168.1.1", a.format(&buf));
+    try std.testing.expectEqualStrings("::ffff:192.168.1.1", a.formatBuf(&buf));
 
     const as_v4 = a.toV4MappedView().?;
     try std.testing.expectEqual(Family.ip4, as_v4.family);
-    try std.testing.expectEqualStrings("192.168.1.1", as_v4.format(&buf));
+    try std.testing.expectEqualStrings("192.168.1.1", as_v4.formatBuf(&buf));
 }
 
 test "host:port splitting" {
@@ -374,4 +415,9 @@ test "host:port splitting" {
 
     const r3 = try Address.parse("example.com", 80);
     try std.testing.expectEqualStrings("example.com", r3.addr);
+    try std.testing.expectEqual(@as(u16, 80), r3.port);
+
+    const r4 = try Address.parse("[::1]", 443);
+    try std.testing.expectEqualStrings("::1", r4.addr);
+    try std.testing.expectEqual(@as(u16, 443), r4.port);
 }

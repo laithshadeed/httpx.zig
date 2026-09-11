@@ -26,23 +26,23 @@ pub const ParseError = error{
 
 /// Decodes a "Basic <base64>" Authorization header value.
 /// The returned credentials borrow from `decoded`; pass an arena.
-pub fn parse(header_value: []const u8, decoded: []u8) ParseError!Credentials {
+pub fn parse(headerValue: []const u8, decoded: []u8) ParseError!Credentials {
     const prefix = "Basic ";
-    if (header_value.len <= prefix.len or
-        !std.ascii.startsWithIgnoreCase(header_value, prefix))
+    if (headerValue.len <= prefix.len or
+        !std.ascii.startsWithIgnoreCase(headerValue, prefix))
         return ParseError.NotBasic;
 
-    const b64 = std.mem.trim(u8, header_value[prefix.len..], " ");
+    const b64 = std.mem.trim(u8, headerValue[prefix.len..], " ");
     const decoder = std.base64.standard.Decoder;
-    const decoded_len = decoder.calcSizeForSlice(b64) catch return ParseError.InvalidBase64;
-    if (decoded_len > decoded.len) return ParseError.InvalidBase64;
-    decoder.decode(decoded[0..decoded_len], b64) catch return ParseError.InvalidBase64;
+    const decodedLen = decoder.calcSizeForSlice(b64) catch return ParseError.InvalidBase64;
+    if (decodedLen > decoded.len) return ParseError.InvalidBase64;
+    decoder.decode(decoded[0..decodedLen], b64) catch return ParseError.InvalidBase64;
 
-    const colon = std.mem.indexOfScalar(u8, decoded[0..decoded_len], ':') orelse
+    const colon = std.mem.indexOfScalar(u8, decoded[0..decodedLen], ':') orelse
         return ParseError.NoColon;
     return .{
         .username = decoded[0..colon],
-        .password = decoded[colon + 1 .. decoded_len],
+        .password = decoded[colon + 1 .. decodedLen],
     };
 }
 
@@ -65,10 +65,10 @@ pub fn ctEql(a: []const u8, b: []const u8) bool {
 }
 
 /// Constant-time credential verification against expected values.
-pub fn verify(creds: Credentials, expect_user: []const u8, expect_pass: []const u8) bool {
-    const user_ok = ctEql(creds.username, expect_user);
+pub fn verify(creds: Credentials, expectUser: []const u8, expectPass: []const u8) bool {
+    const user_ok = ctEql(creds.username, expectUser);
     // Compare both always to keep timing uniform on user mismatch.
-    const pass_ok = ctEql(creds.password, expect_pass);
+    const pass_ok = ctEql(creds.password, expectPass);
     return user_ok and pass_ok;
 }
 

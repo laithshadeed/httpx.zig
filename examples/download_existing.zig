@@ -5,23 +5,24 @@ pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    var client = try httpx.Client.init(allocator, .{});
+    var client = httpx.Client.init(allocator, io, .{});
     defer client.deinit();
 
     const sample_url = "https://ontheline.trincoll.edu/images/bookdown/sample-local-pdf.pdf";
-    std.debug.print("==> Demonstrating existing-file policies (.skip, .verify_existing, .fail)...\n", .{});
+    std.debug.print("==> Demonstrating existing-file policies (.skip, .verifyExisting, .fail)...\n", .{});
 
     // Policy 1: Verify on-disk file size/checksum first; if valid, skip downloading!
     const res1 = client.download(
         sample_url,
-        "downloads/existing-sample.pdf",
         .{
-            .existing = .verify_existing,
+            .path = "downloads/existing-sample.pdf",
+            .existing = .verifyExisting,
             .verify = .{
-                .min_size = 100,
+                .minSize = 100,
             },
-            .create_dirs = true,
+            .createDirs = true,
         },
     ) catch |err| {
         std.debug.print("Download 1: {s}\n", .{@errorName(err)});
@@ -32,8 +33,8 @@ pub fn main() !void {
     // Policy 2: Fail if destination already exists
     const res2 = client.download(
         sample_url,
-        "downloads/existing-sample.pdf",
         .{
+            .path = "downloads/existing-sample.pdf",
             .existing = .fail,
         },
     );

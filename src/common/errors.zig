@@ -31,6 +31,13 @@ pub const Error = error{
     CertificateInvalid,
     CertificateExpired,
     HostnameMismatch,
+    CertificateHostMismatch,
+    CertificateIssuerMismatch,
+    CertificateNotYetValid,
+    CertificateSignatureInvalid,
+    TlsCertificateNotVerified,
+    TlsAlert,
+    TlsDecodeError,
     TlsProtocolError,
 
     // HTTP protocol
@@ -48,6 +55,8 @@ pub const Error = error{
     MethodNotAllowed,
     DuplicateRoute,
     InvalidRoutePattern,
+    UnknownRoute,
+    MissingRouteParam,
 
     // Validation
     ValidationFailed,

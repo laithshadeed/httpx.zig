@@ -13,10 +13,10 @@ const UserType = httpx.graphql.ObjectTypeDef{
     .name = "User",
     .description = "A system user account",
     .fields = &.{
-        .{ .name = "id", .type_name = "ID", .description = "Unique user identifier" },
-        .{ .name = "name", .type_name = "String", .description = "Full user display name" },
-        .{ .name = "email", .type_name = "String", .description = "Primary email address" },
-        .{ .name = "role", .type_name = "String", .description = "Security role" },
+        .{ .name = "id", .typeName = "ID", .description = "Unique user identifier" },
+        .{ .name = "name", .typeName = "String", .description = "Full user display name" },
+        .{ .name = "email", .typeName = "String", .description = "Primary email address" },
+        .{ .name = "role", .typeName = "String", .description = "Security role" },
     },
 };
 
@@ -47,8 +47,8 @@ const QueryType = httpx.graphql.ObjectTypeDef{
     .name = "Query",
     .description = "Root queries",
     .fields = &.{
-        .{ .name = "me", .type_name = "User", .description = "Current authenticated user", .resolver = resolvers.getMe },
-        .{ .name = "users", .type_name = "User", .is_list = true, .description = "List all users in organization", .resolver = resolvers.getUsers },
+        .{ .name = "me", .typeName = "User", .description = "Current authenticated user", .resolver = resolvers.getMe },
+        .{ .name = "users", .typeName = "User", .isList = true, .description = "List all users in organization", .resolver = resolvers.getUsers },
     },
 };
 
@@ -63,11 +63,12 @@ pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    var server = try httpx.Server.init(allocator, .{
+    var server = try httpx.Server.init(allocator, io, .{
         .host = "127.0.0.1",
         .port = 0,
-        .docs_enabled = true,
+        .enableDocs = true,
         .docs = .{
             .title = "HTTPX GraphQL & REST API",
             .version = "0.2.0",
@@ -75,14 +76,10 @@ pub fn main() !void {
             .swagger = .{ .enabled = true, .route = "/docs", .title = "Swagger UI" },
             .redoc = .{ .enabled = true, .route = "/redoc", .title = "ReDoc" },
             .scalar = .{ .enabled = true, .route = "/scalar", .title = "Scalar Reference" },
-            .graphiql = .{ .enabled = true, .route = "/graphiql", .graphql_endpoint = "/graphql", .title = "GraphiQL IDE" },
+            .graphiql = .{ .enabled = true, .route = "/graphiql", .graphqlEndpoint = "/graphql", .title = "GraphiQL IDE" },
         },
-        .logging = .{
-            .enabled = true,
-            .color = .never,
-            .requests = false,
-        },
-        .max_connections = 5,
+        .logging = .{},
+        .maxConnections = 5,
     });
     defer server.deinit();
 
@@ -93,7 +90,7 @@ pub fn main() !void {
     const schema = httpx.graphql.Schema.init(allocator, .{
         .query = QueryType,
         .types = &.{UserType},
-        .enable_introspection = true,
+        .enableIntrospection = true,
     });
     try httpx.graphql.mount(&server.router, schema, .{ .endpoint = "/graphql" });
 
@@ -107,12 +104,12 @@ pub fn main() !void {
     };
     const t = try std.Thread.spawn(.{}, ServerThread.run, .{&server});
 
-    var client = try httpx.Client.init(allocator, .{});
+    var client = httpx.Client.init(allocator, io, .{});
     defer client.deinit();
 
     var url_buf: [128]u8 = undefined;
     const url_root = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/", .{port});
-    var res = try client.get(url_root);
+    var res = try client.get(url_root, .{});
     std.debug.print("GET / -> status={d}, body={s}\n", .{ res.status, res.body });
     res.deinit();
 
@@ -124,6 +121,7 @@ pub fn main() !void {
 
     server.requestShutdown();
     t.join();
+    httpx.graphql.unmount(&server.router, .{ .endpoint = "/graphql" });
     httpx.docs.unmount();
     std.debug.print("GraphQL server and client verification completed successfully.\n", .{});
 }

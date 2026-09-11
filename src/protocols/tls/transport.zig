@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const sync = @import("../../common/sync.zig");
 
 pub const tls = std.crypto.tls;
 const max_cipher = tls.max_ciphertext_record_len;
@@ -19,9 +20,9 @@ const max_cipher = tls.max_ciphertext_record_len;
 /// How server certificates are verified.
 pub const VerifyMode = enum {
     /// Verify against a caller-supplied CA bundle.
-    ca_bundle,
+    caBundle,
     /// Accept any valid self-signed certificate (no trust anchor).
-    self_signed,
+    selfSigned,
     /// Skip verification entirely. INSECURE — tests/debug only.
     none,
 };
@@ -30,41 +31,68 @@ pub const ConnectionOptions = struct {
     /// Allow peer FIN without TLS close_notify to end the stream. INSECURE
     /// unless the application layer verifies completeness itself (HTTP
     /// Content-Length / chunked framing does). Default: false.
-    allow_truncation_attacks: bool = false,
+    allowTruncation: bool = false,
 };
 
 pub const InitError = error{
     TlsInitializationFailed,
     TlsCaUnavailable,
     OutOfMemory,
+    CertificateExpired,
+    CertificateHostMismatch,
+    CertificateIssuerMismatch,
+    CertificateNotYetValid,
+    CertificateSignatureInvalid,
+    TlsCertificateNotVerified,
+    TlsAlert,
+    TlsDecodeError,
 };
 
 pub const Connection = struct {
     client: tls.Client,
-    allow_truncation: bool,
+    allowTruncation: bool,
 
     // Heap-owned buffers (freed in destroy).
-    buf_stream_writer: []u8,
-    buf_stream_reader: []u8,
-    buf_tls_read: []u8,
-    buf_plain_write: []u8,
+    bufStreamWriter: []u8,
+    bufStreamReader: []u8,
+    bufTlsRead: []u8,
+    bufPlainWrite: []u8,
 
-    stream_writer: std.Io.net.Stream.Writer,
-    stream_reader: std.Io.net.Stream.Reader,
+    streamWriter: std.Io.net.Stream.Writer,
+    streamReader: std.Io.net.Stream.Reader,
     io: std.Io,
-    socket_handle: std.Io.net.Socket.Handle,
+    socketHandle: std.Io.net.Socket.Handle,
 
     pub const ReadError = error{ ReadFailed, OutOfMemory };
     pub const WriteError = error{WriteFailed};
 
     var g_ca_lock: std.Io.RwLock = .init;
+    var g_system_bundle: std.crypto.Certificate.Bundle = .empty;
+    var g_system_bundle_loaded: bool = false;
+    var g_system_bundle_lock: sync.Spinlock = .{};
+
+    // Process-lifetime system CA cache. Backed by the untracked page
+    // allocator on purpose: the bundle lives until process exit (freed by
+    // the OS), so routing it through a caller's tracked allocator (e.g. a
+    // DebugAllocator) would report a false leak at shutdown.
+    fn getOrLoadSystemBundle(io: std.Io) !*std.crypto.Certificate.Bundle {
+        g_system_bundle_lock.lock();
+        defer g_system_bundle_lock.unlock();
+
+        if (!g_system_bundle_loaded) {
+            const now = std.Io.Timestamp.now(io, .awake);
+            g_system_bundle.rescan(std.heap.page_allocator, io, now) catch return error.TlsCaUnavailable;
+            g_system_bundle_loaded = true;
+        }
+        return &g_system_bundle;
+    }
 
     pub const Config = struct {
-        socket_handle: std.Io.net.Socket.Handle,
+        socketHandle: std.Io.net.Socket.Handle,
         host: []const u8 = "",
-        verify: VerifyMode = .none,
-        ca_bundle: ?*std.crypto.Certificate.Bundle = null,
-        allow_truncation_attacks: bool = false,
+        verify: VerifyMode = .caBundle,
+        caBundle: ?*std.crypto.Certificate.Bundle = null,
+        allowTruncation: bool = false,
         io: ?std.Io = null,
     };
 
@@ -74,18 +102,22 @@ pub const Connection = struct {
     pub fn init(allocator: Allocator, config: anytype) InitError!*Connection {
         const conf: Config = if (@TypeOf(config) == Config) config else blk: {
             var c = Config{
-                .socket_handle = if (@hasField(@TypeOf(config), "socket_handle")) config.socket_handle else if (@hasField(@TypeOf(config), "socket")) config.socket.netSocketHandle() else undefined,
+                .socketHandle = if (@hasField(@TypeOf(config), "socketHandle")) config.socketHandle else if (@hasField(@TypeOf(config), "socket")) config.socket.netSocketHandle() else undefined,
             };
             if (@hasField(@TypeOf(config), "host")) c.host = config.host;
             if (@hasField(@TypeOf(config), "verify")) c.verify = config.verify;
-            if (@hasField(@TypeOf(config), "ca_bundle")) c.ca_bundle = config.ca_bundle;
-            if (@hasField(@TypeOf(config), "allow_truncation_attacks")) c.allow_truncation_attacks = config.allow_truncation_attacks;
+            if (@hasField(@TypeOf(config), "caBundle")) c.caBundle = config.caBundle;
+            if (@hasField(@TypeOf(config), "allowTruncation")) c.allowTruncation = config.allowTruncation;
             if (@hasField(@TypeOf(config), "io")) c.io = config.io;
             break :blk c;
         };
 
         const io = conf.io orelse std.Io.Threaded.global_single_threaded.io();
-        if (conf.verify == .ca_bundle and conf.ca_bundle == null) return error.TlsCaUnavailable;
+        var active_bundle: ?*std.crypto.Certificate.Bundle = conf.caBundle;
+        if (conf.verify == .caBundle and active_bundle == null) {
+            active_bundle = getOrLoadSystemBundle(io) catch null;
+            if (active_bundle == null) return error.TlsCaUnavailable;
+        }
 
         const self = allocator.create(Connection) catch return error.OutOfMemory;
         errdefer allocator.destroy(self);
@@ -104,70 +136,89 @@ pub const Connection = struct {
         // this struct after init would dangle them.
         self.* = .{
             .client = undefined,
-            .allow_truncation = conf.allow_truncation_attacks,
-            .buf_stream_writer = bufs_rw,
-            .buf_stream_reader = bufs_rr,
-            .buf_tls_read = bufs_tr,
-            .buf_plain_write = bufs_pw,
-            .stream_writer = undefined,
-            .stream_reader = undefined,
+            .allowTruncation = conf.allowTruncation,
+            .bufStreamWriter = bufs_rw,
+            .bufStreamReader = bufs_rr,
+            .bufTlsRead = bufs_tr,
+            .bufPlainWrite = bufs_pw,
+            .streamWriter = undefined,
+            .streamReader = undefined,
             .io = io,
-            .socket_handle = conf.socket_handle,
+            .socketHandle = conf.socketHandle,
         };
 
-        self.stream_writer = .init(
-            .{ .socket = .{ .handle = conf.socket_handle, .address = undefined } },
+        self.streamWriter = .init(
+            .{ .socket = .{ .handle = conf.socketHandle, .address = undefined } },
             io,
-            self.buf_stream_writer,
+            self.bufStreamWriter,
         );
-        self.stream_reader = .init(
-            .{ .socket = .{ .handle = conf.socket_handle, .address = undefined } },
+        self.streamReader = .init(
+            .{ .socket = .{ .handle = conf.socketHandle, .address = undefined } },
             io,
-            self.buf_stream_reader,
+            self.bufStreamReader,
         );
 
         var entropy: [tls.Client.Options.entropy_len]u8 = undefined;
         io.random(&entropy);
 
+        // SNI handling: virtual-hosted HTTPS servers abort the handshake
+        // (TlsAlert) when no serverName is sent. std's `no_verification`
+        // sends no SNI, so `verify=none` debug mode would always fail against
+        // such hosts. When the peer is a DNS name (not a literal IP), always
+        // offer it as SNI via `explicit` — chain verification is still
+        // skipped for `none` (ca=no_verification), so clock/CA issues stay
+        // bypassed; only the SAN hostname check remains (no time involved).
+        // Literal IPs never send SNI per RFC 6066.
+        const send_sni = conf.host.len > 0 and !isIpLiteral(conf.host);
         const host_opt: @TypeOf(@as(tls.Client.Options, undefined).host) =
-            if (conf.verify != .none and conf.host.len > 0) .{ .explicit = conf.host } else .no_verification;
+            if (send_sni) .{ .explicit = conf.host } else .no_verification;
         const ca_opt: @TypeOf(@as(tls.Client.Options, undefined).ca) = switch (conf.verify) {
             .none => .no_verification,
-            .self_signed => .self_signed,
-            .ca_bundle => .{ .bundle = .{
+            .selfSigned => .self_signed,
+            .caBundle => .{ .bundle = .{
                 .gpa = allocator,
                 .io = io,
                 .lock = &g_ca_lock,
-                .bundle = conf.ca_bundle.?,
+                .bundle = active_bundle.?,
             } },
         };
 
         self.client = tls.Client.init(
-            &self.stream_reader.interface,
-            &self.stream_writer.interface,
+            &self.streamReader.interface,
+            &self.streamWriter.interface,
             .{
                 .host = host_opt,
                 .ca = ca_opt,
-                .read_buffer = self.buf_tls_read,
-                .write_buffer = self.buf_plain_write,
+                .read_buffer = self.bufTlsRead,
+                .write_buffer = self.bufPlainWrite,
                 .entropy = &entropy,
                 .realtime_now = std.Io.Clock.now(.real, io),
-                .allow_truncation_attacks = conf.allow_truncation_attacks,
+                .allow_truncation_attacks = conf.allowTruncation,
             },
-        ) catch return error.TlsInitializationFailed;
+        ) catch |err| switch (err) {
+            error.CertificateExpired => return error.CertificateExpired,
+            error.CertificateHostMismatch => return error.CertificateHostMismatch,
+            error.CertificateIssuerMismatch => return error.CertificateIssuerMismatch,
+            error.CertificateNotYetValid => return error.CertificateNotYetValid,
+            error.CertificateSignatureInvalid => return error.CertificateSignatureInvalid,
+            error.TlsCertificateNotVerified => return error.TlsCertificateNotVerified,
+            error.TlsAlert => return error.TlsAlert,
+            error.TlsDecodeError => return error.TlsDecodeError,
+            else => return error.TlsInitializationFailed,
+        };
         return self;
     }
 
     pub fn destroy(self: *Connection, allocator: Allocator) void {
         // In truncation-tolerant mode there is no close_notify contract;
         // attempting the write against a vanished peer only risks RST noise.
-        if (!self.allow_truncation) self.client.end() catch {};
-        var stream = std.Io.net.Stream{ .socket = .{ .handle = self.socket_handle, .address = undefined } };
+        if (!self.allowTruncation) self.client.end() catch {};
+        var stream = std.Io.net.Stream{ .socket = .{ .handle = self.socketHandle, .address = undefined } };
         stream.close(self.io);
-        allocator.free(self.buf_stream_writer);
-        allocator.free(self.buf_stream_reader);
-        allocator.free(self.buf_tls_read);
-        allocator.free(self.buf_plain_write);
+        allocator.free(self.bufStreamWriter);
+        allocator.free(self.bufStreamReader);
+        allocator.free(self.bufTlsRead);
+        allocator.free(self.bufPlainWrite);
         allocator.destroy(self);
     }
 
@@ -177,7 +228,7 @@ pub const Connection = struct {
         self.client.writer.flush() catch return error.WriteFailed;
         // The TLS writer drains into the stream writer's own ciphertext
         // buffer; that one needs its own flush to reach the wire.
-        self.stream_writer.interface.flush() catch return error.WriteFailed;
+        self.streamWriter.interface.flush() catch return error.WriteFailed;
     }
 
     /// Plaintext read; returns 0 on clean TLS EOF (close_notify) or, when
@@ -189,3 +240,17 @@ pub const Connection = struct {
         return self.client.reader.readSliceShort(buffer) catch error.ReadFailed;
     }
 };
+
+/// True for IPv4/IPv6 literals (no SNI per RFC 6066 Section 3).
+fn isIpLiteral(host: []const u8) bool {
+    // Strip brackets for "[::1]" style literals.
+    var h = host;
+    if (h.len >= 2 and h[0] == '[' and h[h.len - 1] == ']') h = h[1 .. h.len - 1];
+    // Strip zone id ("fe80::1%eth0").
+    if (std.mem.indexOfScalar(u8, h, '%')) |zi| h = h[0..zi];
+    if (std.Io.net.IpAddress.parseLiteral(h)) |_| {
+        return true;
+    } else |_| {
+        return false;
+    }
+}

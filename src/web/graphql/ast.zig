@@ -43,8 +43,8 @@ pub const Value = union(enum) {
     float: f64,
     string: []const u8,
     boolean: bool,
-    null_val: void,
-    enum_val: []const u8,
+    nullVal: void,
+    enumVal: []const u8,
     list: []const Value,
     object: []const ObjectField,
 };
@@ -66,8 +66,8 @@ pub const Directive = struct {
 
 pub const Selection = union(enum) {
     field: Field,
-    fragment_spread: FragmentSpread,
-    inline_fragment: InlineFragment,
+    fragmentSpread: FragmentSpread,
+    inlineFragment: InlineFragment,
 };
 
 pub const Field = struct {
@@ -75,7 +75,7 @@ pub const Field = struct {
     name: []const u8,
     arguments: []const Argument = &.{},
     directives: []const Directive = &.{},
-    selection_set: []const Selection = &.{},
+    selectionSet: []const Selection = &.{},
 };
 
 pub const FragmentSpread = struct {
@@ -84,9 +84,9 @@ pub const FragmentSpread = struct {
 };
 
 pub const InlineFragment = struct {
-    type_condition: ?[]const u8 = null,
+    typeCondition: ?[]const u8 = null,
     directives: []const Directive = &.{},
-    selection_set: []const Selection = &.{},
+    selectionSet: []const Selection = &.{},
 };
 
 pub const OperationType = enum {
@@ -97,25 +97,25 @@ pub const OperationType = enum {
 
 pub const VariableDefinition = struct {
     name: []const u8,
-    type_name: []const u8,
-    is_non_null: bool = false,
-    is_list: bool = false,
-    default_value: ?Value = null,
+    typeName: []const u8,
+    isNonNull: bool = false,
+    isList: bool = false,
+    defaultValue: ?Value = null,
 };
 
 pub const OperationDefinition = struct {
-    operation_type: OperationType,
+    operationType: OperationType,
     name: ?[]const u8 = null,
-    variable_definitions: []const VariableDefinition = &.{},
+    variableDefinitions: []const VariableDefinition = &.{},
     directives: []const Directive = &.{},
-    selection_set: []const Selection = &.{},
+    selectionSet: []const Selection = &.{},
 };
 
 pub const FragmentDefinition = struct {
     name: []const u8,
-    type_condition: []const u8,
+    typeCondition: []const u8,
     directives: []const Directive = &.{},
-    selection_set: []const Selection = &.{},
+    selectionSet: []const Selection = &.{},
 };
 
 pub const Definition = union(enum) {

@@ -12,15 +12,17 @@ This section contains practical `httpx.zig` demo programs for client, server, mi
 For non-host targets, compile (without running) by adding `-Dtarget=...`:
 
 ```bash
-zig build run-all-tcp_local -Dtarget=x86_64-linux
-zig build run-all-http3_example -Dtarget=aarch64-macos
+zig build run-simple-get -Dtarget=x86_64-linux-gnu
+zig build run-http3-client -Dtarget=aarch64-macos
 ```
 
 ## Available Examples
 
+- [HTTP/1.1 Client](/examples/http11-client): Dedicated HTTP/1.1 client with keep-alive and headers.
+- [HTTP/1.1 Server](/examples/http11-server): Dedicated HTTP/1.1 server with persistent connections.
 - [Simple Get](/examples/simple-get): Basic GET request and response handling.
 - [Simple Get Deserialize](/examples/simple-get-deserialize): Parse JSON into typed structs.
-- [`json_api_example`](examples/json_api_example.zig): JSON API: getJson, postJsonAndParse, Response.json, server ctx.jsonBody + ctx.json
+- [JSON API Example](/examples/json-api-example): JSON API requests and typed parsing.
 - [HTTP Auth Helpers](/examples/http-auth-helpers): Use built-in Bearer and Basic auth request helpers against a local loopback server.
 - [Post JSON](/examples/post-json): Send JSON payloads with POST.
 - [Custom Headers](/examples/custom-headers): Attach auth and custom metadata headers.
@@ -62,7 +64,7 @@ zig build run-all-http3_example -Dtarget=aarch64-macos
 - [Cloud HTTPS Server](/examples/cloud-https-server): Production cloud deployment with TLS, middleware, and health checks.
 - [TLS Server](/examples/tls-server): Custom TLS server with ALPN negotiation.
 - [HTTPS Client](/examples/https-client): HTTPS client with custom TLS configuration.
-- [TLS HTTPS GET](/examples/tls-https-get): Simple HTTPS GET via local TLS server (HTTP/1.1 + HTTP/2 + HTTP/3).
+- [TLS HTTPS GET](/examples/tls-https-get): Local TLS listener setup; end-to-end traffic lives in the mTLS and HTTP/2-TLS demos.
 - [TLS Configuration Options](/examples/tls-config-options): TLS configuration constructors and ALPN negotiation.
 - [TLS Handshake Details](/examples/tls-handshake-details): TLS handshake info and cipher suites.
 - [TLS Custom CA](/examples/tls-custom-ca): Custom CA certificate verification with self-signed certs.

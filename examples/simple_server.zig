@@ -13,7 +13,7 @@ fn indexHandler(_: *httpx.Context) anyerror!httpx.Response {
     return .{
         .status = 200,
         .body = "hello, world!",
-        .content_type = "text/plain; charset=utf-8",
+        .contentType = "text/plain; charset=utf-8",
     };
 }
 
@@ -21,7 +21,7 @@ fn jsonHandler(_: *httpx.Context) anyerror!httpx.Response {
     return .{
         .status = 200,
         .body = "{\"ok\":true}",
-        .content_type = "application/json",
+        .contentType = "application/json",
     };
 }
 
@@ -33,18 +33,19 @@ pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    var server = try httpx.Server.init(allocator, .{
+    var server = try httpx.Server.init(allocator, io, .{
         .host = "127.0.0.1",
         .port = 0,
-        .docs_enabled = false,
-        .max_connections = 2,
+        .enableDocs = false,
+        .maxConnections = 2,
     });
     defer server.deinit();
 
-    try server.router.add(.GET, "/", indexHandler);
-    try server.router.add(.GET, "/json", jsonHandler);
-    try server.router.add(.GET, "/*rest", notFoundHandler);
+    try server.router.add(.GET, "/", indexHandler, .{});
+    try server.router.add(.GET, "/json", jsonHandler, .{});
+    try server.router.add(.GET, "/*rest", notFoundHandler, .{});
 
     const port = server.localPort();
     std.debug.print("listening on 127.0.0.1:{d}\n", .{port});
@@ -62,17 +63,17 @@ pub fn main() !void {
     var spin: usize = 0;
     while (spin < 1000) : (spin += 1) std.Thread.yield() catch {};
 
-    var client = try httpx.Client.init(allocator, .{});
+    var client = httpx.Client.init(allocator, io, .{});
     defer client.deinit();
     const url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/", .{port});
     defer allocator.free(url);
-    var response = try client.get(.{ .url = url });
+    var response = try client.get(url, .{});
     defer response.deinit();
     std.debug.print("GET / -> {d} {s}\n", .{ response.status, response.body });
 
     const json_url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/json", .{port});
     defer allocator.free(json_url);
-    var json_response = try client.get(.{ .url = json_url });
+    var json_response = try client.get(json_url, .{});
     defer json_response.deinit();
     std.debug.print("GET /json -> {d} {s}\n", .{ json_response.status, json_response.body });
 

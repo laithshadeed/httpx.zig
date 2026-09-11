@@ -9,33 +9,34 @@ const std = @import("std");
 const httpx = @import("httpx");
 
 fn health(ctx: *httpx.Context) anyerror!httpx.Response {
-    return ctx.json(.{ .ok = true, .service = "demo" });
+    return ctx.renderJson(.{ .ok = true, .service = "demo" });
 }
 
 pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    var server = httpx.Server.initWithConfig(allocator, .{
+    var server = try httpx.Server.init(allocator, io, .{
         .host = "127.0.0.1",
         .port = 8080,
-        .port_conflict = .increment,
-        .max_port_tries = 32,
-        .max_connections = 1000,
-        .keep_alive = true,
+        .portStrategy = .incremental,
+        .maxPortAttempts = 32,
+        .maxConnections = 1000,
+        .keepAlive = true,
     });
     defer server.deinit();
 
     try server.get("/health", health);
-    try server.listen();
+    server.run();
 }
 ```
 
 ## Run
 
 ```bash
-zig build run-all-simple_server
+zig build run-simple-server
 ```
 
 ## What to Verify

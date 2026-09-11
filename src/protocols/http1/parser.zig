@@ -49,7 +49,7 @@ pub const MAX_TARGET_LEN: usize = 8192;
 
 /// Parser options for lenient line ending handling (issue #37).
 pub const Options = struct {
-    allow_lf_line_endings: bool = false,
+    allowLfLineEndings: bool = false,
 };
 
 fn isCtl(c: u8) bool {
@@ -74,8 +74,8 @@ fn findEolWithOptions(buf: []const u8, pos: usize, opts: Options) ParseError!usi
     while (i < buf.len) : (i += 1) {
         const c = buf[i];
         if (c == '\n') {
-            // In strict mode (allow_lf_line_endings == false), line must end in \r\n
-            if (!opts.allow_lf_line_endings) {
+            // In strict mode (allowLfLineEndings == false), line must end in \r\n
+            if (!opts.allowLfLineEndings) {
                 if (i == pos or buf[i - 1] != '\r') {
                     return ParseError.MalformedHeaderLine;
                 }
@@ -91,12 +91,12 @@ fn findEolWithOptions(buf: []const u8, pos: usize, opts: Options) ParseError!usi
 pub const HeadResult = struct {
     method: []const u8 = "",
     path: []const u8 = "",
-    status_code: u16 = 0,
+    statusCode: u16 = 0,
     reason: []const u8 = "",
-    minor_version: u8 = 1,
-    major_version: u8 = 1,
+    minorVersion: u8 = 1,
+    majorVersion: u8 = 1,
     /// Offset one past the request/status line's LF.
-    head_end: usize = 0,
+    headEnd: usize = 0,
 };
 
 /// Parses a request line: METHOD SP TARGET SP HTTP/1.x CRLF.
@@ -154,8 +154,8 @@ pub fn parseRequestHeadWithOptions(buf: []const u8, opts: Options) ParseError!He
     if (!std.mem.eql(u8, buf[end..][0..7], "HTTP/1.")) return ParseError.UnsupportedHttpVersion;
     const minor = buf[end + 7];
     if (minor != '0' and minor != '1') return ParseError.UnsupportedHttpVersion;
-    r.major_version = 1;
-    r.minor_version = minor - '0';
+    r.majorVersion = 1;
+    r.minorVersion = minor - '0';
     end += 8;
 
     if (end >= buf.len) return ParseError.Incomplete;
@@ -163,7 +163,7 @@ pub fn parseRequestHeadWithOptions(buf: []const u8, opts: Options) ParseError!He
         end += 1;
         if (end >= buf.len) return ParseError.Incomplete;
         if (buf[end] != '\n') return ParseError.MalformedRequestLine;
-        r.head_end = end + 1;
+        r.headEnd = end + 1;
         return r;
     }
     // Bare LF for request line is always strict (RFC 9112) — even with lenient flag
@@ -184,7 +184,7 @@ pub fn parseResponseHeadWithOptions(buf: []const u8, opts: Options) ParseError!H
             if (buf[pos + 1] != '\n') break;
             pos += 2;
         } else if (buf[pos] == '\n') {
-            if (!opts.allow_lf_line_endings) break;
+            if (!opts.allowLfLineEndings) break;
             pos += 1;
         } else break;
     }
@@ -194,18 +194,18 @@ pub fn parseResponseHeadWithOptions(buf: []const u8, opts: Options) ParseError!H
     if (!std.mem.eql(u8, buf[pos..][0..7], "HTTP/1.")) return ParseError.UnsupportedHttpVersion;
     const minor = buf[pos + 7];
     if (minor != '0' and minor != '1') return ParseError.UnsupportedHttpVersion;
-    r.major_version = 1;
-    r.minor_version = minor - '0';
+    r.majorVersion = 1;
+    r.minorVersion = minor - '0';
 
     if (buf[pos + 8] != ' ') return ParseError.MalformedStatusLine;
 
     // Exactly three digits followed by space or EOL.
-    const code_start = pos + 9;
-    for (code_start..code_start + 3) |i| {
+    const codeStart = pos + 9;
+    for (codeStart..codeStart + 3) |i| {
         if (!std.ascii.isDigit(buf[i])) return ParseError.MalformedStatusLine;
     }
-    r.status_code = std.fmt.parseInt(u16, buf[code_start..][0..3], 10) catch unreachable;
-    var end = code_start + 3;
+    r.statusCode = std.fmt.parseInt(u16, buf[codeStart..][0..3], 10) catch unreachable;
+    var end = codeStart + 3;
 
     if (end < buf.len and buf[end] != '\r' and buf[end] != '\n') {
         if (buf[end] != ' ') return ParseError.MalformedStatusLine;
@@ -225,17 +225,17 @@ pub fn parseResponseHeadWithOptions(buf: []const u8, opts: Options) ParseError!H
     if (buf[end] == '\r') {
         if (end + 1 >= buf.len) return ParseError.Incomplete;
         if (buf[end + 1] != '\n') return ParseError.MalformedStatusLine;
-        r.head_end = end + 2;
+        r.headEnd = end + 2;
         return r;
     }
     if (buf[end] == '\n') {
         // If previous is \r, this is actually CRLF where findEol returned \n index
         if (end > 0 and buf[end - 1] == '\r') {
-            r.head_end = end + 1;
+            r.headEnd = end + 1;
             return r;
         }
-        if (!opts.allow_lf_line_endings) return ParseError.MalformedStatusLine;
-        r.head_end = end + 1;
+        if (!opts.allowLfLineEndings) return ParseError.MalformedStatusLine;
+        r.headEnd = end + 1;
         return r;
     }
     return ParseError.MalformedStatusLine;
@@ -264,7 +264,7 @@ pub fn parseHeaderBlockWithOptions(buf: []const u8, start: usize, fields: []Fiel
         if (pos >= buf.len) return ParseError.Incomplete;
         // End of headers detection (empty line):
         // 1. CRLF empty line: \r\n
-        // 2. LF empty line: \n (allowed only if opts.allow_lf_line_endings)
+        // 2. LF empty line: \n (allowed only if opts.allowLfLineEndings)
         // Lone \r without \n is NOT end-of-headers; it is part of content or malformed line.
         if (buf[pos] == '\r') {
             if (pos + 1 >= buf.len) return ParseError.Incomplete;
@@ -273,16 +273,16 @@ pub fn parseHeaderBlockWithOptions(buf: []const u8, start: usize, fields: []Fiel
             return ParseError.MalformedHeaderLine;
         }
         if (buf[pos] == '\n') {
-            if (opts.allow_lf_line_endings) return .{ .count = n, .end = pos + 1 };
+            if (opts.allowLfLineEndings) return .{ .count = n, .end = pos + 1 };
             return ParseError.MalformedHeaderLine;
         }
 
-        const line_end = try findEolWithOptions(buf, pos, opts);
-        var value_end = line_end;
-        if (line_end > pos and buf[line_end - 1] == '\r') value_end -= 1;
+        const lineEnd = try findEolWithOptions(buf, pos, opts);
+        var valueEnd = lineEnd;
+        if (lineEnd > pos and buf[lineEnd - 1] == '\r') valueEnd -= 1;
 
         // Whitespace before colon is forbidden (RFC 9112 Section 5.1).
-        const colon = std.mem.indexOfScalar(u8, buf[pos..value_end], ':') orelse {
+        const colon = std.mem.indexOfScalar(u8, buf[pos..valueEnd], ':') orelse {
             // A line starting with SP/HTAB here is obs-fold.
             if (buf[pos] == ' ' or buf[pos] == '\t') return ParseError.ObsFold;
             return ParseError.MalformedHeaderLine;
@@ -297,7 +297,7 @@ pub fn parseHeaderBlockWithOptions(buf: []const u8, start: usize, fields: []Fiel
 
         // Value: strip leading/trailing SP/HTAB (OWS).
         var vs = pos + colon + 1;
-        var ve = value_end;
+        var ve = valueEnd;
         while (vs < ve and (buf[vs] == ' ' or buf[vs] == '\t')) vs += 1;
         while (ve > vs and (buf[ve - 1] == ' ' or buf[ve - 1] == '\t')) ve -= 1;
         for (buf[vs..ve]) |ch| {
@@ -311,11 +311,11 @@ pub fn parseHeaderBlockWithOptions(buf: []const u8, start: usize, fields: []Fiel
         if (n >= fields.len) return ParseError.TooManyHeaders;
         fields[n] = .{ .name = name, .value = buf[vs..ve] };
         n += 1;
-        pos = line_end + 1;
+        pos = lineEnd + 1;
     }
 }
 
-pub const Framing = enum { none, content_length, chunked, tunnel };
+pub const Framing = enum { none, contentLength, chunked, tunnel };
 
 pub const FramingDecision = struct {
     framing: Framing,
@@ -325,47 +325,47 @@ pub const FramingDecision = struct {
 /// Determine body framing per RFC 9112 ï¿½6.3 with smuggling defenses.
 /// Requests without CL/TE have no body. Responses may be close-delimited
 /// (framing=none, length=0, caller decides) except 1xx/204/304 and HEAD.
-/// CONNECT 2xx switches to tunnel semantics (pass `connect_ok=true`).
+/// CONNECT 2xx switches to tunnel semantics (pass `connectOk=true`).
 pub fn decideFraming(
     fields: []const Field,
-    is_response: bool,
+    isResponse: bool,
     status: u16,
-    method_len: usize,
+    methodLen: usize,
 ) ParseError!FramingDecision {
     return framingFull(fields, .{
-        .is_response = is_response,
+        .isResponse = isResponse,
         .status = status,
-        .method_len = method_len,
+        .methodLen = methodLen,
     });
 }
 
 pub const FramingContext = struct {
-    is_response: bool = false,
+    isResponse: bool = false,
     status: u16 = 0,
-    /// Length of the request method string; 4 => HEAD when is_response.
-    method_len: usize = 0,
+    /// Length of the request method string; 4 => HEAD when isResponse.
+    methodLen: usize = 0,
     /// Treat 2xx responses to CONNECT as tunnels.
-    connect_ok: bool = false,
+    connectOk: bool = false,
     /// True for HTTP/1.0 where Transfer-Encoding chunked is forbidden (RFC 9112 smuggling).
-    is_http_10: bool = false,
+    isHttp10: bool = false,
     /// Upper bound applied to any declared content length.
-    max_body: usize = DEFAULT_MAX_BODY_BYTES,
+    maxBody: usize = DEFAULT_MAX_BODY_BYTES,
 };
 
 pub fn framingFull(fields: []const Field, ctx: FramingContext) ParseError!FramingDecision {
     // Responses terminated by head end ignore any framing headers
     // (RFC 9110 section 6.3: 1xx, 204, 304; HEAD handled via method).
-    if (ctx.is_response) {
+    if (ctx.isResponse) {
         if (ctx.status < 200 or ctx.status == 204 or ctx.status == 304) {
             return .{ .framing = .none, .length = 0 };
         }
         // HEAD responses never carry a message body. Content-Length remains
         // representation metadata, but must not make the client consume
         // bytes from the connection (RFC 9112 Section 6.3).
-        if (ctx.method_len == 4) {
+        if (ctx.methodLen == 4) {
             return .{ .framing = .none, .length = 0 };
         }
-        if (ctx.connect_ok and ctx.status < 300) {
+        if (ctx.connectOk and ctx.status < 300) {
             return .{ .framing = .tunnel, .length = 0 };
         }
     }
@@ -383,7 +383,7 @@ pub fn framingFull(fields: []const Field, ctx: FramingContext) ParseError!Framin
                 if (!std.ascii.isDigit(c)) return ParseError.InvalidContentLength;
             }
             const v = std.fmt.parseInt(usize, f.value, 10) catch return ParseError.InvalidContentLength;
-            if (v > ctx.max_body) return ParseError.InvalidContentLength;
+            if (v > ctx.maxBody) return ParseError.InvalidContentLength;
             if (has_cl and cl != v) return ParseError.AmbiguousFraming; // differing duplicates
             has_cl = true;
             cl = v;
@@ -396,9 +396,9 @@ pub fn framingFull(fields: []const Field, ctx: FramingContext) ParseError!Framin
 
     if (has_te and !te_chunked_final) return ParseError.AmbiguousFraming;
     if (has_te and has_cl) return ParseError.AmbiguousFraming; // classic smuggling vector
-    if (has_te and ctx.is_http_10) return ParseError.AmbiguousFraming; // 1.0 must not use chunked
+    if (has_te and ctx.isHttp10) return ParseError.AmbiguousFraming; // 1.0 must not use chunked
     if (has_te) return .{ .framing = .chunked, .length = 0 };
-    if (has_cl) return .{ .framing = .content_length, .length = cl };
+    if (has_cl) return .{ .framing = .contentLength, .length = cl };
 
     // No framing info: read-until-close for responses (caller decides);
     // requests without CL/TE have no body.
@@ -421,38 +421,38 @@ fn endsWithCodingChunked(value: []const u8) bool {
 /// returns the offset of the first byte AFTER the terminating blank line
 /// (pipelined tail), or error.Incomplete while more input is needed.
 pub const ChunkedDecoder = struct {
-    pub const State = enum { size, size_cr, ext, ext_cr, data, data_cr, data_lf, trailer, done };
+    pub const State = enum { size, sizeCr, ext, extCr, data, dataCr, dataLf, trailer, done };
 
     state: State = .size,
-    remaining_in_chunk: u64 = 0,
-    size_acc: u64 = 0,
-    size_digits: usize = 0,
+    remainingInChunk: u64 = 0,
+    sizeAcc: u64 = 0,
+    sizeDigits: usize = 0,
 
-    max_chunk_size: u64 = DEFAULT_MAX_BODY_BYTES,
+    maxChunkSize: u64 = DEFAULT_MAX_BODY_BYTES,
 
     /// Total bytes of raw chunk overhead (framing/CRLF/extensions).
-    total_overhead: u64 = 0,
+    totalOverhead: u64 = 0,
     /// Total bytes fed into the decoder.
-    total_read: u64 = 0,
+    totalRead: u64 = 0,
 
     /// Optional sink for trailer fields. Field slices point into the most
     /// recent input buffer and are valid only until it is reused.
-    /// When set, `trailer_allocator` must be set too (ArrayList is unmanaged).
+    /// When set, `trailerAllocator` must be set too (ArrayList is unmanaged).
     trailers: ?*std.ArrayList(Field) = null,
-    trailer_allocator: Allocator = std.heap.page_allocator,
-    trailers_seen: usize = 0,
+    trailerAllocator: Allocator = std.heap.page_allocator,
+    trailersSeen: usize = 0,
 
-    total_decoded: u64 = 0,
+    totalDecoded: u64 = 0,
 
     /// Raw bytes consumed from the most recent decode() input. On
     /// error.Incomplete the caller drops this prefix, appends new data,
     /// and calls again (phr_decode_chunked-style).
-    raw_consumed: usize = 0,
+    rawConsumed: usize = 0,
 
     /// Payload bytes produced by the most recent decode() call; they
-    /// occupy buf[0..decoded_len]. Callers accumulating a streamed body
+    /// occupy buf[0..decodedLen]. Callers accumulating a streamed body
     /// must copy these out before dropping the consumed prefix.
-    decoded_len: usize = 0,
+    decodedLen: usize = 0,
 
     pub fn init() ChunkedDecoder {
         return .{};
@@ -472,20 +472,20 @@ pub const ChunkedDecoder = struct {
                     const c = buf[src];
                     src += 1;
                     switch (c) {
-                        '0'...'9' => self.pushDigit(c - '0'),
-                        'a'...'f' => self.pushDigit(c - 'a' + 10),
-                        'A'...'F' => self.pushDigit(c - 'A' + 10),
                         ';' => self.state = .ext,
                         '\t', ' ' => {
-                            if (self.size_digits == 0) return ParseError.InvalidChunkSize;
+                            if (self.sizeDigits == 0) return ParseError.InvalidChunkSize;
                             self.state = .ext;
                         },
-                        '\r' => self.state = .size_cr,
+                        '\r' => self.state = .sizeCr,
                         '\n' => try self.endSizeLine(),
-                        else => return ParseError.InvalidChunkSize,
+                        else => {
+                            const d = std.fmt.charToDigit(c, 16) catch return ParseError.InvalidChunkSize;
+                            self.pushDigit(d);
+                        },
                     }
                 },
-                .size_cr => {
+                .sizeCr => {
                     const c = buf[src];
                     src += 1;
                     if (c != '\n') return ParseError.InvalidChunkSize;
@@ -496,41 +496,41 @@ pub const ChunkedDecoder = struct {
                     const c = buf[src];
                     src += 1;
                     switch (c) {
-                        '\r' => self.state = .ext_cr,
+                        '\r' => self.state = .extCr,
                         '\n' => try self.endSizeLine(),
                         '\t', ' ' => {},
                         else => if (isCtl(c)) return ParseError.InvalidChunkSize,
                     }
                 },
-                .ext_cr => {
+                .extCr => {
                     const c = buf[src];
                     src += 1;
                     if (c != '\n') return ParseError.InvalidChunkSize;
                     try self.endSizeLine();
                 },
                 .data => {
-                    const avail: u64 = @min(@as(u64, buf.len - src), self.remaining_in_chunk);
+                    const avail: u64 = @min(@as(u64, buf.len - src), self.remainingInChunk);
                     const n: usize = @intCast(avail);
                     if (dst != src) {
                         std.mem.copyForwards(u8, buf[dst..][0..n], buf[src..][0..n]);
                     }
                     dst += n;
                     src += n;
-                    self.remaining_in_chunk -= avail;
-                    self.total_decoded += avail;
-                    if (self.remaining_in_chunk == 0) self.state = .data_cr;
+                    self.remainingInChunk -= avail;
+                    self.totalDecoded += avail;
+                    if (self.remainingInChunk == 0) self.state = .dataCr;
                 },
-                .data_cr => {
+                .dataCr => {
                     const c = buf[src];
                     src += 1;
                     if (c == '\r') {
-                        self.state = .data_lf;
+                        self.state = .dataLf;
                     } else if (c == '\n') {
                         // Lax bare-LF between chunks (matches picohttpparser).
                         self.enterSize();
                     } else return ParseError.InvalidChunkSize;
                 },
-                .data_lf => {
+                .dataLf => {
                     const c = buf[src];
                     src += 1;
                     if (c != '\n') return ParseError.InvalidChunkSize;
@@ -544,9 +544,9 @@ pub const ChunkedDecoder = struct {
                         else => return err,
                     };
                     if (self.trailers) |list| {
-                        list.appendSlice(self.trailer_allocator, tfields[0..res.count]) catch return ParseError.OutOfMemory;
+                        list.appendSlice(self.trailerAllocator, tfields[0..res.count]) catch return ParseError.OutOfMemory;
                     }
-                    self.trailers_seen += res.count;
+                    self.trailersSeen += res.count;
                     src += res.end;
                     self.state = .done;
                 },
@@ -554,15 +554,15 @@ pub const ChunkedDecoder = struct {
             }
         }
 
-        self.raw_consumed = src;
-        self.decoded_len = dst;
-        self.total_read += src;
+        self.rawConsumed = src;
+        self.decodedLen = dst;
+        self.totalRead += src;
         const overhead = src - dst;
-        self.total_overhead += overhead;
+        self.totalOverhead += overhead;
 
         // Anti-DoS overhead check modeled on picohttpparser:
         // if overhead >= 100KB and overhead accounts for > 75% of read bytes, abort.
-        if (self.total_overhead >= 100 * 1024 and self.total_read - self.total_overhead < self.total_read / 4) {
+        if (self.totalOverhead >= 100 * 1024 and self.totalRead - self.totalOverhead < self.totalRead / 4) {
             return ParseError.InvalidChunkSize;
         }
 
@@ -571,29 +571,29 @@ pub const ChunkedDecoder = struct {
     }
 
     fn pushDigit(self: *ChunkedDecoder, d: u64) void {
-        self.size_digits += 1;
-        if (self.size_digits > 16) {
-            // Saturate so endSizeLine rejects via max_chunk_size.
-            self.size_acc = std.math.maxInt(u64);
+        self.sizeDigits += 1;
+        if (self.sizeDigits > 16) {
+            // Saturate so endSizeLine rejects via maxChunkSize.
+            self.sizeAcc = std.math.maxInt(u64);
             return;
         }
-        self.size_acc = self.size_acc *% 16 +% d;
+        self.sizeAcc = self.sizeAcc *% 16 +% d;
     }
 
     /// Enters the size-line state, resetting per-line accumulators.
     fn enterSize(self: *ChunkedDecoder) void {
         self.state = .size;
-        self.size_acc = 0;
-        self.size_digits = 0;
+        self.sizeAcc = 0;
+        self.sizeDigits = 0;
     }
 
     fn endSizeLine(self: *ChunkedDecoder) ParseError!void {
-        if (self.size_digits == 0) return ParseError.InvalidChunkSize;
-        if (self.size_acc > self.max_chunk_size) return ParseError.InvalidChunkSize;
-        if (self.size_acc == 0) {
+        if (self.sizeDigits == 0) return ParseError.InvalidChunkSize;
+        if (self.sizeAcc > self.maxChunkSize) return ParseError.InvalidChunkSize;
+        if (self.sizeAcc == 0) {
             self.state = .trailer;
         } else {
-            self.remaining_in_chunk = self.size_acc;
+            self.remainingInChunk = self.sizeAcc;
             self.state = .data;
         }
     }
@@ -606,7 +606,7 @@ test "parse simple GET request head" {
     const r = try parseRequestHead(req);
     try std.testing.expectEqualStrings("GET", r.method);
     try std.testing.expectEqualStrings("/path?q=1", r.path);
-    try std.testing.expectEqual(@as(u8, 1), r.minor_version);
+    try std.testing.expectEqual(@as(u8, 1), r.minorVersion);
 }
 
 test "request head split across arbitrary reads" {
@@ -615,7 +615,7 @@ test "request head split across arbitrary reads" {
         var acc: [128]u8 = undefined;
         @memcpy(acc[0..cut], req[0..cut]);
         if (parseRequestHead(acc[0..cut])) |h| {
-            try std.testing.expect(h.head_end <= cut);
+            try std.testing.expect(h.headEnd <= cut);
         } else |e| {
             try std.testing.expectEqual(ParseError.Incomplete, e);
         }
@@ -632,15 +632,15 @@ test "reject bad request lines" {
 
 test "parse response status line variants" {
     const r1 = try parseResponseHead("HTTP/1.1 200 OK\r\nServer: x\r\n\r\n");
-    try std.testing.expectEqual(@as(u16, 200), r1.status_code);
+    try std.testing.expectEqual(@as(u16, 200), r1.statusCode);
     try std.testing.expectEqualStrings("OK", r1.reason);
 
     const r2 = try parseResponseHead("HTTP/1.0 404 Not Found with words\r\n\r\n");
-    try std.testing.expectEqual(@as(u16, 404), r2.status_code);
+    try std.testing.expectEqual(@as(u16, 404), r2.statusCode);
     try std.testing.expectEqualStrings("Not Found with words", r2.reason);
 
     const r3 = try parseResponseHead("HTTP/1.1 204\r\n\r\n");
-    try std.testing.expectEqual(@as(u16, 204), r3.status_code);
+    try std.testing.expectEqual(@as(u16, 204), r3.statusCode);
     try std.testing.expectEqualStrings("", r3.reason);
 }
 
@@ -668,7 +668,7 @@ test "framing decisions incl smuggling defenses" {
     // CL alone
     const cl = [_]Field{.{ .name = "Content-Length", .value = "10" }};
     const d1 = try decideFraming(&cl, false, 0, 0);
-    try std.testing.expectEqual(Framing.content_length, d1.framing);
+    try std.testing.expectEqual(Framing.contentLength, d1.framing);
     try std.testing.expectEqual(@as(usize, 10), d1.length);
 
     // chunked alone
@@ -703,7 +703,7 @@ test "framing decisions incl smuggling defenses" {
         .{ .name = "content-length", .value = "5" },
     };
     const d4 = try decideFraming(&samedup, false, 0, 0);
-    try std.testing.expectEqual(Framing.content_length, d4.framing);
+    try std.testing.expectEqual(Framing.contentLength, d4.framing);
 
     // invalid CL forms
     try std.testing.expectError(ParseError.InvalidContentLength, decideFraming(&.{.{ .name = "Content-Length", .value = "+5" }}, false, 0, 0));
@@ -711,18 +711,18 @@ test "framing decisions incl smuggling defenses" {
     try std.testing.expectError(ParseError.InvalidContentLength, decideFraming(&.{.{ .name = "Content-Length", .value = "" }}, false, 0, 0));
 
     // CONNECT tunnel response
-    const conn = try framingFull(&.{}, .{ .is_response = true, .status = 200, .connect_ok = true });
+    const conn = try framingFull(&.{}, .{ .isResponse = true, .status = 200, .connectOk = true });
     try std.testing.expectEqual(Framing.tunnel, conn.framing);
 
     // 204 has no body even when CL present
-    const r204 = try framingFull(&cl, .{ .is_response = true, .status = 204, .method_len = 4 });
+    const r204 = try framingFull(&cl, .{ .isResponse = true, .status = 204, .methodLen = 4 });
     try std.testing.expectEqual(Framing.none, r204.framing);
 
     const head_response = [_]Field{
         .{ .name = "Content-Length", .value = "42" },
         .{ .name = "Transfer-Encoding", .value = "chunked" },
     };
-    const rhead = try framingFull(&head_response, .{ .is_response = true, .status = 200, .method_len = 4 });
+    const rhead = try framingFull(&head_response, .{ .isResponse = true, .status = 200, .methodLen = 4 });
     try std.testing.expectEqual(Framing.none, rhead.framing);
 }
 
@@ -738,34 +738,34 @@ test "chunked decoder basic and incremental feeding" {
     try std.testing.expectEqual(input.len, tail);
 
     // Byte-at-a-time feeding using the streaming contract: each call
-    // gets only unconsumed bytes; produced payload (buf[0..decoded_len])
+    // gets only unconsumed bytes; produced payload (buf[0..decodedLen])
     // is collected; the consumed prefix is dropped.
     dec = ChunkedDecoder.init();
     var keep: [64]u8 = undefined;
     var klen: usize = 0;
     var out: [64]u8 = undefined;
-    var out_len: usize = 0;
+    var outLen: usize = 0;
     var done = false;
     for (input) |ch| {
         keep[klen] = ch;
         klen += 1;
         if (dec.decode(keep[0..klen])) |_| {
             done = true;
-            out_len += dec.decoded_len;
+            outLen += dec.decodedLen;
             break;
         } else |e| {
             try std.testing.expectEqual(ParseError.Incomplete, e);
-            const produced = dec.decoded_len;
-            @memcpy(out[out_len..][0..produced], keep[0..produced]);
-            out_len += produced;
-            const used = dec.raw_consumed;
+            const produced = dec.decodedLen;
+            @memcpy(out[outLen..][0..produced], keep[0..produced]);
+            outLen += produced;
+            const used = dec.rawConsumed;
             std.mem.copyForwards(u8, keep[0 .. klen - used], keep[used..klen]);
             klen -= used;
         }
     }
     try std.testing.expect(done);
     try std.testing.expect(dec.isDone());
-    try std.testing.expectEqualStrings("hello world", out[0..out_len]);
+    try std.testing.expectEqualStrings("hello world", out[0..outLen]);
 }
 
 test "chunked decoder with extensions and trailers" {
@@ -775,7 +775,7 @@ test "chunked decoder with extensions and trailers" {
     const input = "4;ext=1;x\r\nWiki\r\n0\r\nX-T: tv\r\nX-U: uv\r\n\r\nTAIL";
     var dec = ChunkedDecoder.init();
     dec.trailers = &trailer_list;
-    dec.trailer_allocator = std.testing.allocator;
+    dec.trailerAllocator = std.testing.allocator;
     var buf: [96]u8 = undefined;
     @memcpy(buf[0..input.len], input);
     const tail = try dec.decode(buf[0..input.len]);
@@ -822,7 +822,7 @@ test "strict mode rejects bare LF in headers while lenient mode accepts it" {
     try std.testing.expectError(ParseError.MalformedHeaderLine, parseHeaderBlock(raw, 16, fields[0..]));
 
     // Lenient mode must parse bare LF lines successfully
-    const res = try parseHeaderBlockWithOptions(raw, 16, fields[0..], .{ .allow_lf_line_endings = true });
+    const res = try parseHeaderBlockWithOptions(raw, 16, fields[0..], .{ .allowLfLineEndings = true });
     try std.testing.expectEqual(@as(usize, 2), res.count);
     try std.testing.expectEqualStrings("Host", fields[0].name);
     try std.testing.expectEqualStrings("example.com", fields[0].value);
@@ -842,8 +842,8 @@ test "chunked decoder handles BWS whitespace after chunk size" {
 
 test "chunked decoder rejects excessive chunk overhead amplification" {
     var dec = ChunkedDecoder.init();
-    dec.total_overhead = 101 * 1024;
-    dec.total_read = 102 * 1024; // overhead is > 75%
+    dec.totalOverhead = 101 * 1024;
+    dec.totalRead = 102 * 1024; // overhead is > 75%
     const input = "1\r\na\r\n";
     var buf: [16]u8 = undefined;
     @memcpy(buf[0..input.len], input);
@@ -855,7 +855,7 @@ test "lone CR inside header value is treated as data byte, not line terminator" 
     const raw = "HTTP/1.1 200 OK\r\nHeader: v\rX: y\r\n\r\n";
     var fields: [4]Field = undefined;
 
-    const res = try parseHeaderBlockWithOptions(raw, 17, fields[0..], .{ .allow_lf_line_endings = true });
+    const res = try parseHeaderBlockWithOptions(raw, 17, fields[0..], .{ .allowLfLineEndings = true });
     try std.testing.expectEqual(@as(usize, 1), res.count);
     try std.testing.expectEqualStrings("Header", fields[0].name);
     try std.testing.expectEqualStrings("v\rX: y", fields[0].value);

@@ -35,8 +35,8 @@ pub const ResolverContext = struct {
     parent: ?std.json.Value = null,
     args: std.json.Value = .null,
     variables: std.json.Value = .null,
-    field_name: []const u8,
-    user_context: ?*anyopaque = null,
+    fieldName: []const u8,
+    userContext: ?*anyopaque = null,
 
     /// Converts any Zig value, struct, slice, or primitive directly into a std.json.Value.
     /// Eliminates manual ObjectMap/Array boilerplate in resolvers.
@@ -51,9 +51,9 @@ pub const ResolverContext = struct {
 pub const FieldDef = struct {
     name: []const u8,
     description: ?[]const u8 = null,
-    type_name: []const u8,
-    is_list: bool = false,
-    is_non_null: bool = false,
+    typeName: []const u8,
+    isList: bool = false,
+    isNonNull: bool = false,
     resolver: ?FieldResolver = null,
 };
 
@@ -67,9 +67,14 @@ pub const SchemaConfig = struct {
     query: ObjectTypeDef,
     mutation: ?ObjectTypeDef = null,
     types: []const ObjectTypeDef = &.{},
-    max_depth: usize = 32,
-    max_complexity: usize = 500,
-    enable_introspection: bool = true,
+    maxDepth: usize = 32,
+    maxComplexity: usize = 500,
+    introspection: bool = true,
+    enableIntrospection: ?bool = null,
+
+    pub fn isIntrospectionEnabled(self: SchemaConfig) bool {
+        return self.enableIntrospection orelse self.introspection;
+    }
 };
 
 pub const Schema = struct {
@@ -83,16 +88,16 @@ pub const Schema = struct {
         };
     }
 
-    pub fn execute(self: *const Schema, arena: Allocator, query: []const u8, variables_json: ?[]const u8, user_context: ?*anyopaque) ![]u8 {
+    pub fn execute(self: *const Schema, arena: Allocator, query: []const u8, variablesJson: ?[]const u8, userContext: ?*anyopaque) ![]u8 {
         var parsed_vars: std.json.Value = .null;
-        if (variables_json) |v_str| {
+        if (variablesJson) |v_str| {
             if (v_str.len > 0 and !std.mem.eql(u8, v_str, "null")) {
                 const parsed = std.json.parseFromSlice(std.json.Value, arena, v_str, .{}) catch return self.formatError(arena, "Invalid variables JSON payload");
                 parsed_vars = parsed.value;
             }
         }
 
-        var parser = parser_mod.Parser.init(arena, query, .{ .max_depth = self.config.max_depth }) catch |err| {
+        var parser = parser_mod.Parser.init(arena, query, .{ .maxDepth = self.config.maxDepth }) catch |err| {
             return self.formatError(arena, switch (err) {
                 error.RequestEntityTooLarge => "Query payload exceeds maximum size limit",
                 error.MaxQueryDepthExceeded => "Query exceeds maximum depth limit",
@@ -121,7 +126,7 @@ pub const Schema = struct {
         if (op_def == null) return self.formatError(arena, "No executable operation found in GraphQL request");
 
         const op = op_def.?;
-        const target_obj = switch (op.operation_type) {
+        const target_obj = switch (op.operationType) {
             .query => self.config.query,
             .mutation => self.config.mutation orelse return self.formatError(arena, "Mutations are not supported by this schema"),
             .subscription => return self.formatError(arena, "Subscriptions are not supported over standard HTTP POST"),
@@ -129,30 +134,30 @@ pub const Schema = struct {
 
         var root_data = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
 
-        for (op.selection_set) |sel| {
+        for (op.selectionSet) |sel| {
             switch (sel) {
                 .field => |f| {
-                    const field_val = try self.resolveField(arena, target_obj, f, null, parsed_vars, &fragments, user_context);
+                    const field_val = try self.resolveField(arena, target_obj, f, null, parsed_vars, &fragments, userContext);
                     const output_name = f.alias orelse f.name;
                     try root_data.put(arena, output_name, field_val);
                 },
-                .fragment_spread => |fs| {
+                .fragmentSpread => |fs| {
                     if (fragments.get(fs.name)) |f_def| {
-                        for (f_def.selection_set) |f_sel| {
+                        for (f_def.selectionSet) |f_sel| {
                             if (f_sel == .field) {
                                 const f = f_sel.field;
-                                const field_val = try self.resolveField(arena, target_obj, f, null, parsed_vars, &fragments, user_context);
+                                const field_val = try self.resolveField(arena, target_obj, f, null, parsed_vars, &fragments, userContext);
                                 const output_name = f.alias orelse f.name;
                                 try root_data.put(arena, output_name, field_val);
                             }
                         }
                     }
                 },
-                .inline_fragment => |inf| {
-                    for (inf.selection_set) |inf_sel| {
+                .inlineFragment => |inf| {
+                    for (inf.selectionSet) |inf_sel| {
                         if (inf_sel == .field) {
                             const f = inf_sel.field;
-                            const field_val = try self.resolveField(arena, target_obj, f, null, parsed_vars, &fragments, user_context);
+                            const field_val = try self.resolveField(arena, target_obj, f, null, parsed_vars, &fragments, userContext);
                             const output_name = f.alias orelse f.name;
                             try root_data.put(arena, output_name, field_val);
                         }
@@ -172,17 +177,17 @@ pub const Schema = struct {
     fn resolveField(
         self: *const Schema,
         arena: Allocator,
-        obj_def: ObjectTypeDef,
+        objDef: ObjectTypeDef,
         field: ast.Field,
-        parent_val: ?std.json.Value,
+        parentVal: ?std.json.Value,
         variables: std.json.Value,
         fragments: *const std.StringHashMap(ast.FragmentDefinition),
-        user_ctx: ?*anyopaque,
+        userCtx: ?*anyopaque,
     ) !std.json.Value {
         // Introspection handling
-        if (self.config.enable_introspection) {
+        if (self.config.isIntrospectionEnabled()) {
             if (std.mem.eql(u8, field.name, "__typename")) {
-                return std.json.Value{ .string = obj_def.name };
+                return std.json.Value{ .string = objDef.name };
             }
             if (std.mem.eql(u8, field.name, "__schema")) {
                 return self.resolveSchemaIntrospection(arena, field);
@@ -191,7 +196,7 @@ pub const Schema = struct {
 
         // Locate field definition in schema
         var field_def: ?FieldDef = null;
-        for (obj_def.fields) |fd| {
+        for (objDef.fields) |fd| {
             if (std.mem.eql(u8, fd.name, field.name)) {
                 field_def = fd;
                 break;
@@ -200,7 +205,7 @@ pub const Schema = struct {
 
         if (field_def == null) {
             // Check if parent is a JSON object with this key
-            if (parent_val) |pv| {
+            if (parentVal) |pv| {
                 if (pv == .object) {
                     if (pv.object.get(field.name)) |v| return v;
                 }
@@ -219,11 +224,11 @@ pub const Schema = struct {
 
         const res_ctx = ResolverContext{
             .allocator = arena,
-            .parent = parent_val,
+            .parent = parentVal,
             .args = std.json.Value{ .object = args_obj },
             .variables = variables,
-            .field_name = field.name,
-            .user_context = user_ctx,
+            .fieldName = field.name,
+            .userContext = userCtx,
         };
 
         var resolved_value: std.json.Value = .null;
@@ -231,42 +236,42 @@ pub const Schema = struct {
             resolved_value = r(res_ctx) catch {
                 return .null;
             };
-        } else if (parent_val) |pv| {
+        } else if (parentVal) |pv| {
             if (pv == .object) {
                 resolved_value = pv.object.get(field.name) orelse .null;
             }
         }
 
         // If field has selection set and resolved value is an object or array
-        if (field.selection_set.len > 0) {
-            const nested_type = self.findType(fd.type_name) orelse ObjectTypeDef{ .name = fd.type_name, .fields = &.{} };
+        if (field.selectionSet.len > 0) {
+            const nested_type = self.findType(fd.typeName) orelse ObjectTypeDef{ .name = fd.typeName, .fields = &.{} };
             switch (resolved_value) {
                 .object => |sub_obj| {
                     var out_obj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
-                    for (field.selection_set) |sel| {
+                    for (field.selectionSet) |sel| {
                         switch (sel) {
                             .field => |sf| {
-                                const sv = try self.resolveField(arena, nested_type, sf, std.json.Value{ .object = sub_obj }, variables, fragments, user_ctx);
+                                const sv = try self.resolveField(arena, nested_type, sf, std.json.Value{ .object = sub_obj }, variables, fragments, userCtx);
                                 const out_name = sf.alias orelse sf.name;
                                 try out_obj.put(arena, out_name, sv);
                             },
-                            .fragment_spread => |sfs| {
+                            .fragmentSpread => |sfs| {
                                 if (fragments.get(sfs.name)) |f_def| {
-                                    for (f_def.selection_set) |f_sel| {
+                                    for (f_def.selectionSet) |f_sel| {
                                         if (f_sel == .field) {
                                             const sf = f_sel.field;
-                                            const sv = try self.resolveField(arena, nested_type, sf, std.json.Value{ .object = sub_obj }, variables, fragments, user_ctx);
+                                            const sv = try self.resolveField(arena, nested_type, sf, std.json.Value{ .object = sub_obj }, variables, fragments, userCtx);
                                             const out_name = sf.alias orelse sf.name;
                                             try out_obj.put(arena, out_name, sv);
                                         }
                                     }
                                 }
                             },
-                            .inline_fragment => |inf| {
-                                for (inf.selection_set) |inf_sel| {
+                            .inlineFragment => |inf| {
+                                for (inf.selectionSet) |inf_sel| {
                                     if (inf_sel == .field) {
                                         const sf = inf_sel.field;
-                                        const sv = try self.resolveField(arena, nested_type, sf, std.json.Value{ .object = sub_obj }, variables, fragments, user_ctx);
+                                        const sv = try self.resolveField(arena, nested_type, sf, std.json.Value{ .object = sub_obj }, variables, fragments, userCtx);
                                         const out_name = sf.alias orelse sf.name;
                                         try out_obj.put(arena, out_name, sv);
                                     }
@@ -281,10 +286,10 @@ pub const Schema = struct {
                     for (arr.items) |elem| {
                         if (elem == .object) {
                             var elem_obj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
-                            for (field.selection_set) |sel| {
+                            for (field.selectionSet) |sel| {
                                 if (sel == .field) {
                                     const sf = sel.field;
-                                    const sv = try self.resolveField(arena, nested_type, sf, elem, variables, fragments, user_ctx);
+                                    const sv = try self.resolveField(arena, nested_type, sf, elem, variables, fragments, userCtx);
                                     const out_name = sf.alias orelse sf.name;
                                     try elem_obj.put(arena, out_name, sv);
                                 }
@@ -326,8 +331,8 @@ pub const Schema = struct {
             .float => |f| .{ .float = f },
             .string => |s| .{ .string = s },
             .boolean => |b| .{ .bool = b },
-            .null_val => .null,
-            .enum_val => |e| .{ .string = e },
+            .nullVal => .null,
+            .enumVal => |e| .{ .string = e },
             .list => |l| {
                 var arr = std.json.Array.init(arena);
                 for (l) |item| {
@@ -420,11 +425,11 @@ pub const Schema = struct {
             try f_map.put(arena, "isDeprecated", std.json.Value{ .bool = false });
             try f_map.put(arena, "deprecationReason", .null);
 
-            var type_ref = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
-            try type_ref.put(arena, "kind", std.json.Value{ .string = "SCALAR" });
-            try type_ref.put(arena, "name", std.json.Value{ .string = f.type_name });
-            try type_ref.put(arena, "ofType", .null);
-            try f_map.put(arena, "type", std.json.Value{ .object = type_ref });
+            var typeRef = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
+            try typeRef.put(arena, "kind", std.json.Value{ .string = "SCALAR" });
+            try typeRef.put(arena, "name", std.json.Value{ .string = f.typeName });
+            try typeRef.put(arena, "ofType", .null);
+            try f_map.put(arena, "type", std.json.Value{ .object = typeRef });
 
             try f_map.put(arena, "args", std.json.Value{ .array = std.json.Array.init(arena) });
             try fields_list.append(std.json.Value{ .object = f_map });
@@ -462,8 +467,8 @@ test "graphql schema basic execution" {
     const UserType = ObjectTypeDef{
         .name = "User",
         .fields = &.{
-            .{ .name = "id", .type_name = "ID" },
-            .{ .name = "name", .type_name = "String" },
+            .{ .name = "id", .typeName = "ID" },
+            .{ .name = "name", .typeName = "String" },
         },
     };
 
@@ -479,7 +484,7 @@ test "graphql schema basic execution" {
     const QueryType = ObjectTypeDef{
         .name = "Query",
         .fields = &.{
-            .{ .name = "me", .type_name = "User", .resolver = resolver.getMe },
+            .{ .name = "me", .typeName = "User", .resolver = resolver.getMe },
         },
     };
 

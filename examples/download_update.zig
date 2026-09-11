@@ -5,8 +5,9 @@ pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    var client = try httpx.Client.init(allocator, .{});
+    var client = httpx.Client.init(allocator, io, .{});
     defer client.deinit();
 
     const sample_url = "https://ontheline.trincoll.edu/images/bookdown/sample-local-pdf.pdf";
@@ -14,12 +15,12 @@ pub fn main() !void {
 
     const res = client.updateFile(
         sample_url,
-        "downloads/app-asset.pdf",
         .{
-            .backup_existing = true,
-            .backup_suffix = ".bak",
+            .path = "downloads/app-asset.pdf",
+            .backupExisting = true,
+            .backupSuffix = ".bak",
             .verify = .{
-                .min_size = 100,
+                .minSize = 100,
             },
         },
     ) catch |err| {
@@ -27,5 +28,5 @@ pub fn main() !void {
         return;
     };
 
-    std.debug.print("Update succeeded: {s} ({d} bytes)\n", .{ res.destination, res.downloaded_bytes });
+    std.debug.print("Update succeeded: {s} ({d} bytes)\n", .{ res.destination, res.downloadedBytes });
 }

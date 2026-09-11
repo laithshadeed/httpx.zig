@@ -2,10 +2,10 @@ const std = @import("std");
 const httpx = @import("httpx");
 
 const DownloadObserver = struct {
-    task_id: u32,
+    taskId: u32,
 
-    fn onProgress(info: httpx.ProgressInfo, user_data: ?*anyopaque) void {
-        const self: *@This() = @ptrCast(@alignCast(user_data.?));
+    fn onProgress(info: httpx.ProgressInfo, userData: ?*anyopaque) void {
+        const self: *@This() = @ptrCast(@alignCast(userData.?));
         const pct = if (info.percentage) |p| p else 0.0;
         const state_color: []const u8 = switch (info.state) {
             .completed => "\x1b[32m",
@@ -18,14 +18,14 @@ const DownloadObserver = struct {
         const reset = "\x1b[0m";
 
         std.debug.print("[Observer Task {d}] State: {s}{s}{s} | Progress: {d:.1}% ({d} bytes) | Speed: {d:.2} KB/s | ETA: {?d}s\n", .{
-            self.task_id,
+            self.taskId,
             state_color,
             @tagName(info.state),
             reset,
             pct,
-            info.downloaded_bytes,
-            info.speed_bps / 1024.0,
-            info.eta_seconds,
+            info.downloadedBytes,
+            info.speedBps / 1024.0,
+            info.etaSeconds,
         });
     }
 };
@@ -34,12 +34,13 @@ pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    var client = try httpx.Client.init(allocator, .{});
+    var client = httpx.Client.init(allocator, io, .{});
     defer client.deinit();
 
     var observer = DownloadObserver{
-        .task_id = 101,
+        .taskId = 101,
     };
 
     // 1. Successful download test
@@ -48,12 +49,12 @@ pub fn main() !void {
 
     _ = client.download(
         sample_url,
-        "downloads/observed_download.bin",
         .{
+            .path = "downloads/observed_download.bin",
             .progress = .custom,
-            .on_progress = DownloadObserver.onProgress,
-            .user_data = &observer,
-            .create_dirs = true,
+            .onProgress = DownloadObserver.onProgress,
+            .userData = &observer,
+            .createDirs = true,
         },
     ) catch |err| {
         std.debug.print("Download error handled: {s}\n", .{@errorName(err)});
@@ -64,8 +65,8 @@ pub fn main() !void {
     std.debug.print("\n==> Testing 404 Not Found error handling on https://httpbun.com/status/404...\n", .{});
     _ = client.download(
         "https://httpbun.com/status/404",
-        "downloads/not_found.bin",
         .{
+            .path = "downloads/not_found.bin",
             .progress = .quiet,
         },
     ) catch |err| {
@@ -78,10 +79,10 @@ pub fn main() !void {
     std.debug.print("\n==> Testing invalid URL error handling...\n", .{});
     _ = client.download(
         "http://invalid.nonexistent.domain.xyz12345/nonexistent",
-        "downloads/invalid.bin",
         .{
+            .path = "downloads/invalid.bin",
             .progress = .quiet,
-            .max_retries = 0,
+            .maxRetries = 0,
         },
     ) catch |err| {
         std.debug.print("Correctly caught network/URL error: {s}\n", .{

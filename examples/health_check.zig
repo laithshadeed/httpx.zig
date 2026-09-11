@@ -12,7 +12,7 @@ fn healthzHandler(_: *httpx.Context) anyerror!httpx.Response {
     return .{
         .status = httpx.health.Status.healthy.httpStatus(),
         .body = httpx.health.Status.healthy.jsonBody(),
-        .content_type = "application/json",
+        .contentType = "application/json",
     };
 }
 
@@ -20,7 +20,7 @@ fn readyzHandler(_: *httpx.Context) anyerror!httpx.Response {
     return .{
         .status = httpx.health.Status.ready.httpStatus(),
         .body = httpx.health.Status.ready.jsonBody(),
-        .content_type = "application/json",
+        .contentType = "application/json",
     };
 }
 
@@ -28,17 +28,18 @@ pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    var server = try httpx.Server.init(allocator, .{
+    var server = try httpx.Server.init(allocator, io, .{
         .host = "127.0.0.1",
         .port = 0,
-        .docs_enabled = false,
-        .max_connections = 2,
+        .enableDocs = false,
+        .maxConnections = 2,
     });
     defer server.deinit();
 
-    try server.router.add(.GET, "/healthz", &healthzHandler);
-    try server.router.add(.GET, "/readyz", &readyzHandler);
+    try server.router.add(.GET, "/healthz", &healthzHandler, .{});
+    try server.router.add(.GET, "/readyz", &readyzHandler, .{});
 
     const port = server.localPort();
     std.debug.print("endpoints on 127.0.0.1:{d}\n", .{port});
@@ -53,18 +54,18 @@ pub fn main() !void {
     var spin: usize = 0;
     while (spin < 1000) : (spin += 1) std.Thread.yield() catch {};
 
-    var client = try httpx.Client.init(allocator, .{});
+    var client = httpx.Client.init(allocator, io, .{});
     defer client.deinit();
 
     const health_url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/healthz", .{port});
     defer allocator.free(health_url);
-    var health_res = try client.get(.{ .url = health_url });
+    var health_res = try client.get(health_url, .{});
     defer health_res.deinit();
     std.debug.print("GET /healthz -> {d} {s}\n", .{ health_res.status, health_res.body });
 
     const ready_url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/readyz", .{port});
     defer allocator.free(ready_url);
-    var ready_res = try client.get(.{ .url = ready_url });
+    var ready_res = try client.get(ready_url, .{});
     defer ready_res.deinit();
     std.debug.print("GET /readyz -> {d} {s}\n", .{ ready_res.status, ready_res.body });
 

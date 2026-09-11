@@ -14,15 +14,15 @@ const std = @import("std");
 // Limits (configurable; parser.zig defaults derive from these)
 
 pub const Limits = struct {
-    max_headers: usize = 128,
-    max_name_len: usize = 256,
-    max_value_len: usize = 8192,
+    maxHeaders: usize = 128,
+    maxNameLen: usize = 256,
+    maxValueLen: usize = 8192,
     /// Total bytes across all header lines (excluding CRLFs).
-    max_header_bytes: usize = 32 * 1024,
-    max_body_bytes: usize = 64 * 1024 * 1024,
+    maxHeaderBytes: usize = 32 * 1024,
+    maxBodyBytes: usize = 64 * 1024 * 1024,
 };
 
-pub const default_limits = Limits{};
+pub const defaultLimits = Limits{};
 
 // Request-target forms (RFC 9112 section 3.2)
 
@@ -134,9 +134,9 @@ pub fn validAuthority(value: []const u8) bool {
 
 // Connection persistence (RFC 9110 section 7.6.1 / RFC 9112 section 9.3)
 
-pub const Version = enum { http_1_0, http_1_1 };
+pub const Version = enum { http10, http11 };
 
-pub const ConnectionDirective = enum { keep_alive, close, unspecified };
+pub const ConnectionDirective = enum { keepAlive, close, unspecified };
 
 /// Extracts the strongest Connection token relevant to persistence.
 pub fn connectionDirective(headers: []const @import("../http1/parser.zig").Field) ConnectionDirective {
@@ -146,7 +146,7 @@ pub fn connectionDirective(headers: []const @import("../http1/parser.zig").Field
         var it = std.mem.splitScalar(u8, h.value, ',');
         while (it.next()) |tok_raw| {
             const tok = std.mem.trim(u8, tok_raw, " \t");
-            if (std.ascii.eqlIgnoreCase(tok, "keep-alive")) result = .keep_alive;
+            if (std.ascii.eqlIgnoreCase(tok, "keep-alive")) result = .keepAlive;
             if (std.ascii.eqlIgnoreCase(tok, "close")) result = .close;
         }
     }
@@ -160,15 +160,15 @@ pub fn shouldKeepAlive(
 ) bool {
     return switch (connectionDirective(headers)) {
         .close => false,
-        .keep_alive => true,
-        .unspecified => version == .http_1_1,
+        .keepAlive => true,
+        .unspecified => version == .http11,
     };
 }
 
 /// True when framing is unambiguous enough to allow reuse (e.g. never
 /// reuse after a close-delimited response).
-pub fn reusableAfter(framing_kind: anytype) bool {
-    return switch (framing_kind) {
+pub fn reusableAfter(framingKind: anytype) bool {
+    return switch (framingKind) {
         .none => false, // close-delimited consumed the connection
         .tunnel => false,
         else => true,
@@ -198,8 +198,8 @@ pub fn bodylessStatus(status: u16) bool {
 }
 
 /// A response to HEAD carries metadata but no payload bytes.
-pub fn responseHasBody(method_head: bool, status: u16) bool {
-    if (method_head) return false;
+pub fn responseHasBody(methodHead: bool, status: u16) bool {
+    if (methodHead) return false;
     if (bodylessStatus(status)) return false;
     return true;
 }
@@ -248,17 +248,17 @@ test "authority validation incl IPv6" {
 test "keep-alive decision by version and directives" {
     const F = @import("../http1/parser.zig").Field;
     const none = [_]F{};
-    try std.testing.expect(shouldKeepAlive(.http_1_1, none[0..]));
-    try std.testing.expect(!shouldKeepAlive(.http_1_0, none[0..]));
+    try std.testing.expect(shouldKeepAlive(.http11, none[0..]));
+    try std.testing.expect(!shouldKeepAlive(.http10, none[0..]));
 
     const ka10 = [_]F{.{ .name = "Connection", .value = "keep-alive" }};
-    try std.testing.expect(shouldKeepAlive(.http_1_0, ka10[0..]));
+    try std.testing.expect(shouldKeepAlive(.http10, ka10[0..]));
 
     const cl11 = [_]F{.{ .name = "Connection", .value = "close" }};
-    try std.testing.expect(!shouldKeepAlive(.http_1_1, cl11[0..]));
+    try std.testing.expect(!shouldKeepAlive(.http11, cl11[0..]));
 
     const multi = [_]F{.{ .name = "connection", .value = "foo, close" }};
-    try std.testing.expect(!shouldKeepAlive(.http_1_1, multi[0..]));
+    try std.testing.expect(!shouldKeepAlive(.http11, multi[0..]));
 }
 
 test "expect and bodyless rules" {

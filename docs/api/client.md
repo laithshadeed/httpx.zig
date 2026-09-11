@@ -33,45 +33,52 @@ The `Client` struct is the main entry point for making requests. It manages conn
 ### Initialization
 
 ```zig
+const std = @import("std");
 const httpx = @import("httpx");
 
-// Initialize with default configuration
-var client = httpx.Client.init(allocator);
-defer client.deinit();
+const io = std.Io.Threaded.global_single_threaded.io();
 
-// Shorthand aliases
-var client = httpx.createClient();                        // uses page_allocator
-var client = httpx.createClientWithConfig(allocator, .{  // explicit allocator + config
-    .base_url = "https://api.example.com",
-});
+// Initialize with default configuration (returns Client by value)
+var client = httpx.Client.init(allocator, io, .{});
 defer client.deinit();
 
 // Initialize with custom configuration
-var client = httpx.Client.initWithConfig(allocator, .{
-    .base_url = "https://api.example.com",
-    .user_agent = "my-app/1.0",
+var client = httpx.Client.init(allocator, io, .{
+    .httpVersion = .auto, // or .http10, .http11, .http2, .http3
+    .timeoutMs = 10_000,
+    .followRedirects = true,
 });
 defer client.deinit();
 
-// Initialize with default config + base URL helper
-var api = httpx.Client.initForBaseUrl(allocator, "https://api.example.com");
-defer api.deinit();
+// Out-of-the-box convenience (zero initialization needed):
+var response = try httpx.get("https://api.example.com/users");
+defer response.deinit();
+
+// Dot notation module access:
+var post_res = try httpx.post("https://api.example.com/users", .{ .json = .{ .name = "Alice", .role = "developer" },
+});
+defer post_res.deinit();
 ```
 
-For optional explicit customization, `ClientConfig` supports chainable helpers:
+`ClientConfig` is an idiomatic Zig struct where omitted fields use standard defaults.
+It matches `httpx.ClientConfig` in `src/client/client.zig` exactly:
 
 ```zig
-const cfg = httpx.ClientConfig.defaults()
-    .withBaseUrl("https://api.example.com")
-    .withTimeouts(httpx.Timeouts.fast())
-    .withRetryPolicy(httpx.RetryPolicy.noRetry())
-    .withFollowRedirects(false)
-    .withHttp2Settings(.{ .max_concurrent_streams = 100 })
-    .withHttp3Settings(.{ .enable_datagrams = true })
-    .withPoolLimits(64, 16)
-    .withUserAgent("my-app/2.0");
+const io = std.Io.Threaded.global_single_threaded.io();
+const cfg: httpx.ClientConfig = .{
+    .timeoutMs = 10_000,
+    .followRedirects = true,
+    .maxRedirects = 5,
+    .maxRetries = 3,
+    .retryDelayMs = 500,
+    .retryStatusCodes = &.{ 502, 503, 504 },
+    .httpVersion = .http2,
+    .pool = .{ .maxConnections = 64, .maxPerHost = 16 },
+    .proxy = null,
+    .cookies = true,
+};
 
-var client = httpx.Client.initWithConfig(allocator, cfg);
+var client = httpx.Client.init(allocator, io, cfg);
 defer client.deinit();
 ```
 
@@ -79,181 +86,151 @@ defer client.deinit();
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `base_url` | `?[]const u8` | `null` | Base URL prepended to all requests. |
-| `timeouts` | `Timeouts` | `{}` | Connection and read/write timeouts. |
-| `retry_policy` | `RetryPolicy` | `{}` | Configuration for automatic retries. |
-| `redirect_policy` | `RedirectPolicy` | `{}` | Configuration for handling redirects. |
-| `default_headers` | `?[]const [2][]const u8` | `null` | Headers added to every request. |
-| `user_agent` | `[]const u8` | `"httpx.zig/0.1.8"` | User-Agent header value. |
-| `max_response_size` | `usize` | `100MB` | Maximum allowed response body size. |
-| `max_request_size` | `usize` | `10MB` | Maximum allowed outgoing request body size. Raises `RequestTooLarge` error when exceeded (excluded from retry logic). |
-| `follow_redirects` | `bool` | `true` | Whether to automatically follow redirects. |
-| `verify_ssl` | `bool` | `true` | Whether to verify SSL certificates. |
-| `http2_enabled` | `bool` | `false` | Enable high-level HTTP/2 execution path for client requests. |
-| `http3_enabled` | `bool` | `false` | Enable high-level HTTP/3 execution path over UDP/QUIC stream framing. |
-| `http2_settings` | `Http2Settings` | `{}` | HTTP/2 SETTINGS values sent during connection setup (`header_table_size`, `max_frame_size`, etc.). |
-| `http3_settings` | `Http3Settings` | `{}` | HTTP/3/QPACK settings sent on the control stream (`max_field_section_size`, `qpack_max_table_capacity`, `qpack_blocked_streams`, etc.). |
-| `keep_alive` | `bool` | `true` | Reuse TCP connections when possible. |
-| `allow_push` | `bool` | `true` | Accept HTTP/2 server push (PUSH_PROMISE) from the server. |
-| `pool_max_connections` | `u32` | `20` | Maximum connections in the pool. |
-| `pool_max_per_host` | `u32` | `5` | Maximum connections to a single host. |
-| `proxy` | `?Proxy` | `null` | Optional forward proxy configuration for client requests. Use `.kind = .socks5h` for SOCKS5h tunneling; the default kind is HTTP. |
-| `unix_socket_path` | `?[]const u8` | `null` | Optional Unix Domain Socket (AF_UNIX) path for client connections. |
-| `log_fn` | `?LogFn` | `null` | Optional logging callback. When set, `Client.log()` delegates formatted messages to this function. Leave unset to disable client-side logging. |
+| `timeoutMs` | `?u64` | `null` | Default request timeout in milliseconds. |
+| `followRedirects` | `bool` | `true` | Whether to automatically follow redirects. |
+| `maxRedirects` | `u8` | `10` | Maximum redirects to follow per request. |
+| `maxRetries` | `u32` | `0` | Retry attempts for failed requests (`0` = disabled). |
+| `retryDelayMs` | `u64` | `1000` | Base delay between retries in milliseconds. |
+| `retryStatusCodes` | `[]const u16` | `&.{ 502, 503, 504 }` | Status codes that trigger a retry. |
+| `httpVersion` | `?HttpVersion` | `null` | Preferred HTTP version (`.auto`, `.http10`, `.http11`, `.http2`, `.http3`). |
+| `http10` | `bool` | `true` | Fast toggle to enable HTTP/1.0 protocol. |
+| `http11` | `bool` | `true` | Fast toggle to enable HTTP/1.1 protocol. |
+| `http2` | `bool` | `false` | Fast toggle to use HTTP/2 as default protocol. |
+| `http3` | `bool` | `false` | Fast toggle to use HTTP/3 as default protocol. |
+| `cookies` | `bool` | `true` | Enable cookie jar handling. |
+| `pool` | `PoolConfig` | `{}` | Connection pool limits (`maxConnections`, `maxPerHost`, `idleTimeoutMs`, `maxParkedMs`). |
+| `dnsCache` | `DnsCacheOptions` | `{}` | DNS cache settings (`enable`, `ttlMs`, `negativeTtlMs`, `maxEntries`). |
+| `tls` | `?TlsOptions` | `null` | Default TLS options for `https://` requests. |
+| `proxy` | `?[]const u8` | `null` | Default proxy URL (`http://`, `socks5://`, `socks5h://`). |
+| `maxResponseSize` | `?usize` | `null` | Default maximum response body size. |
+| `allowLfLineEndings` | `bool` | `false` | Accept bare LF line endings from non-compliant peers. |
+| `eventCallback` | `?ClientEventCallback` | `null` | Application callback for client events (silent by default). |
 
-If you do not set a field, the implicit default value is used. Builder helpers only override the fields you call.
+If you do not set a field, the implicit default value is used. `.{}` is the safe default.
 
-### Timeouts (`Timeouts`)
+### Timeouts
 
-Client timeouts are configured through `ClientConfig.timeouts` or `ClientConfig.withTimeouts(...)`.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `connect_ms` | `u64` | `30_000` | Maximum time to establish a TCP connection. |
-| `read_ms` | `u64` | `30_000` | Maximum time to wait for response data on the socket. |
-| `write_ms` | `u64` | `30_000` | Maximum time to wait while sending request data. |
-| `keep_alive_ms` | `u64` | `60_000` | Reserved keep-alive timeout budget. |
-| `idle_ms` | `u64` | `120_000` | Reserved idle timeout budget. |
-| `request_ms` | `u64` | `0` | Reserved total request budget (`0` = disabled). |
-
-Helpers:
-
-- `Timeouts.uniform(ms)` — set connect/read/write uniformly
-- `Timeouts.fast()` — 5 second connect/read/write defaults
-- `Timeouts.slow()` — 120 second connect/read/write defaults
-- `Timeouts.none()` — disable socket timeouts
-
-Per-request `RequestOptions.timeout_ms` overrides all three active phases (`connect_ms`, `read_ms`, `write_ms`) for that request.
+The client uses a single uniform timeout model. `ClientConfig.timeoutMs`
+sets the default deadline applied to requests; per-request
+`RequestOptions.timeoutMs` overrides it for that request.
 
 ```zig
-var client = httpx.Client.initWithConfig(allocator, .{
-    .timeouts = httpx.Timeouts.fast(),
+const io = std.Io.Threaded.global_single_threaded.io();
+var client = httpx.Client.init(allocator, io, .{
+    .timeoutMs = 10_000,
 });
 defer client.deinit();
 
-const res = try client.get("https://example.com/slow", .{ .timeout_ms = 2_000 });
+const res = try client.get("https://example.com/slow", .{ .timeoutMs = 2_000 });
 defer res.deinit();
 ```
 
-### Config Helper Methods
+### Client Initialization
 
-| Helper | Description |
-|--------|-------------|
-| `ClientConfig.defaults()` | Returns default config (`.{}`). |
-| `ClientConfig.forBaseUrl(url)` | Returns defaults with `base_url` set. |
-| `withBaseUrl(url_or_null)` | Override base URL on a copy. |
-| `withTimeouts(timeouts)` | Override timeout bundle (`Timeouts`). |
-| `withRetryPolicy(policy)` | Override retry behavior (`RetryPolicy`). |
-| `withRedirectPolicy(policy)` | Override redirect behavior (`RedirectPolicy`). |
-| `withDefaultHeaders(headers_or_null)` | Override default client headers. |
-| `withUserAgent(ua)` | Override `User-Agent` string. |
-| `withFollowRedirects(enabled)` | Override client-level redirect following. |
-| `withProtocols(http2, http3)` | Override protocol runtime toggles. |
-| `withHttp2Settings(settings)` | Override HTTP/2 SETTINGS values. |
-| `withHttp3Settings(settings)` | Override HTTP/3 SETTINGS values. |
-| `withSslVerification(enabled)` | Toggle TLS certificate verification. |
-| `withKeepAlive(enabled)` | Toggle keep-alive connection reuse. |
-| `withAllowPush(enabled)` | Toggle HTTP/2 server push acceptance. |
-| `withMaxResponseSize(bytes)` | Override maximum response body size. |
-| `withPoolLimits(max_connections, max_per_host)` | Override pool sizing limits. |
-| `withProxy(proxy_or_null)` | Configure or clear a forward proxy. Set `.kind = .socks5h` for SOCKS5h tunneling. |
-| `withUnixSocket(path_or_null)` | Configure or clear a Unix Domain Socket (AF_UNIX) connection path. |
-| `withLogFn(log_fn)` | Set a custom logging callback for client-side log output. |
+| Function | Description |
+|----------|-------------|
+| `Client.init(allocator, io, config)` | Initialize client with allocator, io, and configuration (or `.{}` for defaults). |
 
-### Client Initialization Helpers
+### Primary Unified API: `fetch`
 
-| Helper | Description |
-|--------|-------------|
-| `Client.init(allocator)` | Default client config. |
-| `Client.initWithConfig(allocator, cfg)` | Explicit config. |
-| `Client.initForBaseUrl(allocator, url)` | Default config with base URL set. |
-
-### Methods
-
-#### `request`
-
-Makes a generic HTTP request.
+`client.fetch(url, options)` is the primary high-level HTTP client operation. It supports all HTTP methods, strongly typed JSON serialization, custom headers, query parameters, timeouts, and body streaming in a single call:
 
 ```zig
-pub fn request(self: *Self, method: Method, url: []const u8, options: RequestOptions) !Response
+// Simple GET
+var res = try client.fetch("https://api.example.com/data", .{});
+defer res.deinit();
+
+// POST with strongly typed Zig struct (automatically serialized via std.json)
+const CreateUser = struct { name: []const u8, email: []const u8 };
+const User = struct { id: u64, name: []const u8, email: []const u8 };
+
+var res2 = try client.fetch("https://api.example.com/users", .{
+    .method = .POST,
+    .headers = .{ .Authorization = "Bearer secret_token" },
+    .json = CreateUser{ .name = "Fiaz", .email = "fiaz@example.com" },
+});
+defer res2.deinit();
+
+// Strongly typed response deserialization:
+const user = try res2.json(User);
+std.debug.print("User created: id={d} name={s}\n", .{ user.id, user.name });
+
+// Managed lifecycle deserialization with explicit allocator:
+const parsed = try res2.jsonAlloc(User, allocator);
+defer parsed.deinit();
 ```
 
-#### `send` (alias)
-
-Alias for `request` with shorter naming.
-
-```zig
-pub fn send(self: *Self, method: Method, url: []const u8, options: RequestOptions) !Response
-```
-
-#### Short aliases
-
-```zig
-pub fn del(self: *Self, url: []const u8, options: RequestOptions) !Response
-pub fn opts(self: *Self, url: []const u8, options: RequestOptions) !Response
-```
-
-#### Convenience Methods
+### Response Methods
 
 | Method | Description |
 |--------|-------------|
+| `json(comptime T: type) !T` | Parses response body as JSON into type `T` using the response's allocator. |
+| `jsonAlloc(comptime T: type, allocator: Allocator) !std.json.Parsed(T)` | Parses response body as JSON with explicit allocator and managed lifecycle. |
+| `bytes() []const u8` | Returns response body as a raw byte slice. |
+| `text() []const u8` | Returns response body as a UTF-8 text string. |
+| `writeTo(writer: anytype) !void` | Streams or writes response body directly to any writer (file, stdout, buffer). |
+| `header(name: []const u8) ?[]const u8` | Case-insensitive header lookup. |
+| `status u16` | Returns HTTP status code integer. |
+| `isSuccess() bool` | Returns true if status code is in 200..299 range. |
+| `isRedirect() bool` | Returns true if status code is in 300..399 range. |
+| `isInformational() bool` | Returns true if status code is in 100..199 range. |
+
+### Methods
+
+All methods are URL-first (`url`, then options):
+
+| Method | Description |
+|--------|-------------|
+| `fetch(url, options)` | **Primary unified HTTP request operation** |
 | `get(url, options)` | HTTP GET request |
-| `fetch(url, options)` | Alias for GET request |
 | `post(url, options)` | HTTP POST request |
 | `put(url, options)` | HTTP PUT request |
 | `delete(url, options)` | HTTP DELETE request |
-| `del(url, options)` | Alias for HTTP DELETE request |
 | `patch(url, options)` | HTTP PATCH request |
 | `head(url, options)` | HTTP HEAD request |
 | `trace(url, options)` | HTTP TRACE request |
 | `connect(url, options)` | HTTP CONNECT request |
 | `options(url, options)` | HTTP OPTIONS request |
-| `opts(url, options)` | Alias for HTTP OPTIONS request |
-| `send(method, url, options)` | Alias for generic request |
-| `getJson(T, url, parse_opts)` | Zero-copy JSON GET, returns `JsonBorrowedResult(T)` |
-| `getJsonBorrowed(T, url)` | JSON GET with default parse options |
-| `postJsonAndParse(T, url, body, parse_opts)` | POST JSON and parse response |
-| `postJsonBorrowed(T, url, body)` | POST JSON with default parse options |
-| `putJson(T, url, body, parse_opts)` | PUT JSON and parse response |
-| `patchJson(T, url, body, parse_opts)` | PATCH JSON and parse response |
-| `deleteJson(T, url, parse_opts)` | DELETE and parse JSON response |
-| `addInterceptor(interceptor)` | Add request/response interceptor |
-| `cleanupIdleConnections()` | Evict idle/exhausted pooled connections |
-| `poolStats()` | Snapshot total/active/idle pool counts |
-| `hostPoolConnectionCount(host, port)` | Count pooled connections for one host:port |
-| `log(level, format, args)` | Log a formatted message. If `config.log_fn` is set, delegates to it. |
+| `request(url, options)` | Generic request (method set via `options.method`) |
+| `getAll(urls)` | Concurrent GETs; deinit each response, free the slice |
+| `requestAll(reqs)` | Concurrent requests; same ownership |
+| `download(url, options)` | Streaming file download with resume/verify (destination via `options.path`) |
+| `downloadBatch(tasks, options)` | Concurrent downloads |
+| `lookupFileInfo(url, options)` | Remote metadata without body download |
+| `updateFile(url, options)` | Atomic file update with rollback (target via `options.path`) |
+| `graphql(url, query, variables, options)` | GraphQL request |
+| `fetchDocument/fetchHtml/fetchXml/fetchFeed/fetchRobots/fetchSitemap(url, options)` | Fetch + parse documents |
+| `resolve(host, options)` / `resolveUrl(url, options)` | DNS resolution (port via `options.port`) |
+| `close()` | Purge the connection pool |
+| `reset()` | Close + clear DNS cache |
 
 ### Cookie Jar API
 
-The client keeps an in-memory cookie jar and automatically:
-
-- Adds a `Cookie` header to outgoing requests (domain-filtered per RFC 6265).
-- Stores `Set-Cookie` values from incoming responses with domain association.
-- Cookies with a `Domain` attribute are only sent to matching hosts.
-- Cookies without a `Domain` attribute are sent to all hosts.
+The standalone `httpx.CookieJar` keeps cookies across requests
+(domain-filtered per RFC 6265). Per-request cookies use the `cookie` option.
 
 | Method | Description |
 |--------|-------------|
-| `setCookie(name, value)` | Add or replace a cookie in the jar |
-| `getCookie(name)` | Read a cookie value |
-| `removeCookie(name)` | Remove one cookie |
-| `clearCookies()` | Remove all cookies |
-| `hasCookie(name)` | Check whether a cookie exists |
-| `cookieCount()` | Get total cookie count |
+| `CookieJar.init(allocator)` / `deinit()` | Lifecycle |
+| `setFromHeader(setCookie, host)` | Store a `Set-Cookie` value |
+| `cookieHeader(host, path, secure, buf)` | Render the `Cookie` header (`secure` gates `Secure` cookies) |
+| `purgeExpired()` | Drop expired cookies |
 
 ### Quick Examples
 
 ```zig
+const std = @import("std");
 const httpx = @import("httpx");
 
-var client = httpx.Client.init(allocator);
+const io = std.Io.Threaded.global_single_threaded.io();
+var client = httpx.Client.init(allocator, io, .{});
 defer client.deinit();
 
 // Simple GET
 const response = try client.get("https://api.example.com/users", .{});
 defer response.deinit();
-std.debug.print("Status: {d}\n", .{response.status.code});
-std.debug.print("Body: {s}\n", .{response.text() orelse ""});
+std.debug.print("Status: {d}\n", .{response.status});
+std.debug.print("Body: {s}\n", .{response.body});
 
 // POST with JSON
 const json_response = try client.post("https://api.example.com/users", .{
@@ -271,16 +248,13 @@ const auth_response = try client.get("https://api.example.com/protected", .{
 defer auth_response.deinit();
 
 // Built-in auth helpers
-const bearer_opts = httpx.RequestOptions.defaults()
-    .withBearerToken("token123")
-    .withHeaders(&.{.{ "Accept", "application/json" }});
-
-const bearer_response = try client.get("https://api.example.com/protected", bearer_opts);
+const bearer_response = try client.get("https://api.example.com/protected", .{ .headers = &.{.{ "Authorization", "Bearer token123" }, .{ "Accept", "application/json" }},
+});
 defer bearer_response.deinit();
 
 // With timeout
 const timeout_response = try client.get("https://slow-api.com/data", .{
-    .timeout_ms = 30000, // 30 seconds
+    .timeoutMs = 30000, // 30 seconds
 });
 defer timeout_response.deinit();
 ```
@@ -291,7 +265,7 @@ For complete copy/paste demos, see these example pages:
 
 - [Simple Get](/examples/simple-get)
 - [Simple Get Deserialize](/examples/simple-get-deserialize)
-- [JSON API](/examples/json-api-example) - getJson, postJsonAndParse, Response.json, server ctx.jsonBody + ctx.json
+- [JSON API](/examples/json-api-example) - typed `.json` bodies, `Response.json(r)`, server `ctx.json(r)` + `ctx.renderJson(value)`
 - [Post JSON](/examples/post-json)
 - [Custom Headers](/examples/custom-headers)
 - [Concurrent Requests](/examples/concurrent-requests)
@@ -303,105 +277,62 @@ For complete copy/paste demos, see these example pages:
 
 ### Request Options (`RequestOptions`)
 
-Per-request overrides for configuration.
+Per-request overrides for configuration. The client accepts these fields
+directly (plus duck-typed extras such as `multipart` and `graphql`
+handled via `anytype` opts). Unset optional fields fall back to
+client-level defaults.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `headers` | `?[]const [2][]const u8` | `null` | Additional headers for this request. |
-| `query_params` | `?[]const [2][]const u8` | `null` | Percent-encoded query params appended to the request URL. |
+| `method` | `?Method` | `null` | Explicit method for generic `request`/`fetch` (wrappers supply their own). |
+| `headers` | `[]const Header` | `&.{}` | Additional headers (`{ .name, .value }` pairs). |
+| `query` | `[]const Header` | `&.{}` | Percent-encoded query params appended to the URL. |
 | `body` | `?[]const u8` | `null` | Raw request body. |
 | `json` | `?[]const u8` | `null` | JSON string body (sets Content-Type). |
-| `form_fields` | `?[]const [2][]const u8` | `null` | Form fields encoded as `application/x-www-form-urlencoded`. |
-| `bearer_token` | `?[]const u8` | `null` | Sets `Authorization: Bearer <token>`. |
-| `basic_auth` | `?BasicAuth` | `null` | Sets `Authorization: Basic ...` using username/password credentials. |
-| `timeout_ms` | `?u64` | `null` | Request-specific uniform timeout override across connect, read, and write phases. |
-| `connect_timeout_ms` | `?u64` | `null` | Request-specific connect phase timeout override (ms). |
-| `read_timeout_ms` | `?u64` | `null` | Request-specific read phase timeout override (ms). |
-| `write_timeout_ms` | `?u64` | `null` | Request-specific write phase timeout override (ms). |
-| `timeouts` | `?Timeouts` | `null` | Explicit request-specific `Timeouts` struct override. |
-| `follow_redirects` | `?bool` | `null` | Override client redirect setting. |
-| `version` | `?Version` | `null` | Force a request over a specific protocol runtime (`.HTTP_1_1`, `.HTTP_2`, `.HTTP_3`). |
-| `proxy` | `?Proxy` | `null` | Per-request forward proxy override. |
-| `verify_ssl` | `?bool` | `null` | Per-request SSL verification toggle override. |
-| `keep_alive` | `?bool` | `null` | Per-request connection pool reuse toggle override. |
-| `unix_socket_path` | `?[]const u8` | `null` | Per-request Unix Domain Socket path routing override. |
+| `form` | `?[]const u8` | `null` | Pre-encoded `application/x-www-form-urlencoded` body. |
+| `text` | `?[]const u8` | `null` | Plain-text body. |
+| `contentType` | `?[]const u8` | `null` | Explicit Content-Type override. |
+| `basicAuth` | `?[]const u8` | `null` | `"user:pass"` encoded as `Authorization: Basic ...`. |
+| `bearerAuth` | `?[]const u8` | `null` | Sets `Authorization: Bearer <token>`. |
+| `cookie` | `?[]const u8` | `null` | Cookie header value for this request. |
+| `timeoutMs` | `?u64` | `null` | Request-specific timeout override. |
+| `maxResponseSize` | `?usize` | `null` | Request-specific max response body size. |
+| `followRedirects` | `?bool` | `null` | Override client redirect setting. |
+| `maxRedirects` | `?u8` | `null` | Override client max-redirect limit. |
+| `allowLfLineEndings` | `bool` | `false` | Accept bare LF line endings in the response. |
+| `httpVersion` | `?HttpVersion` | `null` | Force a request over a specific protocol runtime. |
+| `http10` / `http11` / `http2` / `http3` | `?bool` | `null` | Per-request protocol toggles. |
+| `tls` | `?TlsOptions` | `null` | Per-request TLS options for `https://`. |
+| `proxy` | `?[]const u8` | `null` | Per-request proxy URL override. |
 
-Unset request-option fields stay `null`, meaning client-level defaults are used implicitly.
-
-When multiple body-style fields are provided, precedence is:
-
-1. `body`
-2. `json`
-3. `form_fields`
-
-Authentication helper precedence when both are set directly in a literal:
-
-1. `basic_auth`
-2. `bearer_token` (applied last)
-
-Optional builder helpers are available for concise per-request setup when you want explicit overrides:
+Request options are configured directly using struct literals:
 
 ```zig
-const opts = httpx.RequestOptions.defaults()
-    .withHeaders(&.{ .{ "Accept", "application/json" } })
-    .withBearerToken("demo-token")
-    .withQueryParams(&.{ .{ "page", "1" } })
-    .withTimeoutMs(10_000)
-    .withHttp2()
-    .withFollowRedirects(true)
-    .withSslVerification(false)
-    .withKeepAlive(false);
-
-var res = try client.get("/users", opts);
+var res = try client.get("/users", .{
+    .headers = &.{.{ .name = "Accept", .value = "application/json" }},
+    .query = &.{.{ .name = "page", .value = "1" }},
+    .timeoutMs = 10_000,
+    .httpVersion = .http2,
+    .followRedirects = true,
+});
 defer res.deinit();
 ```
 
-Available helpers:
-
-- `RequestOptions.defaults()`
-- `withHeaders(headers)`
-- `withQueryParams(params)`
-- `withBody(body)`
-- `withJson(json)`
-- `withFormUrlEncoded(fields)`
-- `withBearerToken(token)`
-- `withBasicAuth(username, password)`
-- `withTimeoutMs(ms)`
-- `withConnectTimeoutMs(ms)`
-- `withReadTimeoutMs(ms)`
-- `withWriteTimeoutMs(ms)`
-- `withTimeouts(timeouts)`
-- `withFollowRedirects(bool)`
-- `withVersion(version)`
-- `withHttp2()`
-- `withHttp3()`
-- `withProxy(proxy)`
-- `withSslVerification(bool)`
-- `withKeepAlive(bool)`
-- `withUnixSocket(path)`
-- `withMultipartFields(fields)`
-- `withMultipartFiles(files)`
-- `withMultipartBoundary(boundary)`
-
 ### Multipart File Uploads
 
-Use `withMultipartFields` and `withMultipartFiles` to send `multipart/form-data` bodies.
-The client automatically assembles the body and sets the `Content-Type` header.
+Use the `multipart` option to send `multipart/form-data` bodies.
+The client assembles the body and sets the `Content-Type` header
+(see `examples/multipart.zig`).
 
 ```zig
-const fields = [_]httpx.MultipartField{
-    .{ .name = "user",  .value = "alice" },
-    .{ .name = "part",  .value = "1" },
-};
-const files = [_]httpx.MultipartFile{
-    .{ .name = "file", .filename = "data.bin", .data = chunk_slice },
-};
-
-const opts = httpx.RequestOptions.defaults()
-    .withMultipartFields(&fields)
-    .withMultipartFiles(&files);
-
-var resp = try client.post("https://example.com/upload", opts);
+var resp = try client.post("https://example.com/upload", .{
+    .multipart = .{
+        .name = "upload",
+        .filename = "data.bin",
+        .contentType = "application/octet-stream",
+        .data = chunk_slice,
+    },
+});
 defer resp.deinit();
 ```
 
@@ -411,36 +342,38 @@ defer resp.deinit();
 > large multipart data as a single body, `winsock.send()` may stall.
 >
 > httpx.zig 0.1.8+ automatically caps each send call to 64 KB, so most uploads
-> now work without application changes. For extra safety—especially for payloads
-> larger than a few hundred KB—keep each `MultipartFile.data` slice under
-> `httpx.MultipartMaxChunk` (64 KB) and issue one request per slice.
+> now work without application changes. For extra safety — especially for payloads
+> larger than a few hundred KB — build the body with
+> `httpx.multipart.encoder.Multipart` (or post a single part inline with the
+> `.multipart` request option) and issue one request per slice.
 > See the [Multipart Guide](../guide/multipart.md#large-file-uploads--windows-compatibility)
 > for a complete resumable upload example.
 
 
 ## Response
 
-The `Response` struct contains the server's response.
+The `Response` struct contains the server's response
+(`src/client/request.zig`).
 
 ```zig
 pub const Response = struct {
-    version: Version,
-    status: Status,
-    headers: Headers,
-    body: ?[]const u8,
+    allocator: Allocator,
+    status: u16,
+    version: HttpVersion,
+    headers: []Header,
+    body: []u8,
 
     pub fn deinit(self: *Response) void
-    pub fn ok(self: *const Response) bool
-    pub fn isRedirect(self: *const Response) bool
-    pub fn isError(self: *const Response) bool
-    pub fn text(self: *const Response) ?[]const u8
-    pub fn json(self: *const Response, comptime T: type, options: std.json.ParseOptions) !std.json.Parsed(T)
-    pub fn jsonLeaky(self: *const Response, comptime T: type, options: std.json.ParseOptions) !T
-    pub fn location(self: *const Response) ?[]const u8
-    pub fn contentType(self: *const Response) ?[]const u8
-    pub fn contentLength(self: *const Response) ?u64
-    pub fn isChunked(self: *const Response) bool
     pub fn header(self: *const Response, name: []const u8) ?[]const u8
+    pub fn text(self: *const Response) []const u8
+    pub fn bytes(self: *const Response) []const u8
+    pub fn writeTo(self: *const Response, writer: anytype) !void
+    pub fn contentType(self: *const Response) []const u8
+    pub fn json(self: *const Response, comptime T: type) !T
+    pub fn jsonAlloc(self: *const Response, comptime T: type, allocator: Allocator) !std.json.Parsed(T)
+    pub fn isInformational(self: *const Response) bool
+    pub fn isSuccess(self: *const Response) bool
+    pub fn isRedirect(self: *const Response) bool
 };
 ```
 
@@ -449,72 +382,23 @@ pub const Response = struct {
 | Method | Description |
 |--------|-------------|
 | `deinit()` | Free response resources |
-| `header(name)` | Get header value by name |
-| `ok()` | Status 200-299 |
+| `header(name)` | Get header value by name (case-insensitive) |
+| `text()` / `bytes()` | Get response body bytes |
+| `writeTo(writer)` | Stream body bytes to any writer |
+| `contentType()` | Response Content-Type value |
+| `json(T)` | Parse body as JSON into `T` (ignores unknown fields) |
+| `jsonAlloc(T, allocator)` | Parse body as JSON, returning `std.json.Parsed(T)` |
+| `isInformational()` | Status 100-199 |
+| `isSuccess()` | Status 200-299 |
 | `isRedirect()` | Status 300-399 |
-| `isError()` | Status 400-599 |
-| `text()` | Get response body text |
-| `json(T, options)` | Parse response body as JSON, returning `std.json.Parsed(T)` |
-| `jsonLeaky(T, options)` | Parse response body as JSON directly into type `T` (leaky) |
-| `jsonBorrowed(T, parse_opts)` | Zero-copy JSON parsing returning `JsonBorrowedResult(T)` |
-| `jsonValue(parse_opts)` | Parse body as dynamic `std.json.Value` with `ParsedJson` |
-| `isJson()` | Returns true if body exists and Content-Type is JSON |
 
-## Interceptors
+## Middleware
 
-Interceptors allow you to modify requests before they are sent or responses before they are returned.
-
-### Structure
-
-```zig
-pub const RequestInterceptor = *const fn (*Request, ?*anyopaque) anyerror!void;
-pub const ResponseInterceptor = *const fn (*Response, ?*anyopaque) anyerror!void;
-
-pub const Interceptor = struct {
-    request_fn: ?RequestInterceptor = null,
-    response_fn: ?ResponseInterceptor = null,
-    context: ?*anyopaque = null,
-};
-```
-
-Both `request_fn` and `response_fn` are optional. You can register only one callback or both.
-
-### Usage
-
-```zig
-// Logging interceptor
-fn logRequest(request: *httpx.Request, _: ?*anyopaque) !void {
-    std.debug.print("Request: {s} {s}\n", .{@tagName(request.method), request.uri.path});
-}
-
-fn logResponse(response: *httpx.Response, _: ?*anyopaque) !void {
-    std.debug.print("Response: {d}\n", .{response.status.code});
-}
-
-// Add interceptor
-try client.addInterceptor(.{
-    .request_fn = logRequest,
-    .response_fn = logResponse,
-});
-
-// Authentication interceptor with context
-const AuthContext = struct {
-    token: []const u8,
-};
-
-fn addAuth(request: *httpx.Request, ctx: ?*anyopaque) !void {
-    if (ctx) |c| {
-        const auth: *AuthContext = @ptrCast(@alignCast(c));
-        try request.setHeader("Authorization", auth.token);
-    }
-}
-
-var auth_ctx = AuthContext{ .token = "Bearer secret123" };
-try client.addInterceptor(.{
-    .request_fn = addAuth,
-    .context = &auth_ctx,
-});
-```
+HTTPX has no client interceptor registry. Cross-cutting request/response
+behavior belongs in server middleware (`httpx.middleware.*`) or in small
+wrappers around the URL-first client calls. The
+`examples/interceptor_example.zig` demo exercises a plain server route plus
+a client GET against it.
 
 ## Error Handling
 
@@ -536,85 +420,58 @@ const response = client.get("https://example.com", .{}) catch |err| switch (err)
 };
 ```
 
-## Simplified Top-Level Aliases
+## Convenience Functions
 
-The root module also exposes simple aliases for common client usage:
+The root module exposes zero-config convenience helpers for simple requests:
 
 ```zig
-var a = try httpx.fetch("https://example.com");
+var a = try httpx.get("https://example.com", .{});
 defer a.deinit();
 
-var b = try httpx.send(.GET, "https://example.com/health", .{});
+var b = try httpx.post("https://example.com/items", .{ .json = "{\"name\":\"demo\"}",
+});
 defer b.deinit();
 
-var c = try httpx.post("https://example.com/items", .{ .json = "{\"name\":\"demo\"}" });
+var c = try httpx.delete("https://example.com/items/42", .{});
 defer c.deinit();
 
-var d = try httpx.delete("https://example.com/items/42", .{});
+var d = try httpx.put("https://example.com/items", .{ .json = "{\"name\":\"updated\"}",
+});
 defer d.deinit();
 
-var e = try httpx.put("https://example.com/items", .{ .json = "{\"name\":\"updated\"}" });
+var e = try httpx.patch("https://example.com/items", .{ .json = "{\"name\":\"patched\"}",
+});
 defer e.deinit();
 
-var f = try httpx.patch("https://example.com/items", .{ .json = "{\"name\":\"patched\"}" });
+var f = try httpx.head("https://example.com/items", .{});
 defer f.deinit();
 
-var g = try httpx.head("https://example.com/items", .{});
+var g = try httpx.options("https://example.com/items", .{});
 defer g.deinit();
 
-var h = try httpx.opts("https://example.com/items", .{});
+var h = try httpx.request("https://example.com/health", .{
+    .method = .GET,
+});
 defer h.deinit();
-
-var i = try httpx.trace("https://example.com/trace", .{});
-defer i.deinit();
-
-var j = try httpx.connect("https://example.com/tunnel", .{});
-defer j.deinit();
-
-// Optional explicit allocator override
-var k = try httpx.sendWithAllocator(allocator, .GET, "https://example.com/health", .{ .timeout_ms = 10_000 });
-defer k.deinit();
-
-// JSON POST convenience
-var l = try httpx.postJson("https://api.example.com/data", "{\"key\":\"value\"}");
-defer l.deinit();
 ```
 
-All top-level aliases:
+Top-level request functions (all URL-first):
 
 | Function | Description |
 |----------|-------------|
 | `httpx.get(url, opts)` | HTTP GET |
 | `httpx.post(url, opts)` | HTTP POST |
 | `httpx.put(url, opts)` | HTTP PUT |
-| `httpx.delete(url, opts)` / `httpx.del(...)` | HTTP DELETE |
 | `httpx.patch(url, opts)` | HTTP PATCH |
+| `httpx.delete(url, opts)` | HTTP DELETE |
 | `httpx.head(url, opts)` | HTTP HEAD |
-| `httpx.options(url, opts)` / `httpx.opts(...)` | HTTP OPTIONS |
+| `httpx.options(url, opts)` | HTTP OPTIONS |
 | `httpx.trace(url, opts)` | HTTP TRACE |
 | `httpx.connect(url, opts)` | HTTP CONNECT |
-| `httpx.fetch(url, opts)` | Alias for GET |
-| `httpx.send(method, url, opts)` | Generic request |
-| `httpx.postJson(url, json)` | POST with JSON body |
-| `httpx.getJson(T, url, parse_opts)` | GET and parse JSON response |
-| `httpx.putJson(T, url, body, parse_opts)` | PUT and parse JSON response |
-| `httpx.patchJson(T, url, body, parse_opts)` | PATCH and parse JSON response |
-| `httpx.deleteJson(T, url, parse_opts)` | DELETE and parse JSON response |
-| `httpx.postJsonAndParse(T, url, body, parse_opts)` | POST and parse JSON response |
-| `httpx.getWithAllocator(...)` | GET with explicit allocator |
-| `httpx.postWithAllocator(...)` | POST with explicit allocator |
-| `httpx.putWithAllocator(...)` | PUT with explicit allocator |
-| `httpx.delWithAllocator(...)` | DELETE with explicit allocator |
-| `httpx.deleteWithAllocator(...)` | DELETE with explicit allocator |
-| `httpx.patchWithAllocator(...)` | PATCH with explicit allocator |
-| `httpx.headWithAllocator(...)` | HEAD with explicit allocator |
-| `httpx.optionsWithAllocator(...)` | OPTIONS with explicit allocator |
-| `httpx.optsWithAllocator(...)` | OPTIONS with explicit allocator |
-| `httpx.traceWithAllocator(...)` | TRACE with explicit allocator |
-| `httpx.connectWithAllocator(...)` | CONNECT with explicit allocator |
-| `httpx.fetchWithAllocator(...)` | GET with explicit allocator |
-| `httpx.sendWithAllocator(...)` | Generic with explicit allocator |
-| `httpx.postJsonWithAllocator(...)` | JSON POST with explicit allocator |
+| `httpx.fetch(url, opts)` | Unified fetch (any method via `.method`) |
+| `httpx.request(url, opts)` | General HTTP request (any method via `.method`) |
+| `httpx.getAll(&urls)` | Concurrent GET requests |
+| `httpx.requestAll(&requests)` | Concurrent custom requests |
 
 ## See Also
 

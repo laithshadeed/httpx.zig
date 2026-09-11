@@ -1,86 +1,82 @@
 # TLS Mutual Authentication (mTLS)
 
-Demonstrates mutual TLS where both client and server authenticate each other with certificates.
+The server requests and enforces client certificates; only clients with
+a trusted certificate complete the handshake. See `examples/tls_mtls.zig`,
+which runs the whole flow over loopback through the high-level API:
+`client.get(url, .{ .tls = .{ .clientCertPem, .clientKeyPem } })`
+performs HTTPS over mTLS, then a cert-less request is rejected during
+the handshake.
+
+## Client Configuration
+
+```zig
+var res = try client.get(url, .{
+    .tls = .{
+        .verify = .caBundle,
+        .caPem = ca_pem,
+        .clientCertPem = cert_pem, // presented when the server asks
+        .clientKeyPem = key_pem,   // P-256 ECDSA key for the chain
+    },
+    .timeoutMs = 15_000,
+});
+defer res.deinit();
+```
+
+Setting the pair routes the request through the native TLS 1.3 client
+(ALPN `http/1.1`, or `h2` with `.httpVersion = .http2`); without it the
+request keeps the std transport, which cannot present certificates.
 
 ## Features Demonstrated
 
-- Client certificate authentication
-- Server certificate verification
-- Certificate-based mutual authentication
+- Server-side `CertificateRequest` (required / optional modes)
+- Client certificate + `CertificateVerify` presentation
+- Chain anchoring in a client CA bundle + expiry/trust validation
+- Missing/untrusted/forged credential rejection (fail closed)
 - mTLS use cases (service mesh, gRPC, databases)
 
-## Demo Program
+## Server Configuration
 
 ```zig
-const std = @import("std");
-const httpx = @import("httpx");
-const tls = httpx.tls;
-
-fn handler(ctx: *httpx.Context) anyerror!httpx.Response {
-    return ctx.text("Mutual TLS authenticated!");
-}
-
-pub fn main() !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    // Load client certificate and key (using the same dummy certs for demo)
-    const client_cert = @embedFile("certs/server_ec.crt");
-    const client_key = @embedFile("certs/server_ec.key");
-    const ca_cert = @embedFile("certs/server_ec.crt");
-
-    std.debug.print("Client certificate: {d} bytes\n", .{client_cert.len});
-    std.debug.print("Client key:         {d} bytes\n", .{client_key.len});
-    std.debug.print("CA certificate:     {d} bytes\n", .{ca_cert.len});
-
-    // Start local TLS server
-    var server = httpx.Server.initWithConfig(allocator, .{
-        .host = "127.0.0.1",
-        .port = 0,
-        .tls_enabled = true,
-        .tls_cert_path = "examples/certs/server_ec.crt",
-        .tls_key_path = "examples/certs/server_ec.key",
-        .tls_alpn_protocols = &.{ "h3", "h2", "http/1.1" },
-        .http2_enabled = true,
-        .http3_enabled = false,
-        .keep_alive = true,
-    });
-    defer server.deinit();
-    try server.get("/mtls", handler);
-
-    const server_thread = try server.listenInBackground();
-    defer server_thread.join();
-    defer server.stop();
-    const port = server.config.port;
-
-    // Connect with client certificate
-    const config = tls.TlsConfig.insecureWithH2(allocator);
-    var sock = try httpx.Socket.create();
-    defer sock.close();
-    try sock.connectHost("127.0.0.1", port);
-
-    var session = tls.TlsSession.init(config);
-    session.socket = &sock;
-    try session.handshake("127.0.0.1");
-
-    std.debug.print("Protocol: {s}\n", .{session.negotiatedProtocol() orelse "none"});
-
-    // Send HTTP request
-    const req = "GET /mtls HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
-    try session.writeAll(req);
-
-    var buf: [4096]u8 = undefined;
-    const n = try session.read(&buf);
-    std.debug.print("Response: {d} bytes\n", .{n});
-}
+var listener = try httpx.tls.Listener.init(allocator, io, .{
+    .host = "127.0.0.1",
+    .port = 0,
+    .defaultIdentity = .{
+        .certChainPem = cert_pem,
+        .privateKeyPem = key_pem,
+    },
+    // Require every client to present a certificate chaining to ca_pem.
+    // Use `.optional` to allow cert-less clients through instead.
+    .clientAuth = .required,
+    .clientCaPem = ca_pem,
+});
+defer listener.deinit();
 ```
+
+The same fields exist one layer down: `TlsServerConfig.clientAuth` /
+`clientCaPem`, fed from `Server.init`'s `.tls = .{ .clientAuth =
+.required, .clientCa = ca_pem }`. Presented chains are verified with
+`verifyCertificateChain` (expiry, CA-ness, anchor match; no hostname
+check — client certificates identify a principal, not a host), the
+`CertificateVerify` P-256 signature is checked over the live transcript,
+and the client `Finished` MAC binds everything. Malformed DER fails
+closed via structural validation, never a panic.
 
 ## Run
 
 ```bash
-zig build run-all-tls_mtls
+zig build run-tls-mtls
 ```
+
+## What to Verify
+
+- Trusted client: handshake completes, HTTP 200 with the expected body.
+- Empty-cert client with `.required`: the request fails — the client
+  observes `error.ClientCertificateRequired` (native handshake) or a
+  handshake failure (std transport, which cannot present certificates),
+  while the server side only sees the connection vanish
+  (`error.IoError` / `error.TlsHandshakeFailed`).
+- Untrusted CA bundle: handshake fails
+  (`error.ClientCertificateInvalid` server-side).
 
 ## mTLS Flow
 

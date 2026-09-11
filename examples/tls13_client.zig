@@ -58,12 +58,13 @@ pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    var tls_listener = try httpx.tls.Listener.init(allocator, .{
+    var tls_listener = try httpx.tls.Listener.init(allocator, io, .{
         .port = 8445,
-        .default_identity = .{
-            .cert_chain_pem = cert,
-            .private_key_pem = key,
+        .defaultIdentity = .{
+            .certChainPem = cert,
+            .privateKeyPem = key,
         },
     });
     defer tls_listener.deinit();

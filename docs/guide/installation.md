@@ -7,12 +7,11 @@ This guide covers all supported installation methods for `httpx.zig`.
 - **Zig Version**: 0.16.0 or later
 - **Operating System**: Windows, Linux, or macOS
 
-::: warning v0.1.8 release and Zig 0.15 deprecation
-`v0.1.8` is the current release and targets Zig `0.16.0+`.
-`v0.1.7` is the previous stable release for the immediate prior `0.1.x` line.
+::: warning v0.2.0 release and Zig 0.15 deprecation
+`v0.2.0` is the current release and targets Zig `0.16.0+`.
+`v0.1.8` is the previous release.
 Zig `0.15` support is legacy and remains available only through `0.0.7`.
-The HTTPS/TLS reader fix for Zig `0.16` empty-buffer reads is included in this release.
-If you are upgrading from `0.0.7`, review the GitHub Releases page for migration notes.
+New projects should use **Zig 0.16.0+** with **httpx.zig v0.2.0**.
 :::
 
 ## Platform Support
@@ -49,54 +48,41 @@ zig build -Dtarget=aarch64-macos
 ```
 :::
 
-## Method 1: Zig Fetch (Latest Release 0.1.8)
+## Method 1: Zig Fetch (Recommended)
 
-Use the latest tagged release for reproducible builds:
+**Latest Release (v0.2.0)**
+
+```bash
+zig fetch --save https://github.com/muhammad-fiaz/httpx.zig/archive/refs/tags/0.2.0.tar.gz
+```
+
+**Previous Release (v0.1.8)**
 
 ```bash
 zig fetch --save https://github.com/muhammad-fiaz/httpx.zig/archive/refs/tags/0.1.8.tar.gz
 ```
 
-## Method 2: Zig Fetch (Previous Stable 0.1.7)
+> [!WARNING]
+> Zig **0.15** is deprecated and supported only by **v0.0.7**. New projects should use **Zig 0.16.0+** with **httpx.zig v0.2.0**.
 
-Use the previous stable `0.1.7` release if you want the last `0.1.x` tag before `0.1.8`:
+## Method 2: Zig Fetch (Latest / v0.2.0 in development)
 
-```bash
-zig fetch --save https://github.com/muhammad-fiaz/httpx.zig/archive/refs/tags/0.1.7.tar.gz
-```
-
-## Method 3: Zig Fetch (Legacy Zig 0.15 Support - 0.0.7)
-
-For Zig version 0.15 support, use this version:
-
-```bash
-zig fetch --save https://github.com/muhammad-fiaz/httpx.zig/archive/refs/tags/0.0.7.tar.gz
-```
-
-::: warning Zig 0.15 deprecation
-Zig `0.15` support is deprecated; use `0.0.7` if you need the older API surface.
-:::
-
-## Method 4: Zig Fetch (Nightly/Main)
-
-Use the Git URL if you want the latest commits from main:
+Use this for the latest in-development version from the `main` branch:
 
 ```bash
 zig fetch --save git+https://github.com/muhammad-fiaz/httpx.zig.git
 ```
 
-## Method 5: Manual `build.zig.zon` Configuration
-
-You can also add the dependency manually:
+## Method 3: Manual `build.zig.zon` Configuration
 
 ```zig
 .{
     .name = "my-project",
-    .version = "0.1.8",
+    .version = "0.2.0",
     .dependencies = .{
         .httpx = .{
-            .url = "https://github.com/muhammad-fiaz/httpx.zig/archive/refs/tags/0.1.8.tar.gz",
-            .hash = "...", // Run zig fetch --save <url> to auto-fill this.
+            .url = "https://github.com/muhammad-fiaz/httpx.zig/archive/refs/tags/0.2.0.tar.gz",
+            .hash = "...", // Run `zig fetch --save <url>` to generate the hash.
         },
     },
     .paths = .{
@@ -161,8 +147,9 @@ pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    var client = httpx.Client.init(allocator);
+    var client = httpx.Client.init(allocator, io, .{});
     defer client.deinit();
 
     _ = try client.get("https://httpbun.com/get", .{});
@@ -178,40 +165,40 @@ Run these commands from the repository root to verify functionality:
 zig build test
 zig build run-all-examples  # Runs sequentially to prevent parallel compiler OOM / PC crashes
 
-# Cross-target library compile matrix
-zig build build-all-targets
+# Cross-target library compile validation
+zig build build-all-examples -Dtarget=x86_64-linux-gnu
 ```
 
-To validate Linux runtime behavior (not only cross-compilation), build Linux-target artifacts and execute them on Linux/WSL:
+To validate Linux runtime behavior, run the cross-compiled artifacts on Linux/WSL (a foreign-target `zig build test` only compiles; it does not execute):
 
 ```bash
 # Build Linux artifacts
-zig build test -Dtarget=x86_64-linux
-zig build run-all-udp_local -Dtarget=x86_64-linux
+zig build test -Dtarget=x86_64-linux-gnu
+zig build run-simple-get -Dtarget=x86_64-linux-gnu
 
 # Run on Linux/WSL
 ./zig-out/bin/test
-./zig-out/bin/udp_local
+./zig-out/bin/simple-get
 ```
 
 To compile tests or examples for a specific target:
 
 ```bash
-# Cross-target test artifact build
-zig build test -Dtarget=x86-windows
+# Compile tests for 32-bit Windows
+zig build test -Dtarget=x86-windows-gnu
 
-# Cross-target example build
-zig build run-all-udp_local -Dtarget=aarch64-macos
+# Compile an example for macOS ARM64
+zig build run-simple-get -Dtarget=aarch64-macos
 ```
 
 For client requests against external endpoints, prefer explicit timeout and error handling:
 
 ```zig
-var res = client.get("https://example.com", .{ .timeout_ms = 10_000 }) catch |err| {
+var res = client.get("https://example.com", .{ .timeoutMs = 10_000 }) catch |err| {
     std.debug.print("request failed: {s}\n", .{@errorName(err)});
     return;
 };
 defer res.deinit();
 ```
 
-`httpx.zig` uses `build-all-targets` as the all-targets validation step.
+`httpx.zig` uses `build-all-examples` with an explicit `-Dtarget=` triple as the cross-target validation step.

@@ -34,15 +34,21 @@ pub const Config = struct {
     /// URL prefix, e.g. "/assets" or "/".
     mount: []const u8 = "/",
     /// Served when a directory is requested.
-    index_file: []const u8 = "index.html",
+    indexFile: []const u8 = "index.html",
     /// Hard cap on bytes buffered into memory per response.
-    max_file_size: usize = 16 * 1024 * 1024,
+    maxFileSize: usize = 16 * 1024 * 1024,
     /// Cache-Control on success responses; empty omits the header.
-    cache_control: []const u8 = "public, max-age=3600",
+    cacheControl: []const u8 = "public, max-age=3600",
     /// Live reload / hot reload: automatically injects SSE live-reload script into HTML files.
-    live_reload: bool = false,
-    /// SSE endpoint path for live-reload broadcast (default: "/__httpx_live_reload").
-    reload_sse_path: []const u8 = "/__httpx_live_reload",
+    liveReload: bool = false,
+    /// SSE endpoint path for live-reload broadcast (default: "/__httpx_liveReload").
+    reloadSsePath: []const u8 = "/__httpx_liveReload",
+    /// SPA fallback file (e.g. "index.html") when requested path does not exist on disk.
+    spaFallback: ?[]const u8 = null,
+    /// Serve from the embedded asset registry only; never touch the
+    /// filesystem. Used for single-executable production deployments where
+    /// the source directory may not exist at runtime.
+    filesystem: bool = true,
 };
 
 pub const MountError = error{
@@ -51,16 +57,16 @@ pub const MountError = error{
     OutOfMemory,
 };
 
-var g_state: ?*State = null;
-
 const State = struct {
     allocator: Allocator,
     root: []u8,
     index: []u8,
-    cache_control: []u8,
-    max_size: usize,
-    live_reload: bool,
-    reload_sse_path: []u8,
+    cacheControl: []u8,
+    maxSize: usize,
+    liveReload: bool,
+    reloadSsePath: []u8,
+    spaFallback: ?[]u8,
+    filesystem: bool,
 
     fn create(a: Allocator, cfg: Config) !*State {
         const st = try a.create(State);
@@ -68,11 +74,13 @@ const State = struct {
         st.* = .{
             .allocator = a,
             .root = try normalizeDir(a, cfg.root),
-            .index = try a.dupe(u8, cfg.index_file),
-            .cache_control = try a.dupe(u8, cfg.cache_control),
-            .max_size = cfg.max_file_size,
-            .live_reload = cfg.live_reload,
-            .reload_sse_path = try a.dupe(u8, cfg.reload_sse_path),
+            .index = try a.dupe(u8, cfg.indexFile),
+            .cacheControl = try a.dupe(u8, cfg.cacheControl),
+            .maxSize = cfg.maxFileSize,
+            .liveReload = cfg.liveReload,
+            .reloadSsePath = try a.dupe(u8, cfg.reloadSsePath),
+            .spaFallback = if (cfg.spaFallback) |fb| try a.dupe(u8, fb) else null,
+            .filesystem = cfg.filesystem,
         };
         return st;
     }
@@ -81,24 +89,22 @@ const State = struct {
         const a = self.allocator;
         a.free(self.root);
         a.free(self.index);
-        a.free(self.cache_control);
-        a.free(self.reload_sse_path);
+        a.free(self.cacheControl);
+        a.free(self.reloadSsePath);
+        if (self.spaFallback) |fb| a.free(fb);
         a.destroy(self);
     }
 };
 
 fn trimSlashes(p: []const u8) []const u8 {
-    var s = p;
-    while (s.len > 0 and s[0] == '/') s = s[1..];
-    while (s.len > 0 and s[s.len - 1] == '/') s = s[0 .. s.len - 1];
-    return s;
+    return std.mem.trim(u8, p, "/");
 }
 
 fn normalizeDir(a: Allocator, dir: []const u8) ![]u8 {
     if (dir.len == 0) return a.dupe(u8, dir);
-    var end = dir.len;
-    while (end > 1 and (dir[end - 1] == '/' or dir[end - 1] == '\\')) end -= 1;
-    return a.dupe(u8, dir[0..end]);
+    const trimmed = std.mem.trimEnd(u8, dir, "/\\");
+    const clean: []const u8 = if (trimmed.len == 0) dir[0..1] else trimmed;
+    return a.dupe(u8, clean);
 }
 
 /// Registers GET routes for `mount` itself and `mount/*path`.
@@ -122,42 +128,44 @@ pub fn register(router: *router_mod.Router, cfg: Config) MountError!void {
 
     const st = State.create(allocator, cfg) catch return MountError.OutOfMemory;
 
-    router.get(p1, serveIndexHandler) catch {
+    const DestroyHelper = struct {
+        fn run(ptr: ?*anyopaque) void {
+            if (ptr) |p| {
+                const s: *State = @ptrCast(@alignCast(p));
+                s.destroy();
+            }
+        }
+    };
+
+    router.get(p1, serveIndexHandler, .{ .userData = st, .deinitData = DestroyHelper.run }) catch {
         st.destroy();
         return MountError.OutOfMemory;
     };
-    router.get(p2, serveFileHandler) catch {
+    router.get(p2, serveFileHandler, .{ .userData = st, .deinitData = DestroyHelper.run }) catch {
         _ = router.remove(.GET, p1);
         st.destroy();
         return MountError.OutOfMemory;
     };
-
-    // Replace any previous mount only after this one is fully wired.
-    if (g_state) |old| old.destroy();
-    g_state = st;
 }
 
 pub fn unregister() void {
-    if (g_state) |old| {
-        old.destroy();
-        g_state = null;
-    }
+    // No-op: per-route userData eliminated global state
 }
 
 // handlers
 
 fn serveIndexHandler(ctx: *Context) anyerror!Response {
-    const st = g_state orelse return errText(500, "static not mounted");
+    const st: *State = @ptrCast(@alignCast(ctx.userData orelse return errText(500, "static not mounted")));
     return servePath(ctx, st, "/");
 }
 
 fn serveFileHandler(ctx: *Context) anyerror!Response {
-    const st = g_state orelse return errText(500, "static not mounted");
+    const st: *State = @ptrCast(@alignCast(ctx.userData orelse return errText(500, "static not mounted")));
     return servePath(ctx, st, ctx.param("path") orelse "/");
 }
 
 fn errText(status: u16, text: []const u8) Response {
-    return .{ .status = status, .content_type = "text/plain; charset=utf-8", .body = text };
+    return .{ .status = status, .contentType = "text/plain; charset=utf-8", .body = text };
 }
 
 // path resolution
@@ -165,21 +173,21 @@ fn errText(status: u16, text: []const u8) Response {
 pub fn percentDecode(alloc: Allocator, s: []const u8) Allocator.Error![]u8 {
     // First pass: exact output length so the returned slice is freed with
     // the same length it was allocated as (required by sized allocators).
-    var out_len: usize = 0;
+    var outLen: usize = 0;
     var i: usize = 0;
     while (i < s.len) {
         if (s[i] == '%' and i + 2 < s.len and
             std.ascii.isHex(s[i + 1]) and std.ascii.isHex(s[i + 2]))
         {
-            out_len += 1;
+            outLen += 1;
             i += 3;
         } else {
-            out_len += 1;
+            outLen += 1;
             i += 1;
         }
     }
 
-    const out = alloc.alloc(u8, out_len) catch return Allocator.Error.OutOfMemory;
+    const out = alloc.alloc(u8, outLen) catch return Allocator.Error.OutOfMemory;
     errdefer alloc.free(out);
     var n: usize = 0;
     i = 0;
@@ -203,8 +211,8 @@ pub fn percentDecode(alloc: Allocator, s: []const u8) Allocator.Error![]u8 {
 
 /// Resolves a URL path against `root`; null when it escapes the root.
 /// Leak-free under any allocator (intermediate decode buffer always freed).
-pub fn safeJoin(alloc: Allocator, url_path: []const u8, root: []const u8) !?[]u8 {
-    const decoded = try percentDecode(alloc, url_path);
+pub fn safeJoin(alloc: Allocator, urlPath: []const u8, root: []const u8) !?[]u8 {
+    const decoded = try percentDecode(alloc, urlPath);
     defer alloc.free(decoded);
 
     for (decoded) |c| {
@@ -243,16 +251,16 @@ pub fn safeJoin(alloc: Allocator, url_path: []const u8, root: []const u8) !?[]u8
 
 // filesystem
 
-pub const FileMeta = struct { size: u64, mtime_ns: i128 };
+pub const FileMeta = struct { size: u64, mtimeNs: i128 };
 
-pub const c_fs = struct {
-    pub const is_win = builtin.os.tag == .windows;
+pub const cFs = struct {
+    pub const isWin = builtin.os.tag == .windows;
 
-    pub const FILE_HANDLE = if (is_win) std.os.windows.HANDLE else std.c.fd_t;
-    pub const INVALID_HANDLE: FILE_HANDLE = if (is_win) std.os.windows.INVALID_HANDLE_VALUE else -1;
+    pub const FILE_HANDLE = if (isWin) std.os.windows.HANDLE else std.c.fd_t;
+    pub const INVALID_HANDLE: FILE_HANDLE = if (isWin) std.os.windows.INVALID_HANDLE_VALUE else -1;
 
     pub fn openRead(path: []const u8) ?FILE_HANDLE {
-        if (is_win) {
+        if (isWin) {
             var wide_buf: [std.os.windows.PATH_MAX_WIDE:0]u16 = undefined;
             const wlen = std.unicode.utf8ToUtf16Le(&wide_buf, path) catch return null;
             if (wlen >= wide_buf.len) return null;
@@ -288,7 +296,7 @@ pub const c_fs = struct {
     }
 
     pub fn openWrite(path: []const u8) ?FILE_HANDLE {
-        if (is_win) {
+        if (isWin) {
             var wide_buf: [std.os.windows.PATH_MAX_WIDE:0]u16 = undefined;
             const wlen = std.unicode.utf8ToUtf16Le(&wide_buf, path) catch return null;
             if (wlen >= wide_buf.len) return null;
@@ -321,7 +329,7 @@ pub const c_fs = struct {
     }
 
     pub fn close(h: FILE_HANDLE) void {
-        if (is_win) {
+        if (isWin) {
             _ = CloseHandle(h);
         } else {
             _ = std.c.close(h);
@@ -369,24 +377,24 @@ pub const c_fs = struct {
 };
 
 pub fn statPath(_: ?std.Io, path: []const u8) ?FileMeta {
-    if (c_fs.is_win) {
-        const h = c_fs.openRead(path) orelse return null;
-        defer c_fs.close(h);
+    if (cFs.isWin) {
+        const h = cFs.openRead(path) orelse return null;
+        defer cFs.close(h);
 
         var size: i64 = 0;
-        if (c_fs.GetFileSizeEx(h, &size) == .FALSE) return null;
+        if (cFs.GetFileSizeEx(h, &size) == .FALSE) return null;
 
         var ft: std.os.windows.FILETIME = undefined;
-        if (c_fs.GetFileTime(h, null, null, &ft) == .FALSE) return null;
+        if (cFs.GetFileTime(h, null, null, &ft) == .FALSE) return null;
 
         const ft_u64: u64 = (@as(u64, ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
         // Convert Windows 100-ns intervals from 1601 to Unix epoch ns from 1970
         const windows_epoch_diff: i128 = 116444736000000000;
-        const mtime_ns = (@as(i128, ft_u64) - windows_epoch_diff) * 100;
+        const mtimeNs = (@as(i128, ft_u64) - windows_epoch_diff) * 100;
 
         return .{
             .size = @intCast(@max(0, size)),
-            .mtime_ns = mtime_ns,
+            .mtimeNs = mtimeNs,
         };
     } else if (builtin.os.tag == .linux) {
         var null_term: [4096:0]u8 = undefined;
@@ -410,10 +418,10 @@ pub fn statPath(_: ?std.Io, path: []const u8) ?FileMeta {
         if (@as(isize, @bitCast(rc)) < 0) return null;
         if ((statx_buf.mode & std.os.linux.S.IFMT) != std.os.linux.S.IFREG) return null;
 
-        const mtime_ns = @as(i128, statx_buf.mtime.sec) * std.time.ns_per_s + @as(i128, statx_buf.mtime.nsec);
+        const mtimeNs = @as(i128, statx_buf.mtime.sec) * std.time.ns_per_s + @as(i128, statx_buf.mtime.nsec);
         return .{
             .size = statx_buf.size,
-            .mtime_ns = mtime_ns,
+            .mtimeNs = mtimeNs,
         };
     } else {
         var null_term: [4096:0]u8 = undefined;
@@ -440,10 +448,10 @@ pub fn statPath(_: ?std.Io, path: []const u8) ?FileMeta {
             if (stat_fn(&null_term, &st) != 0) return null;
             if (!std.c.S.ISREG(st.mode)) return null;
 
-            const mtime_ns = @as(i128, st.mtime().sec) * std.time.ns_per_s + @as(i128, st.mtime().nsec);
+            const mtimeNs = @as(i128, st.mtime().sec) * std.time.ns_per_s + @as(i128, st.mtime().nsec);
             return .{
                 .size = @intCast(@max(0, st.size)),
-                .mtime_ns = mtime_ns,
+                .mtimeNs = mtimeNs,
             };
         }
         return null;
@@ -451,89 +459,66 @@ pub fn statPath(_: ?std.Io, path: []const u8) ?FileMeta {
 }
 
 fn readAll(_: ?std.Io, path: []const u8, dest: []u8) !void {
-    if (c_fs.is_win) {
-        const h = c_fs.openRead(path) orelse return error.FileNotFound;
-        defer c_fs.close(h);
+    if (cFs.isWin) {
+        const h = cFs.openRead(path) orelse return error.FileNotFound;
+        defer cFs.close(h);
 
-        var total_read: usize = 0;
-        while (total_read < dest.len) {
+        var totalRead: usize = 0;
+        while (totalRead < dest.len) {
             var bytes_read: u32 = 0;
-            const to_read: u32 = @intCast(@min(dest.len - total_read, std.math.maxInt(u32)));
-            if (c_fs.ReadFile(h, dest[total_read..].ptr, to_read, &bytes_read, null) == .FALSE) return error.UnexpectedEof;
+            const to_read: u32 = @intCast(@min(dest.len - totalRead, std.math.maxInt(u32)));
+            if (cFs.ReadFile(h, dest[totalRead..].ptr, to_read, &bytes_read, null) == .FALSE) return error.UnexpectedEof;
             if (bytes_read == 0) break;
-            total_read += bytes_read;
+            totalRead += bytes_read;
         }
-        if (total_read < dest.len) return error.UnexpectedEof;
+        if (totalRead < dest.len) return error.UnexpectedEof;
     } else {
-        const fd = c_fs.openRead(path) orelse return error.FileNotFound;
-        defer c_fs.close(fd);
+        const fd = cFs.openRead(path) orelse return error.FileNotFound;
+        defer cFs.close(fd);
 
-        var total_read: usize = 0;
-        while (total_read < dest.len) {
-            const rc = std.c.read(fd, dest[total_read..].ptr, dest.len - total_read);
+        var totalRead: usize = 0;
+        while (totalRead < dest.len) {
+            const rc = std.c.read(fd, dest[totalRead..].ptr, dest.len - totalRead);
             if (rc < 0) return error.UnexpectedEof;
             if (rc == 0) break;
-            total_read += @intCast(rc);
+            totalRead += @intCast(rc);
         }
-        if (total_read < dest.len) return error.UnexpectedEof;
+        if (totalRead < dest.len) return error.UnexpectedEof;
     }
 }
 
-pub fn writeFile(path: []const u8, content: []const u8) !void {
-    if (c_fs.is_win) {
-        const h = c_fs.openWrite(path) orelse return error.WriteFailed;
-        defer c_fs.close(h);
-
-        var total_written: usize = 0;
-        while (total_written < content.len) {
-            var bytes_written: u32 = 0;
-            const to_write: u32 = @intCast(@min(content.len - total_written, std.math.maxInt(u32)));
-            if (c_fs.WriteFile(h, content[total_written..].ptr, to_write, &bytes_written, null) == .FALSE) return error.WriteFailed;
-            if (bytes_written == 0) return error.WriteFailed;
-            total_written += bytes_written;
-        }
-    } else {
-        const fd = c_fs.openWrite(path) orelse return error.WriteFailed;
-        defer c_fs.close(fd);
-
-        var total_written: usize = 0;
-        while (total_written < content.len) {
-            const rc = std.c.write(fd, content[total_written..].ptr, content.len - total_written);
-            if (rc <= 0) return error.WriteFailed;
-            total_written += @intCast(rc);
-        }
-    }
-}
+const fs_mod = @import("../../utils/fs.zig");
+pub const writeFile = fs_mod.writeFile;
 
 fn readRange(_: ?std.Io, path: []const u8, offset: u64, dest: []u8) !void {
-    if (c_fs.is_win) {
-        const h = c_fs.openRead(path) orelse return error.FileNotFound;
-        defer c_fs.close(h);
+    if (cFs.isWin) {
+        const h = cFs.openRead(path) orelse return error.FileNotFound;
+        defer cFs.close(h);
 
         const FILE_BEGIN: u32 = 0;
-        if (c_fs.SetFilePointerEx(h, @intCast(offset), null, FILE_BEGIN) == .FALSE) return error.SeekFailed;
+        if (cFs.SetFilePointerEx(h, @intCast(offset), null, FILE_BEGIN) == .FALSE) return error.SeekFailed;
 
-        var total_read: usize = 0;
-        while (total_read < dest.len) {
+        var totalRead: usize = 0;
+        while (totalRead < dest.len) {
             var bytes_read: u32 = 0;
-            const to_read: u32 = @intCast(@min(dest.len - total_read, std.math.maxInt(u32)));
-            if (c_fs.ReadFile(h, dest[total_read..].ptr, to_read, &bytes_read, null) == .FALSE) return error.UnexpectedEof;
+            const to_read: u32 = @intCast(@min(dest.len - totalRead, std.math.maxInt(u32)));
+            if (cFs.ReadFile(h, dest[totalRead..].ptr, to_read, &bytes_read, null) == .FALSE) return error.UnexpectedEof;
             if (bytes_read == 0) break;
-            total_read += bytes_read;
+            totalRead += bytes_read;
         }
-        if (total_read < dest.len) return error.UnexpectedEof;
+        if (totalRead < dest.len) return error.UnexpectedEof;
     } else {
-        const fd = c_fs.openRead(path) orelse return error.FileNotFound;
-        defer c_fs.close(fd);
+        const fd = cFs.openRead(path) orelse return error.FileNotFound;
+        defer cFs.close(fd);
 
-        var total_read: usize = 0;
-        while (total_read < dest.len) {
-            const rc = std.c.pread(fd, dest[total_read..].ptr, dest.len - total_read, @intCast(offset + total_read));
+        var totalRead: usize = 0;
+        while (totalRead < dest.len) {
+            const rc = std.c.pread(fd, dest[totalRead..].ptr, dest.len - totalRead, @intCast(offset + totalRead));
             if (rc < 0) return error.SeekFailed;
             if (rc == 0) break;
-            total_read += @intCast(rc);
+            totalRead += @intCast(rc);
         }
-        if (total_read < dest.len) return error.UnexpectedEof;
+        if (totalRead < dest.len) return error.UnexpectedEof;
     }
 }
 
@@ -546,8 +531,8 @@ fn monthName(numeric: u4) []const u8 {
 }
 
 /// RFC 9110 IMF-fixdate: "Tue, 25 Aug 2026 10:00:00 GMT".
-pub fn formatHttpDate(buf: []u8, epoch_secs: i64) []const u8 {
-    const es = std.time.epoch.EpochSeconds{ .secs = @intCast(@max(0, epoch_secs)) };
+pub fn formatHttpDate(buf: []u8, epochSecs: i64) []const u8 {
+    const es = std.time.epoch.EpochSeconds{ .secs = @intCast(@max(0, epochSecs)) };
     const day = es.getEpochDay();
     const year_day = day.calculateYearDay();
     const month_day = year_day.calculateMonthDay();
@@ -643,88 +628,43 @@ pub fn parseRange(spec: []const u8, size: u64) ?RangeSpec {
 
 // serving
 
-fn servePath(ctx: *Context, st: *State, raw_url_path: []const u8) anyerror!Response {
-    const a = ctx.allocator;
-
-    const formatted_path = if (raw_url_path.len > 0 and raw_url_path[0] == '/')
-        raw_url_path
-    else
-        std.fmt.allocPrint(a, "/{s}", .{raw_url_path}) catch return Allocator.Error.OutOfMemory;
-
-    var joined = (try safeJoin(a, formatted_path, st.root)) orelse
-        return errText(403, "forbidden");
-
-    var meta = statPath(ctx.io, joined);
-    if (meta == null) {
-        const with_index = if (std.mem.endsWith(u8, joined, "/"))
-            std.fmt.allocPrint(a, "{s}{s}", .{ joined, st.index }) catch return Allocator.Error.OutOfMemory
-        else
-            std.fmt.allocPrint(a, "{s}/{s}", .{ joined, st.index }) catch return Allocator.Error.OutOfMemory;
-        meta = statPath(ctx.io, with_index);
-        if (meta != null) joined = with_index;
-    }
-    const m = meta orelse return errText(404, "not found");
-    return respondWithFile(ctx, st, joined, m);
-}
-
-fn respondWithFile(ctx: *Context, st: *State, path: []const u8, meta: FileMeta) anyerror!Response {
+fn respondWithEmbedded(ctx: *Context, st: *State, asset: @import("../assets.zig").Asset) anyerror!Response {
     const a = ctx.allocator;
     const is_head = ctx.method == .HEAD;
 
-    const etag = etagAlloc(a, meta) catch return Allocator.Error.OutOfMemory;
-    var date_buf: [40]u8 = undefined;
-    const lm_str = formatHttpDate(&date_buf, @intCast(@divFloor(meta.mtime_ns, std.time.ns_per_s)));
-    const last_modified = a.dupe(u8, lm_str) catch return Allocator.Error.OutOfMemory;
-
-    // Conditional requests.
     if (ctx.header("If-None-Match")) |inm| {
-        if (etagMatches(inm, etag)) {
-            const hs = a.dupe(router_mod.Header, &.{.{ .name = "ETag", .value = etag }}) catch return Allocator.Error.OutOfMemory;
+        if (etagMatches(inm, asset.etag)) {
+            const hs = a.dupe(router_mod.Header, &.{.{ .name = "ETag", .value = asset.etag }}) catch return Allocator.Error.OutOfMemory;
             return .{ .status = 304, .headers = hs };
-        }
-    } else if (ctx.header("If-Modified-Since")) |ims| {
-        if (parseHttpDate(ims)) |ims_secs| {
-            const lm_secs: i64 = @intCast(@divFloor(meta.mtime_ns, std.time.ns_per_s));
-            if (ims_secs >= lm_secs) return .{ .status = 304 };
         }
     }
 
     var headers: std.ArrayList(router_mod.Header) = .empty;
-    headers.append(a, .{ .name = "ETag", .value = etag }) catch return Allocator.Error.OutOfMemory;
-    headers.append(a, .{ .name = "Last-Modified", .value = last_modified }) catch return Allocator.Error.OutOfMemory;
-    if (st.cache_control.len > 0)
-        headers.append(a, .{ .name = "Cache-Control", .value = st.cache_control }) catch return Allocator.Error.OutOfMemory;
+    headers.append(a, .{ .name = "ETag", .value = asset.etag }) catch return Allocator.Error.OutOfMemory;
+    if (st.cacheControl.len > 0)
+        headers.append(a, .{ .name = "Cache-Control", .value = st.cacheControl }) catch return Allocator.Error.OutOfMemory;
 
-    const content_type = mime.fromPath(path);
-
-    // Single range request.
+    // Single range request over the stored bytes (no live-reload injection:
+    // ranges address the asset as stored).
     if (ctx.header("Range")) |spec| {
-        if (parseRange(spec, meta.size)) |r| {
+        if (parseRange(spec, asset.content.len)) |r| {
             const len: usize = @intCast(r.end - r.start + 1);
-            if (len > st.max_size) return errText(413, "range too large");
-            const body = a.alloc(u8, len) catch return Allocator.Error.OutOfMemory;
-            readRange(ctx.io, path, r.start, body) catch return errText(500, "read error");
-            const cr = std.fmt.allocPrint(a, "bytes {d}-{d}/{d}", .{ r.start, r.end, meta.size }) catch return Allocator.Error.OutOfMemory;
+            if (len > st.maxSize) return errText(413, "range too large");
+            const cr = std.fmt.allocPrint(a, "bytes {d}-{d}/{d}", .{ r.start, r.end, asset.content.len }) catch return Allocator.Error.OutOfMemory;
             headers.append(a, .{ .name = "Content-Range", .value = cr }) catch return Allocator.Error.OutOfMemory;
             return .{
                 .status = 206,
-                .content_type = content_type,
-                .body = if (is_head) "" else body,
+                .contentType = asset.contentType,
+                .body = if (is_head) "" else asset.content[@intCast(r.start)..@intCast(r.end + 1)],
                 .headers = headers.items,
             };
         }
-        // Unsatisfiable -> 416.
-        const cr = std.fmt.allocPrint(a, "bytes */{d}", .{meta.size}) catch return Allocator.Error.OutOfMemory;
+        const cr = std.fmt.allocPrint(a, "bytes */{d}", .{asset.content.len}) catch return Allocator.Error.OutOfMemory;
         const hs = a.dupe(router_mod.Header, &.{.{ .name = "Content-Range", .value = cr }}) catch return Allocator.Error.OutOfMemory;
-        return .{ .status = 416, .content_type = content_type, .headers = hs };
+        return .{ .status = 416, .contentType = asset.contentType, .headers = hs };
     }
 
-    if (meta.size > st.max_size) return errText(413, "file too large");
-
-    var body = a.alloc(u8, @intCast(meta.size)) catch return Allocator.Error.OutOfMemory;
-    readAll(ctx.io, path, body) catch return errText(500, "read error");
-
-    if (st.live_reload and !is_head and std.mem.startsWith(u8, content_type, "text/html")) {
+    if (st.liveReload and !is_head and std.mem.startsWith(u8, asset.contentType, "text/html")) {
         const reload_script = try std.fmt.allocPrint(a,
             \\<script>
             \\(function() {{
@@ -737,7 +677,155 @@ fn respondWithFile(ctx: *Context, st: *State, path: []const u8, meta: FileMeta) 
             \\  }};
             \\}})();
             \\</script>
-        , .{st.reload_sse_path});
+        , .{st.reloadSsePath});
+        const full_body = try std.fmt.allocPrint(a, "{s}\n{s}", .{ asset.content, reload_script });
+        return .{
+            .status = 200,
+            .contentType = asset.contentType,
+            .body = full_body,
+            .headers = headers.items,
+        };
+    }
+
+    return .{
+        .status = 200,
+        .contentType = asset.contentType,
+        .body = if (is_head) "" else asset.content,
+        .headers = headers.items,
+    };
+}
+
+fn servePath(ctx: *Context, st: *State, rawUrlPath: []const u8) anyerror!Response {
+    const a = ctx.allocator;
+
+    const formatted_path = if (rawUrlPath.len > 0 and rawUrlPath[0] == '/')
+        rawUrlPath
+    else
+        std.fmt.allocPrint(a, "/{s}", .{rawUrlPath}) catch return Allocator.Error.OutOfMemory;
+
+    // 1. Check embedded assets registry first for zero disk I/O single-file deployment
+    const assets_mod = @import("../assets.zig");
+    const clean_rel = if (formatted_path.len > 0 and formatted_path[0] == '/') formatted_path[1..] else formatted_path;
+    if (assets_mod.getEmbedded(clean_rel) orelse (if (clean_rel.len == 0) assets_mod.getEmbedded(st.index) else null)) |embedded| {
+        return respondWithEmbedded(ctx, st, embedded);
+    }
+    var rooted_buf: [512]u8 = undefined;
+    if (std.fmt.bufPrint(&rooted_buf, "{s}/{s}", .{ st.root, clean_rel })) |rooted| {
+        if (assets_mod.getEmbedded(rooted)) |embedded| {
+            return respondWithEmbedded(ctx, st, embedded);
+        }
+    } else |_| {}
+
+    var joined: []const u8 = "";
+    var meta: ?FileMeta = null;
+    if (!st.filesystem) {
+        if (st.spaFallback) |fb| {
+            if (assets_mod.getEmbedded(fb)) |embedded_fb| {
+                return respondWithEmbedded(ctx, st, embedded_fb);
+            }
+        }
+        return errText(404, "not found");
+    }
+
+    joined = (try safeJoin(a, formatted_path, st.root)) orelse
+        return errText(403, "forbidden");
+
+    meta = statPath(ctx.io, joined);
+    if (meta == null) {
+        const with_index = if (std.mem.endsWith(u8, joined, "/"))
+            std.fmt.allocPrint(a, "{s}{s}", .{ joined, st.index }) catch return Allocator.Error.OutOfMemory
+        else
+            std.fmt.allocPrint(a, "{s}/{s}", .{ joined, st.index }) catch return Allocator.Error.OutOfMemory;
+        meta = statPath(ctx.io, with_index);
+        if (meta != null) joined = with_index;
+    }
+    if (meta == null and st.spaFallback != null) {
+        // Check embedded fallback first
+        if (assets_mod.getEmbedded(st.spaFallback.?)) |embedded_fb| {
+            return respondWithEmbedded(ctx, st, embedded_fb);
+        }
+        const fallback_path = if (std.mem.endsWith(u8, st.root, "/"))
+            std.fmt.allocPrint(a, "{s}{s}", .{ st.root, st.spaFallback.? }) catch return Allocator.Error.OutOfMemory
+        else
+            std.fmt.allocPrint(a, "{s}/{s}", .{ st.root, st.spaFallback.? }) catch return Allocator.Error.OutOfMemory;
+        meta = statPath(ctx.io, fallback_path);
+        if (meta != null) joined = fallback_path;
+    }
+    const m = meta orelse return errText(404, "not found");
+    return respondWithFile(ctx, st, joined, m);
+}
+
+fn respondWithFile(ctx: *Context, st: *State, path: []const u8, meta: FileMeta) anyerror!Response {
+    const a = ctx.allocator;
+    const is_head = ctx.method == .HEAD;
+
+    const etag = etagAlloc(a, meta) catch return Allocator.Error.OutOfMemory;
+    var date_buf: [40]u8 = undefined;
+    const lm_str = formatHttpDate(&date_buf, @intCast(@divFloor(meta.mtimeNs, std.time.ns_per_s)));
+    const last_modified = a.dupe(u8, lm_str) catch return Allocator.Error.OutOfMemory;
+
+    // Conditional requests.
+    if (ctx.header("If-None-Match")) |inm| {
+        if (etagMatches(inm, etag)) {
+            const hs = a.dupe(router_mod.Header, &.{.{ .name = "ETag", .value = etag }}) catch return Allocator.Error.OutOfMemory;
+            return .{ .status = 304, .headers = hs };
+        }
+    } else if (ctx.header("If-Modified-Since")) |ims| {
+        if (parseHttpDate(ims)) |ims_secs| {
+            const lm_secs: i64 = @intCast(@divFloor(meta.mtimeNs, std.time.ns_per_s));
+            if (ims_secs >= lm_secs) return .{ .status = 304 };
+        }
+    }
+
+    var headers: std.ArrayList(router_mod.Header) = .empty;
+    headers.append(a, .{ .name = "ETag", .value = etag }) catch return Allocator.Error.OutOfMemory;
+    headers.append(a, .{ .name = "Last-Modified", .value = last_modified }) catch return Allocator.Error.OutOfMemory;
+    if (st.cacheControl.len > 0)
+        headers.append(a, .{ .name = "Cache-Control", .value = st.cacheControl }) catch return Allocator.Error.OutOfMemory;
+
+    const contentType = mime.fromPath(path);
+
+    // Single range request.
+    if (ctx.header("Range")) |spec| {
+        if (parseRange(spec, meta.size)) |r| {
+            const len: usize = @intCast(r.end - r.start + 1);
+            if (len > st.maxSize) return errText(413, "range too large");
+            const body = a.alloc(u8, len) catch return Allocator.Error.OutOfMemory;
+            readRange(ctx.io, path, r.start, body) catch return errText(500, "read error");
+            const cr = std.fmt.allocPrint(a, "bytes {d}-{d}/{d}", .{ r.start, r.end, meta.size }) catch return Allocator.Error.OutOfMemory;
+            headers.append(a, .{ .name = "Content-Range", .value = cr }) catch return Allocator.Error.OutOfMemory;
+            return .{
+                .status = 206,
+                .contentType = contentType,
+                .body = if (is_head) "" else body,
+                .headers = headers.items,
+            };
+        }
+        // Unsatisfiable -> 416.
+        const cr = std.fmt.allocPrint(a, "bytes */{d}", .{meta.size}) catch return Allocator.Error.OutOfMemory;
+        const hs = a.dupe(router_mod.Header, &.{.{ .name = "Content-Range", .value = cr }}) catch return Allocator.Error.OutOfMemory;
+        return .{ .status = 416, .contentType = contentType, .headers = hs };
+    }
+
+    if (meta.size > st.maxSize) return errText(413, "file too large");
+
+    var body = a.alloc(u8, @intCast(meta.size)) catch return Allocator.Error.OutOfMemory;
+    readAll(ctx.io, path, body) catch return errText(500, "read error");
+
+    if (st.liveReload and !is_head and std.mem.startsWith(u8, contentType, "text/html")) {
+        const reload_script = try std.fmt.allocPrint(a,
+            \\<script>
+            \\(function() {{
+            \\  const es = new EventSource("{s}");
+            \\  es.onmessage = function(e) {{
+            \\    if (e.data === "reload") {{
+            \\      console.log("[httpx live-reload] Static file changed, reloading...");
+            \\      location.reload();
+            \\    }}
+            \\  }};
+            \\}})();
+            \\</script>
+        , .{st.reloadSsePath});
 
         if (std.mem.indexOf(u8, body, "</body>")) |idx| {
             body = try std.fmt.allocPrint(a, "{s}{s}{s}", .{ body[0..idx], reload_script, body[idx..] });
@@ -748,20 +836,20 @@ fn respondWithFile(ctx: *Context, st: *State, path: []const u8, meta: FileMeta) 
 
     return .{
         .status = 200,
-        .content_type = content_type,
+        .contentType = contentType,
         .body = if (is_head) "" else body,
         .headers = headers.items,
     };
 }
 
 fn etagAlloc(a: Allocator, meta: FileMeta) ![]u8 {
-    const mt: u64 = @truncate(@as(u128, @bitCast(meta.mtime_ns)));
+    const mt: u64 = @truncate(@as(u128, @bitCast(meta.mtimeNs)));
     return std.fmt.allocPrint(a, "\"{x}-{x}\"", .{ mt, meta.size });
 }
 
-fn etagMatches(header_value: []const u8, etag: []const u8) bool {
-    if (std.mem.eql(u8, header_value, "*")) return true;
-    var it = std.mem.splitScalar(u8, header_value, ',');
+fn etagMatches(headerValue: []const u8, etag: []const u8) bool {
+    if (std.mem.eql(u8, headerValue, "*")) return true;
+    var it = std.mem.splitScalar(u8, headerValue, ',');
     while (it.next()) |cand_raw| {
         const cand = std.mem.trim(u8, cand_raw, " \t");
         if (std.mem.eql(u8, cand, etag)) return true;
@@ -818,11 +906,16 @@ test "range parsing covers fixed, open-ended, suffix, and invalid forms" {
     try std.testing.expect(parseRange("bytes=0-1,5-6", 100) == null);
     try std.testing.expect(parseRange("chunks=0-1", 100) == null);
     try std.testing.expect(parseRange("bytes=-", 100) == null);
+
+    // 10 GiB file range tests (> 4 GiB, testing 64-bit offsets)
+    const file_size_10gb: u64 = 10 * 1024 * 1024 * 1024;
+    try std.testing.expectEqual(RangeSpec{ .start = 5 * 1024 * 1024 * 1024, .end = 6 * 1024 * 1024 * 1024 }, parseRange("bytes=5368709120-6442450944", file_size_10gb).?);
+    try std.testing.expectEqual(RangeSpec{ .start = file_size_10gb - 100, .end = file_size_10gb - 1 }, parseRange("bytes=-100", file_size_10gb).?);
 }
 
 test "etag matching handles lists, star, and weak forms" {
     const a = std.testing.allocator;
-    const e = try etagAlloc(a, .{ .size = 5, .mtime_ns = 1 });
+    const e = try etagAlloc(a, .{ .size = 5, .mtimeNs = 1 });
     defer a.free(e);
 
     try std.testing.expect(etagMatches("*", e));
@@ -830,4 +923,62 @@ test "etag matching handles lists, star, and weak forms" {
     try std.testing.expect(etagMatches(" \"x-1\" , other ", e) == false or true); // list contains miss
     try std.testing.expect(etagMatches("\"deadbeef-5\", W/\"1-5\"", e));
     try std.testing.expect(!etagMatches("\"nope\"", e));
+}
+
+test "embedded asset serves byte ranges like filesystem files" {
+    const a = std.testing.allocator;
+    const assets_mod = @import("../assets.zig");
+    const content = "0123456789abcdef";
+    // Fabricated Asset: exercises respondWithEmbedded without touching the
+    // process-global registry (which outlives the test allocator by design).
+    const asset = assets_mod.Asset{
+        .path = "range_probe.txt",
+        .content = content,
+        .contentType = "text/plain",
+        .etag = "\"0123456789abcdef\"",
+    };
+
+    const st = try State.create(a, .{ .root = ".", .filesystem = false });
+    defer st.destroy();
+
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // Full body without Range.
+    {
+        var ctx = Context{ .allocator = aa, .method = .GET };
+        const res = try respondWithEmbedded(&ctx, st, asset);
+        try std.testing.expectEqual(@as(u16, 200), res.status);
+        try std.testing.expectEqualStrings(content, res.body);
+    }
+    // First four bytes.
+    {
+        var ctx = Context{
+            .allocator = aa,
+            .method = .GET,
+            .headers = &.{.{ .name = "Range", .value = "bytes=0-3" }},
+        };
+        const res = try respondWithEmbedded(&ctx, st, asset);
+        try std.testing.expectEqual(@as(u16, 206), res.status);
+        try std.testing.expectEqualStrings("0123", res.body);
+        var found_cr = false;
+        for (res.headers) |h| {
+            if (std.ascii.eqlIgnoreCase(h.name, "Content-Range")) {
+                try std.testing.expectEqualStrings("bytes 0-3/16", h.value);
+                found_cr = true;
+            }
+        }
+        try std.testing.expect(found_cr);
+    }
+    // Unsatisfiable range -> 416.
+    {
+        var ctx = Context{
+            .allocator = aa,
+            .method = .GET,
+            .headers = &.{.{ .name = "Range", .value = "bytes=99-100" }},
+        };
+        const res = try respondWithEmbedded(&ctx, st, asset);
+        try std.testing.expectEqual(@as(u16, 416), res.status);
+    }
 }

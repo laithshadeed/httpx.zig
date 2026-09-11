@@ -12,23 +12,24 @@ pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    var client = httpx.Client.initForBaseUrl(allocator, "https://httpbun.com");
+    var client = httpx.Client.init(allocator, io, .{});
     defer client.deinit();
 
-    // Request defaults are implicit when using .{}
-    var res = try client.get("/get", .{});
+    // Unified fetch request
+    var res = try client.fetch("https://httpbun.com/get", .{});
     defer res.deinit();
 
-    std.debug.print("status={d}\n", .{res.status.code});
-    std.debug.print("body={s}\n", .{res.text() orelse ""});
+    std.debug.print("status={d}\n", .{res.status});
+    std.debug.print("body={s}\n", .{res.bytes()});
 }
 ```
 
 ## Run
 
 ```bash
-zig build run-all-simple_get
+zig build run-simple-get
 ```
 
 ## What to Verify

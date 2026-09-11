@@ -45,7 +45,7 @@ fn homePageHandler(_: *httpx.Context) anyerror!httpx.Response {
         \\<body>
         \\  <div class="card">
         \\    <h1>httpx.zig</h1>
-        \\    <p>Production-ready HTTP/1.x, HTTP/2, HTTP/3 client &amp; server for Zig.</p>
+        \\    <p>Actively developed HTTP/1.x, HTTP/2, HTTP/3 client &amp; server for Zig.</p>
         \\    <div>
         \\      <span class="badge">HTTP/1.1</span>
         \\      <span class="badge">HTTP/2</span>
@@ -63,7 +63,7 @@ fn homePageHandler(_: *httpx.Context) anyerror!httpx.Response {
     return .{
         .status = 200,
         .body = html,
-        .content_type = "text/html; charset=utf-8",
+        .contentType = "text/html; charset=utf-8",
     };
 }
 
@@ -71,13 +71,14 @@ pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
     std.debug.print("=== Starting httpx Documentation & API Server ===\n", .{});
 
-    var server = try httpx.Server.init(allocator, .{
+    var server = try httpx.Server.init(allocator, io, .{
         .host = "127.0.0.1",
         .port = 0,
-        .docs_enabled = true,
+        .enableDocs = true,
         .docs = .{
             .title = "HTTPX Modern API Suite",
             .version = "0.2.0",
@@ -85,19 +86,16 @@ pub fn main() !void {
             .swagger = .{ .enabled = true, .route = "/docs", .title = "Swagger UI" },
             .redoc = .{ .enabled = true, .route = "/redoc", .title = "ReDoc" },
             .scalar = .{ .enabled = true, .route = "/scalar", .title = "Scalar Reference" },
-            .graphiql = .{ .enabled = true, .route = "/graphiql", .graphql_endpoint = "/graphql", .title = "GraphiQL IDE" },
+            .graphiql = .{ .enabled = true, .route = "/graphiql", .graphqlEndpoint = "/graphql", .title = "GraphiQL IDE" },
         },
-        .max_connections = 5,
-        .logging = .{
-            .enabled = true,
-            .color = .never,
-        },
+        .maxConnections = 5,
+        .logging = .{},
     });
     defer server.deinit();
 
     try server.get("/", homePageHandler);
     try server.get("/api/items", listItemsHandler);
-    try server.get("/api/items/:id", getItemHandler);
+    try server.get("/api/items/{id}", getItemHandler);
 
     const port = server.localPort();
     std.debug.print("[INFO] Server started on http://127.0.0.1:{d}\n", .{port});
@@ -109,12 +107,12 @@ pub fn main() !void {
     };
     const t = try std.Thread.spawn(.{}, ServerThread.run, .{&server});
 
-    var client = try httpx.Client.init(allocator, .{});
+    var client = httpx.Client.init(allocator, io, .{});
     defer client.deinit();
 
     var url_buf: [128]u8 = undefined;
     const url_items = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/api/items", .{port});
-    var res = try client.get(url_items);
+    var res = try client.get(url_items, .{});
     std.debug.print("GET /api/items -> status={d}, body={s}\n", .{ res.status, res.body });
     res.deinit();
 
