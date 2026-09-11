@@ -125,7 +125,8 @@ gtag('config', '${GA_ID}');`,
     ],
   ],
 
-  ignoreDeadLinks: [/.*\.zig$/],
+  // No ignoreDeadLinks: every internal link resolves (audited), so any
+  // future dead link fails the docs build loudly instead of rotting.
 
   transformPageData(pageData: any) {
     // Dynamic OG image generation based on page title
@@ -343,7 +344,7 @@ gtag('config', '${GA_ID}');`,
             { text: "Session Management", link: "/guide/sessions" },
             { text: "Rate Limiting", link: "/guide/rate-limiting" },
             { text: "WebSockets", link: "/guide/websockets" },
-            { text: "Server-Sent Events", link: "/guide/sse" },
+            { text: "Server-Sent Events", link: "/web/sse" },
             { text: "Deployment & Nginx", link: "/guide/deployment" },
           ],
         },

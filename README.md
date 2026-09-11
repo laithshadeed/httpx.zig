@@ -16,7 +16,7 @@
 <a href="https://github.com/sponsors/muhammad-fiaz"><img src="https://img.shields.io/badge/Sponsor-GitHub-pink?style=social&logo=github" alt="GitHub Sponsors"></a>
 <a href="https://hits.sh/muhammad-fiaz/httpx.zig/"><img src="https://hits.sh/muhammad-fiaz/httpx.zig.svg?label=Visitors&extraCount=0&color=green" alt="Repo Visitors"></a>
 
-<p><em>An actively developed and maintained, high-performance HTTP client and server library for Zig.</em></p>
+<p><em>A Fast, High-Performance HTTP Client and Server Library for Zig.</em></p>
 
 <b><a href="https://muhammad-fiaz.github.io/httpx.zig/">Documentation</a> |
 <a href="https://muhammad-fiaz.github.io/httpx.zig/api/client">API Reference</a> |

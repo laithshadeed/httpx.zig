@@ -110,7 +110,7 @@ try engine.registerFilter("shout", myFilterFn);
 ```
 
 A `-` adjacent to a delimiter strips surrounding whitespace
-(`{%- ... -%}`, `{{- ... -}}`, `{#- ... -#}`).
+(`{%- ... -%}`, <code v-pre>{{- ... -}}</code>, `{#- ... -#}`).
 
 ### Tests
 
@@ -225,7 +225,7 @@ trusted markup with `templates.raw(...)` (see above).
 
 `{% set name %}...{% endset %}` captures rendered markup (safe HTML).
 `{% call %}` renders its body and exposes it as `caller()` inside the
-macro. `{{ super() }}` renders the overridden parent block.
+macro. <code v-pre>{{ super() }}</code> renders the overridden parent block.
 
 ### Custom filters and globals
 
