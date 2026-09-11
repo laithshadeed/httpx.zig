@@ -139,10 +139,19 @@ pub const http3 = struct {
     pub const Connection = connection.Connection;
     pub const RequestStream = connection.RequestStream;
     pub const Settings = connection.Settings;
+    pub const stream = @import("protocols/http3/stream.zig");
+    pub const H3Stream = stream.H3Stream;
     pub const transport = @import("protocols/http3/transport.zig");
     pub const Client = transport.Client;
 };
 pub const tls = @import("protocols/tls/tls.zig");
+
+test {
+    // Force semantic analysis of protocol modules so their tests are
+    // discovered even where production code does not reference them yet
+    // (Zig prunes unreferenced declarations from test discovery).
+    _ = http3.stream;
+}
 
 // Web framework
 pub const router = struct {
