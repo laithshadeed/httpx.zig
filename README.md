@@ -125,7 +125,7 @@
 | **Operating System** | Windows 10+, Linux, macOS | Cross-platform networking support |
 
 > [!IMPORTANT]
-> **Zig 0.16.0 is required.** This project currently targets Zig 0.16.0. Zig 0.17.0 is in development (dev branch, not yet released) and introduces several minor breaking changes from 0.16.0. Migration to 0.17.0 will happen once it is officially released. Please use Zig 0.16.0 for all builds.
+> **Zig 0.16.0 is required.** This project targets the stable Zig 0.16.0 release. Please use Zig 0.16.0 for all builds.
 
 ---
 
