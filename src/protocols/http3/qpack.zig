@@ -242,6 +242,12 @@ pub fn decodeInt(data: []const u8, offset: *usize, prefixBits: u4) Error!u64 {
 }
 
 // Dynamic table entry (RFC 9204 Section 2.3.2).
+//
+// Dynamic absolute indexes are 0-based and live in their own number
+// space: static references (selected by each representation's T bit)
+// index the static table, dynamic references index this table. Never
+// mix the two (an early revision offset dynamic indexes by the static
+// table size and was wire-incompatible with compliant peers).
 
 pub const DynEntry = struct {
     name: []const u8,
@@ -255,9 +261,9 @@ pub const DynTable = struct {
     maxSize: usize,
     currentSize: usize = 0,
     /// Absolute index of the oldest retained dynamic entry.
-    baseIndex: u64 = STATIC_TABLE_SIZE,
-    /// Absolute index assigned to the next insertion.
-    nextIndex: u64 = STATIC_TABLE_SIZE,
+    baseIndex: u64 = 0,
+    /// Absolute index assigned to the next insertion (= insert count).
+    nextIndex: u64 = 0,
 
     pub fn init(_: Allocator, maxSize: usize) DynTable {
         return .{
@@ -285,7 +291,7 @@ pub const DynTable = struct {
         if (total > self.maxSize) return Error.TableCapacityExceeded;
         const index = self.nextIndex;
 
-        // Evict from oldest (index = STATIC_TABLE_SIZE) until room.
+        // Evict oldest entries until the new one fits.
         while (self.currentSize + total > self.maxSize and self.entries.items.len > 0) {
             const old = self.entries.orderedRemove(0);
             self.currentSize -%= old.totalSize;
@@ -317,12 +323,10 @@ pub const DynTable = struct {
         }
     }
 
-    /// Resolves a QPACK absolute index to a name+value pair.
+    /// Resolves a dynamic absolute index to a name+value pair, or null
+    /// when evicted or never inserted. Static indexes never reach here;
+    /// representations route by their T bit before calling.
     pub fn resolve(self: *const DynTable, absoluteIndex: u64) ?struct { name: []const u8, value: []const u8 } {
-        if (absoluteIndex < STATIC_TABLE_SIZE) {
-            const e = staticTable[@intCast(absoluteIndex)];
-            return .{ .name = e.name, .value = e.value };
-        }
         if (absoluteIndex < self.baseIndex) return null;
         const dyn_idx = absoluteIndex - self.baseIndex;
         if (dyn_idx >= self.entries.items.len) return null;
@@ -345,7 +349,7 @@ pub const Encoder = struct {
     /// still be referenced by unacknowledged sections. The connection
     /// layer advances this from decoder-stream Section Acknowledgments.
     /// Defaults to pinning everything (literal fallback when full).
-    evictBarrier: u64 = STATIC_TABLE_SIZE,
+    evictBarrier: u64 = 0,
     /// Encoder-stream bytes not yet flushed (inserts, capacity changes).
     /// Drain with `takeEncoderBytes` and send on the encoder stream.
     pending: std.ArrayList(u8) = .empty,
@@ -354,7 +358,7 @@ pub const Encoder = struct {
     decBuf: std.ArrayList(u8) = .empty,
     decOff: usize = 0,
     /// Highest insert count the peer confirmed via Insert Count Increment.
-    peerKnownInserts: u64 = STATIC_TABLE_SIZE,
+    peerKnownInserts: u64 = 0,
     /// Set while encoding a section whenever a dynamic reference is
     /// emitted. Builders read it via `sectionRic` to size the prefix.
     sectionUsedDynamic: bool = false,
@@ -395,10 +399,11 @@ pub const Encoder = struct {
         self.evictBarrier = abs_index;
     }
 
-    /// Next absolute dynamic index that will be assigned.
+    /// Next absolute dynamic index that will be assigned (= insert
+    /// count, 0-based).
     pub fn insertCount(self: *const Encoder) u64 {
         if (self.dyn) |*d| return d.nextIndex;
-        return STATIC_TABLE_SIZE;
+        return 0;
     }
 
     /// Takes pending encoder-stream bytes; caller sends them on the
@@ -628,12 +633,10 @@ pub const Encoder = struct {
         try out.appendSlice(self.allocator, ib[0..n]);
     }
 
-    /// Encodes a dynamic-table indexed field (T=1, 6-bit prefix) as a
+    /// Encodes a dynamic-table indexed field (T=0, 6-bit prefix) as a
     /// relative index against `base` (normally the section Base).
+    /// `absoluteIndex` must name a live dynamic entry.
     pub fn encodeIndexedDynamic(self: *Encoder, out: *std.ArrayList(u8), absoluteIndex: u64, base: u64) !void {
-        if (absoluteIndex < STATIC_TABLE_SIZE) {
-            return try self.encodeIndexedStatic(out, absoluteIndex);
-        }
         std.debug.assert(base > absoluteIndex);
         const rel = base - absoluteIndex - 1;
         var ib: [10]u8 = undefined;
@@ -718,7 +721,7 @@ pub const Decoder = struct {
     encBuf: std.ArrayList(u8) = .empty,
     encOff: usize = 0,
     /// Inserts consumed and reported via Insert Count Increment.
-    ackedInserts: u64 = STATIC_TABLE_SIZE,
+    ackedInserts: u64 = 0,
 
     /// Cap on buffered encoder-stream bytes: a peer dripping partial
     /// bytes forever is a stream error, not unbounded memory.
@@ -740,7 +743,7 @@ pub const Decoder = struct {
         if (self.dyn) |*d| d.deinit(self.allocator);
         self.dyn = null;
         self.advertisedMax = capacity;
-        self.ackedInserts = STATIC_TABLE_SIZE;
+        self.ackedInserts = 0;
         self.encBuf.clearRetainingCapacity();
         self.encOff = 0;
         if (capacity != 0) {
@@ -752,10 +755,11 @@ pub const Decoder = struct {
         self.maxFieldSectionSize = n;
     }
 
-    /// Absolute index that the next encoder-stream insert will take.
+    /// Absolute index that the next encoder-stream insert will take
+    /// (= insert count, 0-based).
     pub fn insertCount(self: *const Decoder) u64 {
         if (self.dyn) |*d| return d.nextIndex;
-        return STATIC_TABLE_SIZE;
+        return 0;
     }
 
     /// Feeds encoder-stream bytes, applying complete instructions to the
@@ -819,6 +823,8 @@ pub const Decoder = struct {
             const value = try readString(self.allocator, buf, off, MAX_VALUE_LEN);
             errdefer self.allocator.free(value);
             try self.insertDecoded(name, value);
+            // The table holds its own copies; release the parse buffer.
+            self.allocator.free(value);
             return;
         }
         if (first & 0xC0 == 0x40) {
@@ -863,9 +869,9 @@ pub const Decoder = struct {
     }
 
     fn encoderRelToAbs(self: *const Decoder, rel: u64) Error!u64 {
-        const have = self.insertCount() - STATIC_TABLE_SIZE;
+        const have = self.insertCount();
         if (rel >= have) return Error.InvalidInstruction;
-        return STATIC_TABLE_SIZE + (have - rel - 1);
+        return have - rel - 1;
     }
 
     fn insertDecoded(self: *Decoder, name: []const u8, value: []const u8) Error!void {
@@ -882,21 +888,17 @@ pub const Decoder = struct {
     pub const DynRef = struct { name: []const u8, value: []const u8 };
 
     fn lookupDynamic(self: *const Decoder, abs: u64) Error!DynRef {
-        // Dynamic references name the dynamic table only; an absolute
-        // index in the static range here is a malformed reference, not
-        // a static lookup (fail closed).
-        if (abs < STATIC_TABLE_SIZE) return Error.InvalidIndex;
         const dt = if (self.dyn) |*d| d else return Error.InvalidIndex;
         const r = dt.resolve(abs) orelse return Error.InvalidIndex;
         return .{ .name = r.name, .value = r.value };
     }
 
-    fn lookup(self: *const Decoder, abs: u64) Error!DynRef {
-        if (abs < STATIC_TABLE_SIZE) {
-            const e = staticTable[@intCast(abs)];
-            return .{ .name = e.name, .value = e.value };
-        }
-        return self.lookupDynamic(abs);
+    /// Static references name the static table only; anything at or
+    /// above 99 is malformed (never a dynamic lookup).
+    fn lookupStatic(abs: u64) Error!DynRef {
+        if (abs >= STATIC_TABLE_SIZE) return Error.InvalidIndex;
+        const e = staticTable[@intCast(abs)];
+        return .{ .name = e.name, .value = e.value };
     }
 
     /// Base-relative reference (field sections): abs = Base - rel - 1,
@@ -998,14 +1000,14 @@ pub const Decoder = struct {
                 const dyn_ref = first & 0x40 == 0;
                 const rel = try decodeInt(data, &offset, 6);
                 const abs = if (dyn_ref) try self.baseRelative(base, ric, rel) else rel;
-                const res = if (dyn_ref) try self.lookupDynamic(abs) else try self.lookup(abs);
+                const res = if (dyn_ref) try self.lookupDynamic(abs) else try lookupStatic(abs);
                 try results.append(self.allocator, .{ .name = res.name, .value = res.value, .allocated = false });
             } else if (first & 0xC0 == 0x40) {
                 // Literal with name reference: 01 | N | T | idx(4+).
                 const dyn_ref = first & 0x10 == 0;
                 const rel = try decodeInt(data, &offset, 4);
                 const abs = if (dyn_ref) try self.baseRelative(base, ric, rel) else rel;
-                const res = if (dyn_ref) try self.lookupDynamic(abs) else try self.lookup(abs);
+                const res = if (dyn_ref) try self.lookupDynamic(abs) else try lookupStatic(abs);
                 const name = try self.allocator.dupe(u8, res.name);
                 const value = readString(self.allocator, data, &offset, MAX_VALUE_LEN) catch |e| {
                     self.allocator.free(name);
@@ -1194,7 +1196,7 @@ test "qpack dynamic indexes remain monotonic across eviction" {
 
     const first = try table.insert(a, "a", "1");
     const second = try table.insert(a, "b", "2");
-    try std.testing.expectEqual(@as(u64, STATIC_TABLE_SIZE), first);
+    try std.testing.expectEqual(@as(u64, 0), first);
     try std.testing.expectEqual(first + 1, second);
     try std.testing.expect(table.resolve(first) == null);
     const current = table.resolve(second) orelse return error.TestUnexpectedResult;
@@ -1248,7 +1250,7 @@ test "qpack dynamic roundtrip through encoder and decoder streams" {
     enc.beginSection();
     try enc.encodeField(&field, "x-custom", "v1");
     const ric = enc.sectionRic();
-    try std.testing.expect(ric > STATIC_TABLE_SIZE);
+    try std.testing.expectEqual(@as(u64, 1), ric);
 
     var section = std.ArrayList(u8).empty;
     defer section.deinit(a);
@@ -1320,7 +1322,7 @@ test "qpack post-base references resolve" {
     var enc = Encoder.init(a);
     defer enc.deinit();
     enc.setMaxTableCapacity(4096);
-    // Two inserts: abs 99 (x-a) and 100 (x-b); insertCount 101.
+    // Two inserts: abs 0 (x-a) and abs 1 (x-b); insertCount 2.
     _ = try enc.insertDynamic("x-a", "1");
     _ = try enc.insertDynamic("x-b", "2");
     const enc_bytes = try enc.takeEncoderBytes();
@@ -1331,21 +1333,21 @@ test "qpack post-base references resolve" {
     dec.setMaxTableCapacity(4096);
     try dec.readEncoderStream(enc_bytes, true);
 
-    // Section with Base=100 (< RIC=101): post-base rel 0 -> abs 100.
-    // RIC 101 with maxEntries 128 encodes as 101 % 256 + 1 = 102.
+    // Section with Base=0 (< RIC=2): post-base rel 0 -> abs 0.
+    // RIC 2 with maxEntries 128 encodes as 2 % 256 + 1 = 3.
     var section = std.ArrayList(u8).empty;
     defer section.deinit(a);
-    try section.appendSlice(a, &.{ 102, 0x80 }); // RIC=101, S=1, delta=0
+    try section.appendSlice(a, &.{ 3, 0x81 }); // RIC=2, S=1, delta=1, Base=0
     try section.append(a, 0x10); // indexed post-base, rel 0
     const fields = try dec.decodeSectionCounted(section.items, 0, null);
     defer dec.freeFields(fields);
     try std.testing.expectEqual(@as(usize, 1), fields.len);
-    try std.testing.expectEqualStrings("x-b", fields[0].name);
+    try std.testing.expectEqualStrings("x-a", fields[0].name);
 
     // Post-base name reference: 000 | N | rel(3+), then a value.
     var section2 = std.ArrayList(u8).empty;
     defer section2.deinit(a);
-    try section2.appendSlice(a, &.{ 102, 0x80, 0x00 });
+    try section2.appendSlice(a, &.{ 3, 0x81, 0x01 });
     var tmp: [10]u8 = undefined;
     const n = try encodeInt(&tmp, 7, 3);
     try section2.appendSlice(a, tmp[0..n]);
@@ -1373,8 +1375,8 @@ test "qpack encoder stream split delivery buffers" {
     for (enc_bytes) |b| {
         try dec.readEncoderStream(&.{b}, false);
     }
-    try std.testing.expectEqual(@as(u64, STATIC_TABLE_SIZE + 1), dec.insertCount());
-    const res = try dec.lookupDynamic(STATIC_TABLE_SIZE);
+    try std.testing.expectEqual(@as(u64, 1), dec.insertCount());
+    const res = try dec.lookupDynamic(0);
     try std.testing.expectEqualStrings("x-split", res.name);
     // The same truncation at FIN is corruption, not a split.
     try std.testing.expectError(Error.InvalidInstruction, dec.readEncoderStream(&.{0x40}, true));
@@ -1397,8 +1399,8 @@ test "qpack duplicate instruction copies entries" {
     defer enc.deinit();
     enc.setMaxTableCapacity(4096);
     const abs0 = (try enc.insertDynamic("x-dup", "d")).?;
-    try std.testing.expectEqual(STATIC_TABLE_SIZE, abs0);
-    // Duplicate relative 0 -> copies abs 99 to abs 100.
+    try std.testing.expectEqual(@as(u64, 0), abs0);
+    // Duplicate relative 0 -> copies abs 0 to abs 1.
     var dup: [16]u8 = undefined;
     const n = try encodeInt(&dup, 5, 0);
     const enc_bytes = try enc.takeEncoderBytes();
@@ -1412,8 +1414,8 @@ test "qpack duplicate instruction copies entries" {
     defer dec.deinit();
     dec.setMaxTableCapacity(4096);
     try dec.readEncoderStream(combined.items, true);
-    try std.testing.expectEqual(@as(u64, STATIC_TABLE_SIZE + 2), dec.insertCount());
-    const res = try dec.lookupDynamic(STATIC_TABLE_SIZE + 1);
+    try std.testing.expectEqual(@as(u64, 2), dec.insertCount());
+    const res = try dec.lookupDynamic(1);
     try std.testing.expectEqualStrings("x-dup", res.name);
     try std.testing.expectEqualStrings("d", res.value);
 }
@@ -1424,7 +1426,7 @@ test "qpack decoder stream instructions parse strictly" {
     defer enc.deinit();
     // SectionAck(4) + StreamCancel(4) + Increment(2): all complete.
     try enc.readDecoderStream(&.{ 0x84, 0x44, 0x02 }, true);
-    try std.testing.expectEqual(@as(u64, STATIC_TABLE_SIZE + 2), enc.peerKnownInserts);
+    try std.testing.expectEqual(@as(u64, 2), enc.peerKnownInserts);
     // Split delivery across calls buffers instead of failing.
     try enc.readDecoderStream(&.{0x80}, false);
     try enc.readDecoderStream(&.{0x09}, false);
@@ -1473,9 +1475,9 @@ test "qpack encoder falls back to literal when entries are pinned" {
     defer first.deinit(a);
     try enc.encodeField(&first, "a", "1");
     // First insert fits without eviction.
-    try std.testing.expect(enc.sectionRic() > STATIC_TABLE_SIZE);
+    try std.testing.expectEqual(@as(u64, 1), enc.sectionRic());
 
-    // Second distinct field needs eviction, but abs 99 is pinned by the
+    // Second distinct field needs eviction, but abs 0 is pinned by the
     // default barrier: literal fallback, still decodable statically.
     enc.beginSection();
     var second = std.ArrayList(u8).empty;
@@ -1487,8 +1489,8 @@ test "qpack encoder falls back to literal when entries are pinned" {
     defer dec.freeFields(fields);
     try std.testing.expectEqualStrings("b", fields[0].name);
 
-    // Advancing the barrier past abs 99 permits eviction on next insert.
-    enc.setEvictBarrier(STATIC_TABLE_SIZE + 1);
+    // Advancing the barrier past abs 0 permits eviction on next insert.
+    enc.setEvictBarrier(1);
     const abs = try enc.insertDynamic("c", "3");
     try std.testing.expect(abs != null);
 }
@@ -1504,8 +1506,8 @@ test "qpack encoder prefix encodes nonzero insert counts" {
     defer prefix.deinit(a);
     try enc.encodePrefix(&prefix, ric, ric);
     try std.testing.expectEqual(@as(usize, 2), prefix.items.len);
-    // RIC 100 with 128 max entries: 100 % 256 + 1 = 101.
-    try std.testing.expectEqual(@as(u8, 101), prefix.items[0]);
+    // RIC 1 with 128 max entries: 1 % 256 + 1 = 2.
+    try std.testing.expectEqual(@as(u8, 2), prefix.items[0]);
     try std.testing.expectEqual(@as(u8, 0x00), prefix.items[1]);
 
     var dec = Decoder.init(a);
@@ -1523,4 +1525,47 @@ test "qpack encoder prefix encodes nonzero insert counts" {
     const fields = try dec.decodeSectionCounted(body.items, 0, null);
     defer dec.freeFields(fields);
     try std.testing.expectEqualStrings(":method", fields[0].name);
+}
+
+test "qpack rfc9204 B.1 literal static name reference vector" {
+    // RFC 9204 Appendix B.1: prefix RIC=0/Base=0, literal field with
+    // static name reference to index 1 (:path) and value /index.html.
+    const a = std.testing.allocator;
+    const section = "\x00\x00\x51\x0b/index.html";
+    var dec = Decoder.init(a);
+    defer dec.deinit();
+    const fields = try dec.decodeSectionWithPrefix(section);
+    defer dec.freeFields(fields);
+    try std.testing.expectEqual(@as(usize, 1), fields.len);
+    try std.testing.expectEqualStrings(":path", fields[0].name);
+    try std.testing.expectEqualStrings("/index.html", fields[0].value);
+}
+
+test "qpack rfc9204 B.2 dynamic table and post-base vector" {
+    // RFC 9204 Appendix B.2: Set Capacity 220, two inserts with static
+    // name references, then a section with RIC=2/Base=0 using indexed
+    // post-base references, acknowledged for stream 4.
+    const a = std.testing.allocator;
+    const encoder_stream =
+        "\x3f\xbd\x01" ++ // Set Dynamic Table Capacity = 220
+        "\xc0\x0fwww.example.com" ++ // Insert, static name 0 (:authority)
+        "\xc1\x0c/sample/path"; // Insert, static name 1 (:path)
+    var dec = Decoder.init(a);
+    defer dec.deinit();
+    dec.setMaxTableCapacity(4096);
+    try dec.readEncoderStream(encoder_stream, true);
+    try std.testing.expectEqual(@as(u64, 2), dec.insertCount());
+
+    const section = "\x03\x81\x10\x11"; // RIC=2, Base=0, post-base 0 and 1
+    var ack = std.ArrayList(u8).empty;
+    defer ack.deinit(a);
+    const fields = try dec.decodeSectionCounted(section, 4, &ack);
+    defer dec.freeFields(fields);
+    try std.testing.expectEqual(@as(usize, 2), fields.len);
+    try std.testing.expectEqualStrings(":authority", fields[0].name);
+    try std.testing.expectEqualStrings("www.example.com", fields[0].value);
+    try std.testing.expectEqualStrings(":path", fields[1].name);
+    try std.testing.expectEqualStrings("/sample/path", fields[1].value);
+    try std.testing.expectEqual(@as(usize, 1), ack.items.len);
+    try std.testing.expectEqual(@as(u8, 0x84), ack.items[0]);
 }
