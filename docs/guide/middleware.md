@@ -72,7 +72,7 @@ the body explicitly.
 ## Rate Limiting
 
 Use `httpx.RateLimiter` for per-key request-rate enforcement (see
-`src/web/middleware/rate_limit.zig` for `RateLimitPolicy`,
+`src/web/middleware/rateLimit.zig` for `RateLimitPolicy`,
 `RateLimitResult`, and `RateLimitDimension`).
 
 ## CSRF Helpers

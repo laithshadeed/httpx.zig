@@ -1,7 +1,7 @@
 # Async Server Example
 
 Run CPU-bound work off the request path with `httpx.WorkerPool`, and serve
-results from normal handlers. See `examples/concurrent_demo.zig` for parallel
+results from normal handlers. See `examples/concurrentDemo.zig` for parallel
 client requests.
 
 ```zig

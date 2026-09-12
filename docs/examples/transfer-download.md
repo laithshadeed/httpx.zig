@@ -1,7 +1,7 @@
 # Transfer Download
 
 File downloads with progress and verification. See
-`examples/download.zig` and `examples/download_verify.zig`.
+`examples/download.zig` and `examples/downloadVerify.zig`.
 
 ```zig
 var client = httpx.Client.init(allocator, io, .{});

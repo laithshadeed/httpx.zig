@@ -89,7 +89,7 @@ var server = try httpx.Server.init(allocator, io, .{
 ### `RateLimiter`
 
 Token-bucket style per-key rate limiting (see
-`src/web/middleware/rate_limit.zig` for `RateLimitPolicy`,
+`src/web/middleware/rateLimit.zig` for `RateLimitPolicy`,
 `RateLimitResult`, and `RateLimitDimension`).
 
 ## Creating Custom Middleware

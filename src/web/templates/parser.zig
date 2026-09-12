@@ -10,23 +10,23 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const err_mod = @import("error.zig");
+const errMod = @import("error.zig");
 const ts = @import("treesitter");
-pub const TemplateError = err_mod.TemplateError;
-pub const SourceError = err_mod.SourceError;
-pub const lineColFromOffset = err_mod.lineColFromOffset;
+pub const TemplateError = errMod.TemplateError;
+pub const SourceError = errMod.SourceError;
+pub const lineColFromOffset = errMod.lineColFromOffset;
 
 pub const TemplateTree = ts.Tree;
 
-const tmpl_sym_end: u16 = 0;
-const tmpl_sym_text: u16 = 1;
-const tmpl_sym_expression: u16 = 2;
-const tmpl_sym_directive: u16 = 3;
-const tmpl_sym_comment: u16 = 4;
-const tmpl_sym_program: u16 = 5;
-const tmpl_sym_items: u16 = 6;
-const tmpl_sym_item: u16 = 7;
-const tmpl_sym_error: u16 = 8;
+const tmplSymEnd: u16 = 0;
+const tmplSymText: u16 = 1;
+const tmplSymExpression: u16 = 2;
+const tmplSymDirective: u16 = 3;
+const tmplSymComment: u16 = 4;
+const tmplSymProgram: u16 = 5;
+const tmplSymItems: u16 = 6;
+const tmplSymItem: u16 = 7;
+const tmplSymError: u16 = 8;
 
 fn matchTemplateExpression(source: []const u8, start: usize) ?usize {
     if (start + 2 > source.len) return null;
@@ -67,103 +67,103 @@ fn matchTemplateText(source: []const u8, start: usize) ?usize {
     return i - start;
 }
 
-const tmpl_symbol_table: []const ts.language_mod.symbols.SymbolInfo = &.{
-    .{ .id = tmpl_sym_end, .name = "end", .kind = .end, .metadata = .{ .visible = false, .named = false } },
-    .{ .id = tmpl_sym_text, .name = "text", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = tmpl_sym_expression, .name = "expression", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = tmpl_sym_directive, .name = "directive", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = tmpl_sym_comment, .name = "comment", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = tmpl_sym_program, .name = "program", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = tmpl_sym_items, .name = "items", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = tmpl_sym_item, .name = "item", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = tmpl_sym_error, .name = "ERROR", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
+const tmplSymbolTable: []const ts.language_mod.symbols.SymbolInfo = &.{
+    .{ .id = tmplSymEnd, .name = "end", .kind = .end, .metadata = .{ .visible = false, .named = false } },
+    .{ .id = tmplSymText, .name = "text", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = tmplSymExpression, .name = "expression", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = tmplSymDirective, .name = "directive", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = tmplSymComment, .name = "comment", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = tmplSymProgram, .name = "program", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = tmplSymItems, .name = "items", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = tmplSymItem, .name = "item", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = tmplSymError, .name = "ERROR", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
 };
 
-const tmpl_token_matchers: []const ts.language_mod.TokenMatcher = &.{
-    .{ .symbol = tmpl_sym_expression, .match = matchTemplateExpression },
-    .{ .symbol = tmpl_sym_directive, .match = matchTemplateDirective },
-    .{ .symbol = tmpl_sym_comment, .match = matchTemplateComment },
-    .{ .symbol = tmpl_sym_text, .match = matchTemplateText },
+const tmplTokenMatchers: []const ts.language_mod.TokenMatcher = &.{
+    .{ .symbol = tmplSymExpression, .match = matchTemplateExpression },
+    .{ .symbol = tmplSymDirective, .match = matchTemplateDirective },
+    .{ .symbol = tmplSymComment, .match = matchTemplateComment },
+    .{ .symbol = tmplSymText, .match = matchTemplateText },
 };
 
-const tmpl_s0_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = tmpl_sym_text, .action = .{ .shift = 5 } },
-    .{ .symbol = tmpl_sym_expression, .action = .{ .shift = 6 } },
-    .{ .symbol = tmpl_sym_directive, .action = .{ .shift = 7 } },
-    .{ .symbol = tmpl_sym_comment, .action = .{ .shift = 8 } },
-    .{ .symbol = tmpl_sym_end, .action = .{ .reduce = .{ .symbol = tmpl_sym_program, .child_count = 0, .production_id = 0 } } },
+const tmplS0Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = tmplSymText, .action = .{ .shift = 5 } },
+    .{ .symbol = tmplSymExpression, .action = .{ .shift = 6 } },
+    .{ .symbol = tmplSymDirective, .action = .{ .shift = 7 } },
+    .{ .symbol = tmplSymComment, .action = .{ .shift = 8 } },
+    .{ .symbol = tmplSymEnd, .action = .{ .reduce = .{ .symbol = tmplSymProgram, .child_count = 0, .production_id = 0 } } },
 };
-const tmpl_s0_gotos: []const ts.language_mod.tables.GotoEntry = &.{
-    .{ .symbol = tmpl_sym_program, .state = 1 },
-    .{ .symbol = tmpl_sym_items, .state = 2 },
-    .{ .symbol = tmpl_sym_item, .state = 3 },
+const tmplS0Gotos: []const ts.language_mod.tables.GotoEntry = &.{
+    .{ .symbol = tmplSymProgram, .state = 1 },
+    .{ .symbol = tmplSymItems, .state = 2 },
+    .{ .symbol = tmplSymItem, .state = 3 },
 };
-const tmpl_s1_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = tmpl_sym_end, .action = .accept },
+const tmplS1Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = tmplSymEnd, .action = .accept },
 };
-const tmpl_s2_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = tmpl_sym_text, .action = .{ .shift = 5 } },
-    .{ .symbol = tmpl_sym_expression, .action = .{ .shift = 6 } },
-    .{ .symbol = tmpl_sym_directive, .action = .{ .shift = 7 } },
-    .{ .symbol = tmpl_sym_comment, .action = .{ .shift = 8 } },
-    .{ .symbol = tmpl_sym_end, .action = .{ .reduce = .{ .symbol = tmpl_sym_program, .child_count = 1, .production_id = 1 } } },
+const tmplS2Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = tmplSymText, .action = .{ .shift = 5 } },
+    .{ .symbol = tmplSymExpression, .action = .{ .shift = 6 } },
+    .{ .symbol = tmplSymDirective, .action = .{ .shift = 7 } },
+    .{ .symbol = tmplSymComment, .action = .{ .shift = 8 } },
+    .{ .symbol = tmplSymEnd, .action = .{ .reduce = .{ .symbol = tmplSymProgram, .child_count = 1, .production_id = 1 } } },
 };
-const tmpl_s2_gotos: []const ts.language_mod.tables.GotoEntry = &.{
-    .{ .symbol = tmpl_sym_item, .state = 4 },
+const tmplS2Gotos: []const ts.language_mod.tables.GotoEntry = &.{
+    .{ .symbol = tmplSymItem, .state = 4 },
 };
-const tmpl_s3_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = tmpl_sym_text, .action = .{ .reduce = .{ .symbol = tmpl_sym_items, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = tmpl_sym_expression, .action = .{ .reduce = .{ .symbol = tmpl_sym_items, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = tmpl_sym_directive, .action = .{ .reduce = .{ .symbol = tmpl_sym_items, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = tmpl_sym_comment, .action = .{ .reduce = .{ .symbol = tmpl_sym_items, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = tmpl_sym_end, .action = .{ .reduce = .{ .symbol = tmpl_sym_items, .child_count = 1, .production_id = 2 } } },
+const tmplS3Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = tmplSymText, .action = .{ .reduce = .{ .symbol = tmplSymItems, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = tmplSymExpression, .action = .{ .reduce = .{ .symbol = tmplSymItems, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = tmplSymDirective, .action = .{ .reduce = .{ .symbol = tmplSymItems, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = tmplSymComment, .action = .{ .reduce = .{ .symbol = tmplSymItems, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = tmplSymEnd, .action = .{ .reduce = .{ .symbol = tmplSymItems, .child_count = 1, .production_id = 2 } } },
 };
-const tmpl_s4_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = tmpl_sym_text, .action = .{ .reduce = .{ .symbol = tmpl_sym_items, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = tmpl_sym_expression, .action = .{ .reduce = .{ .symbol = tmpl_sym_items, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = tmpl_sym_directive, .action = .{ .reduce = .{ .symbol = tmpl_sym_items, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = tmpl_sym_comment, .action = .{ .reduce = .{ .symbol = tmpl_sym_items, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = tmpl_sym_end, .action = .{ .reduce = .{ .symbol = tmpl_sym_items, .child_count = 2, .production_id = 3 } } },
+const tmplS4Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = tmplSymText, .action = .{ .reduce = .{ .symbol = tmplSymItems, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = tmplSymExpression, .action = .{ .reduce = .{ .symbol = tmplSymItems, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = tmplSymDirective, .action = .{ .reduce = .{ .symbol = tmplSymItems, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = tmplSymComment, .action = .{ .reduce = .{ .symbol = tmplSymItems, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = tmplSymEnd, .action = .{ .reduce = .{ .symbol = tmplSymItems, .child_count = 2, .production_id = 3 } } },
 };
-const tmpl_s5_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = tmpl_sym_text, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = tmpl_sym_expression, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = tmpl_sym_directive, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = tmpl_sym_comment, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = tmpl_sym_end, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 4 } } },
+const tmplS5Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = tmplSymText, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = tmplSymExpression, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = tmplSymDirective, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = tmplSymComment, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = tmplSymEnd, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 4 } } },
 };
-const tmpl_s6_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = tmpl_sym_text, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 5 } } },
-    .{ .symbol = tmpl_sym_expression, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 5 } } },
-    .{ .symbol = tmpl_sym_directive, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 5 } } },
-    .{ .symbol = tmpl_sym_comment, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 5 } } },
-    .{ .symbol = tmpl_sym_end, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 5 } } },
+const tmplS6Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = tmplSymText, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 5 } } },
+    .{ .symbol = tmplSymExpression, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 5 } } },
+    .{ .symbol = tmplSymDirective, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 5 } } },
+    .{ .symbol = tmplSymComment, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 5 } } },
+    .{ .symbol = tmplSymEnd, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 5 } } },
 };
-const tmpl_s7_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = tmpl_sym_text, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 6 } } },
-    .{ .symbol = tmpl_sym_expression, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 6 } } },
-    .{ .symbol = tmpl_sym_directive, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 6 } } },
-    .{ .symbol = tmpl_sym_comment, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 6 } } },
-    .{ .symbol = tmpl_sym_end, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 6 } } },
+const tmplS7Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = tmplSymText, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 6 } } },
+    .{ .symbol = tmplSymExpression, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 6 } } },
+    .{ .symbol = tmplSymDirective, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 6 } } },
+    .{ .symbol = tmplSymComment, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 6 } } },
+    .{ .symbol = tmplSymEnd, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 6 } } },
 };
-const tmpl_s8_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = tmpl_sym_text, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 7 } } },
-    .{ .symbol = tmpl_sym_expression, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 7 } } },
-    .{ .symbol = tmpl_sym_directive, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 7 } } },
-    .{ .symbol = tmpl_sym_comment, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 7 } } },
-    .{ .symbol = tmpl_sym_end, .action = .{ .reduce = .{ .symbol = tmpl_sym_item, .child_count = 1, .production_id = 7 } } },
+const tmplS8Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = tmplSymText, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 7 } } },
+    .{ .symbol = tmplSymExpression, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 7 } } },
+    .{ .symbol = tmplSymDirective, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 7 } } },
+    .{ .symbol = tmplSymComment, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 7 } } },
+    .{ .symbol = tmplSymEnd, .action = .{ .reduce = .{ .symbol = tmplSymItem, .child_count = 1, .production_id = 7 } } },
 };
 
-const tmpl_parse_states: []const ts.language_mod.tables.ParseState = &.{
-    .{ .actions = tmpl_s0_actions, .gotos = tmpl_s0_gotos },
-    .{ .actions = tmpl_s1_actions },
-    .{ .actions = tmpl_s2_actions, .gotos = tmpl_s2_gotos },
-    .{ .actions = tmpl_s3_actions },
-    .{ .actions = tmpl_s4_actions },
-    .{ .actions = tmpl_s5_actions },
-    .{ .actions = tmpl_s6_actions },
-    .{ .actions = tmpl_s7_actions },
-    .{ .actions = tmpl_s8_actions },
+const tmplParseStates: []const ts.language_mod.tables.ParseState = &.{
+    .{ .actions = tmplS0Actions, .gotos = tmplS0Gotos },
+    .{ .actions = tmplS1Actions },
+    .{ .actions = tmplS2Actions, .gotos = tmplS2Gotos },
+    .{ .actions = tmplS3Actions },
+    .{ .actions = tmplS4Actions },
+    .{ .actions = tmplS5Actions },
+    .{ .actions = tmplS6Actions },
+    .{ .actions = tmplS7Actions },
+    .{ .actions = tmplS8Actions },
 };
 
 pub const templateLanguage: ts.Language = .{
@@ -175,14 +175,14 @@ pub const templateLanguage: ts.Language = .{
         .state_count = 9,
         .field_count = 0,
     },
-    .symbols = tmpl_symbol_table,
-    .token_matchers = tmpl_token_matchers,
+    .symbols = tmplSymbolTable,
+    .token_matchers = tmplTokenMatchers,
     .extra_symbols = &.{},
     .table = .{
-        .states = tmpl_parse_states,
+        .states = tmplParseStates,
         .start_state = 0,
-        .end_symbol = tmpl_sym_end,
-        .error_symbol = tmpl_sym_error,
+        .end_symbol = tmplSymEnd,
+        .error_symbol = tmplSymError,
     },
     .fields = .{},
 };
@@ -270,9 +270,9 @@ pub const CallArg = struct {
 pub fn splitTopLevel(a: Allocator, s: []const u8) ![][]const u8 {
     var out = std.ArrayList([]const u8).empty;
     errdefer out.deinit(a);
-    var depth_paren: usize = 0;
-    var depth_brack: usize = 0;
-    var depth_brace: usize = 0;
+    var depthParen: usize = 0;
+    var depthBrack: usize = 0;
+    var depthBrace: usize = 0;
     var quote: u8 = 0;
     var start: usize = 0;
     var i: usize = 0;
@@ -289,14 +289,14 @@ pub fn splitTopLevel(a: Allocator, s: []const u8) ![][]const u8 {
         }
         switch (c) {
             '"', '\'' => quote = c,
-            '(' => depth_paren += 1,
-            ')' => depth_paren -|= 1,
-            '[' => depth_brack += 1,
-            ']' => depth_brack -|= 1,
-            '{' => depth_brace += 1,
-            '}' => depth_brace -|= 1,
+            '(' => depthParen += 1,
+            ')' => depthParen -|= 1,
+            '[' => depthBrack += 1,
+            ']' => depthBrack -|= 1,
+            '{' => depthBrace += 1,
+            '}' => depthBrace -|= 1,
             ',' => {
-                if (depth_paren == 0 and depth_brack == 0 and depth_brace == 0) {
+                if (depthParen == 0 and depthBrack == 0 and depthBrace == 0) {
                     try out.append(a, std.mem.trim(u8, s[start..i], " \t\r\n"));
                     start = i + 1;
                 }
@@ -524,11 +524,11 @@ pub fn parseMacroSignature(a: Allocator, s: []const u8) !struct { name: []const 
     if (close < open) return error.InvalidSignature;
     const name = std.mem.trim(u8, s[0..open], " \t\r\n");
     if (name.len == 0) return error.InvalidSignature;
-    const args_str = std.mem.trim(u8, s[open + 1 .. close], " \t\r\n");
+    const argsStr = std.mem.trim(u8, s[open + 1 .. close], " \t\r\n");
     var params = std.ArrayList(MacroParam).empty;
     errdefer params.deinit(a);
-    if (args_str.len > 0) {
-        var it = std.mem.splitScalar(u8, args_str, ',');
+    if (argsStr.len > 0) {
+        var it = std.mem.splitScalar(u8, argsStr, ',');
         while (it.next()) |part| {
             const p = std.mem.trim(u8, part, " \t\r\n");
             if (p.len == 0) continue;
@@ -565,14 +565,14 @@ pub const Parser = struct {
         errdefer arena.deinit();
         const a = arena.allocator();
 
-        var nodes_list = std.ArrayList(TemplateNode).empty;
+        var nodesList = std.ArrayList(TemplateNode).empty;
         var blocksList = std.ArrayList(BlockInfo).empty;
         var includesList = std.ArrayList([]const u8).empty;
         var macrosList = std.ArrayList(MacroDef).empty;
         var extendsPath: ?[]const u8 = null;
 
-        var ts_tree = parseTemplateTree(self.allocator, self.source) catch null;
-        if (ts_tree) |*t| {
+        var tsTree = parseTemplateTree(self.allocator, self.source) catch null;
+        if (tsTree) |*t| {
             defer {
                 var mut: TemplateTree = t.*;
                 mut.deinit();
@@ -582,10 +582,10 @@ pub const Parser = struct {
                 if (tokens) |toks| {
                     defer self.allocator.free(toks);
                     var cursor: usize = 0;
-                    var strip_leading = false;
-                    try self.parseTokenNodes(a, toks, &cursor, &nodes_list, &blocksList, &includesList, &macrosList, &extendsPath, null, false, &strip_leading);
+                    var stripLeading = false;
+                    try self.parseTokenNodes(a, toks, &cursor, &nodesList, &blocksList, &includesList, &macrosList, &extendsPath, null, false, &stripLeading);
                     return .{
-                        .nodes = try nodes_list.toOwnedSlice(a),
+                        .nodes = try nodesList.toOwnedSlice(a),
                         .extendsPath = extendsPath,
                         .blocks = try blocksList.toOwnedSlice(a),
                         .includes = try includesList.toOwnedSlice(a),
@@ -596,10 +596,10 @@ pub const Parser = struct {
             }
         }
 
-        try self.parseNodes(a, &nodes_list, &blocksList, &includesList, &extendsPath, null);
+        try self.parseNodes(a, &nodesList, &blocksList, &includesList, &extendsPath, null);
 
         return .{
-            .nodes = try nodes_list.toOwnedSlice(a),
+            .nodes = try nodesList.toOwnedSlice(a),
             .extendsPath = extendsPath,
             .blocks = try blocksList.toOwnedSlice(a),
             .includes = try includesList.toOwnedSlice(a),
@@ -635,12 +635,12 @@ pub const Parser = struct {
         self: *Parser,
         a: Allocator,
         outNodes: *std.ArrayList(TemplateNode),
-        strip_leading: *bool,
+        stripLeading: *bool,
         tok: TsToken,
     ) void {
         const stripped = stripDashControl(self.source[tok.start + 2 .. tok.end - 2]);
         if (stripped.left) trimTrailingWhitespace(a, outNodes);
-        if (stripped.right) strip_leading.* = true;
+        if (stripped.right) stripLeading.* = true;
     }
 
     fn parseTokenNodes(
@@ -655,20 +655,20 @@ pub const Parser = struct {
         extendsPath: *?[]const u8,
         stopTag: ?[]const u8,
         inLoop: bool,
-        strip_leading: *bool,
+        stripLeading: *bool,
     ) TemplateError!void {
         while (cursor.* < tokens.len) {
             const tok = tokens[cursor.*];
             switch (tok.kind) {
                 .comment => {
-                    self.applyTagStrip(a, outNodes, strip_leading, tok);
+                    self.applyTagStrip(a, outNodes, stripLeading, tok);
                     cursor.* += 1;
                     continue;
                 },
                 .text => {
                     var text = self.source[tok.start..tok.end];
-                    if (strip_leading.*) {
-                        strip_leading.* = false;
+                    if (stripLeading.*) {
+                        stripLeading.* = false;
                         text = trimLeadingWhitespace(text);
                     }
                     if (text.len > 0) try outNodes.append(a, .{ .text = text });
@@ -676,7 +676,7 @@ pub const Parser = struct {
                     continue;
                 },
                 .expression => {
-                    self.applyTagStrip(a, outNodes, strip_leading, tok);
+                    self.applyTagStrip(a, outNodes, stripLeading, tok);
                     const stripped = stripDashControl(self.source[tok.start + 2 .. tok.end - 2]);
                     const loc = lineColFromOffset(self.source, tok.start);
                     if (stripped.content.len > 0) try outNodes.append(a, .{
@@ -687,17 +687,17 @@ pub const Parser = struct {
                 },
                 .directive => {
                     const stripped = stripDashControl(self.source[tok.start + 2 .. tok.end - 2]);
-                    const tag_content = stripped.content;
-                    var tag_it = std.mem.tokenizeAny(u8, tag_content, " \t\r\n");
-                    const tag_cmd = tag_it.next() orelse "";
-                    if (isStopCmd(stopTag, tag_cmd)) {
+                    const tagContent = stripped.content;
+                    var tagIt = std.mem.tokenizeAny(u8, tagContent, " \t\r\n");
+                    const tagCmd = tagIt.next() orelse "";
+                    if (isStopCmd(stopTag, tagCmd)) {
                         return;
                     }
-                    self.applyTagStrip(a, outNodes, strip_leading, tok);
-                    const tag_start = tok.start;
-                    const loc = lineColFromOffset(self.source, tag_start);
+                    self.applyTagStrip(a, outNodes, stripLeading, tok);
+                    const tagStart = tok.start;
+                    const loc = lineColFromOffset(self.source, tagStart);
                     cursor.* += 1;
-                    if (std.mem.eql(u8, tag_cmd, "raw")) {
+                    if (std.mem.eql(u8, tagCmd, "raw")) {
                         var j = cursor.*;
                         var found: ?usize = null;
                         while (j < tokens.len) : (j += 1) {
@@ -707,72 +707,72 @@ pub const Parser = struct {
                             }
                         }
                         const close = found orelse {
-                            return self.fail(.unclosed_block, tag_start, "unclosed {% raw %}, expected {% endraw %}");
+                            return self.fail(.unclosedBlock, tagStart, "unclosed {% raw %}, expected {% endraw %}");
                         };
-                        const body_start = if (cursor.* < tokens.len) tokens[cursor.*].start else @min(tok.end, self.source.len);
-                        var body_end = tokens[close].start;
-                        const close_strip = stripDashControl(self.source[tokens[close].start + 2 .. tokens[close].end - 2]);
-                        if (close_strip.left) {
-                            while (body_end > body_start) {
-                                const c = self.source[body_end - 1];
+                        const bodyStart = if (cursor.* < tokens.len) tokens[cursor.*].start else @min(tok.end, self.source.len);
+                        var bodyEnd = tokens[close].start;
+                        const closeStrip = stripDashControl(self.source[tokens[close].start + 2 .. tokens[close].end - 2]);
+                        if (closeStrip.left) {
+                            while (bodyEnd > bodyStart) {
+                                const c = self.source[bodyEnd - 1];
                                 if (c != ' ' and c != '\t' and c != '\r' and c != '\n') break;
-                                body_end -= 1;
+                                bodyEnd -= 1;
                             }
                         }
-                        if (body_end > body_start) {
-                            try outNodes.append(a, .{ .text = self.source[body_start..body_end] });
+                        if (bodyEnd > bodyStart) {
+                            try outNodes.append(a, .{ .text = self.source[bodyStart..bodyEnd] });
                         }
-                        if (close_strip.right) strip_leading.* = true;
+                        if (closeStrip.right) stripLeading.* = true;
                         cursor.* = close + 1;
-                    } else if (std.mem.eql(u8, tag_cmd, "if")) {
-                        const condition = std.mem.trim(u8, tag_content[2..], " \t\r\n");
+                    } else if (std.mem.eql(u8, tagCmd, "if")) {
+                        const condition = std.mem.trim(u8, tagContent[2..], " \t\r\n");
                         var thenNodes = std.ArrayList(TemplateNode).empty;
                         var elifBranches = std.ArrayList(ElifBranch).empty;
                         var elseNodes = std.ArrayList(TemplateNode).empty;
-                        try self.parseTokenNodes(a, tokens, cursor, &thenNodes, blocksList, includesList, macrosList, extendsPath, "endif_elif_else", inLoop, strip_leading);
-                        var tail_body: []const TemplateNode = thenNodes.items;
+                        try self.parseTokenNodes(a, tokens, cursor, &thenNodes, blocksList, includesList, macrosList, extendsPath, "endif_elif_else", inLoop, stripLeading);
+                        var tailBody: []const TemplateNode = thenNodes.items;
                         while (true) {
                             const nxt = self.peekDirectiveCmd(tokens, cursor.*);
                             if (std.mem.eql(u8, nxt, "elif")) {
-                                const elif_tok = tokens[cursor.*];
-                                trimSliceTail(tail_body);
-                                if (stripDashControl(self.source[elif_tok.start + 2 .. elif_tok.end - 2]).right) strip_leading.* = true;
-                                const elif_raw = stripDashControl(self.source[elif_tok.start + 2 .. elif_tok.end - 2]);
-                                const elif_cond = std.mem.trim(u8, elif_raw.content[4..], " \t\r\n");
-                                const elif_loc = lineColFromOffset(self.source, elif_tok.start);
+                                const elifTok = tokens[cursor.*];
+                                trimSliceTail(tailBody);
+                                if (stripDashControl(self.source[elifTok.start + 2 .. elifTok.end - 2]).right) stripLeading.* = true;
+                                const elifRaw = stripDashControl(self.source[elifTok.start + 2 .. elifTok.end - 2]);
+                                const elifCond = std.mem.trim(u8, elifRaw.content[4..], " \t\r\n");
+                                const elifLoc = lineColFromOffset(self.source, elifTok.start);
                                 cursor.* += 1;
                                 var branchBody = std.ArrayList(TemplateNode).empty;
-                                try self.parseTokenNodes(a, tokens, cursor, &branchBody, blocksList, includesList, macrosList, extendsPath, "endif_elif_else", inLoop, strip_leading);
+                                try self.parseTokenNodes(a, tokens, cursor, &branchBody, blocksList, includesList, macrosList, extendsPath, "endif_elif_else", inLoop, stripLeading);
                                 try elifBranches.append(a, .{
-                                    .condition = elif_cond,
+                                    .condition = elifCond,
                                     .bodyNodes = try branchBody.toOwnedSlice(a),
-                                    .startByte = elif_tok.start,
-                                    .line = elif_loc.line,
-                                    .col = elif_loc.col,
+                                    .startByte = elifTok.start,
+                                    .line = elifLoc.line,
+                                    .col = elifLoc.col,
                                 });
-                                tail_body = elifBranches.items[elifBranches.items.len - 1].bodyNodes;
+                                tailBody = elifBranches.items[elifBranches.items.len - 1].bodyNodes;
                                 continue;
                             }
                             break;
                         }
                         const tail = self.peekDirectiveCmd(tokens, cursor.*);
                         if (std.mem.eql(u8, tail, "else")) {
-                            trimSliceTail(tail_body);
-                            if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) strip_leading.* = true;
+                            trimSliceTail(tailBody);
+                            if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) stripLeading.* = true;
                             cursor.* += 1;
-                            try self.parseTokenNodes(a, tokens, cursor, &elseNodes, blocksList, includesList, macrosList, extendsPath, "endif", inLoop, strip_leading);
+                            try self.parseTokenNodes(a, tokens, cursor, &elseNodes, blocksList, includesList, macrosList, extendsPath, "endif", inLoop, stripLeading);
                             if (!std.mem.eql(u8, self.peekDirectiveCmd(tokens, cursor.*), "endif")) {
-                                return self.fail(.unclosed_block, tag_start, "unclosed {% if %}, expected {% endif %}");
+                                return self.fail(.unclosedBlock, tagStart, "unclosed {% if %}, expected {% endif %}");
                             }
                             trimSliceTail(elseNodes.items);
-                            if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) strip_leading.* = true;
+                            if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) stripLeading.* = true;
                             cursor.* += 1;
                         } else if (std.mem.eql(u8, tail, "endif")) {
-                            trimSliceTail(tail_body);
-                            if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) strip_leading.* = true;
+                            trimSliceTail(tailBody);
+                            if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) stripLeading.* = true;
                             cursor.* += 1;
                         } else {
-                            return self.fail(.unclosed_block, tag_start, "unclosed {% if %}, expected {% endif %}");
+                            return self.fail(.unclosedBlock, tagStart, "unclosed {% if %}, expected {% endif %}");
                         }
                         try outNodes.append(a, .{
                             .ifBlock = .{
@@ -780,186 +780,186 @@ pub const Parser = struct {
                                 .thenNodes = try thenNodes.toOwnedSlice(a),
                                 .elifBranches = try elifBranches.toOwnedSlice(a),
                                 .elseNodes = try elseNodes.toOwnedSlice(a),
-                                .startByte = tag_start,
+                                .startByte = tagStart,
                                 .line = loc.line,
                                 .col = loc.col,
                             },
                         });
-                    } else if (std.mem.eql(u8, tag_cmd, "elif") or std.mem.eql(u8, tag_cmd, "else") or std.mem.eql(u8, tag_cmd, "endif")) {
-                        return self.fail(.unexpectedToken, tag_start, "unexpected endif/else without matching {% if %}");
-                    } else if (std.mem.eql(u8, tag_cmd, "for")) {
-                        const remainder = std.mem.trim(u8, tag_content[3..], " \t\r\n");
+                    } else if (std.mem.eql(u8, tagCmd, "elif") or std.mem.eql(u8, tagCmd, "else") or std.mem.eql(u8, tagCmd, "endif")) {
+                        return self.fail(.unexpectedToken, tagStart, "unexpected endif/else without matching {% if %}");
+                    } else if (std.mem.eql(u8, tagCmd, "for")) {
+                        const remainder = std.mem.trim(u8, tagContent[3..], " \t\r\n");
                         const inPos = std.mem.indexOf(u8, remainder, " in ") orelse {
-                            return self.fail(.syntaxError, tag_start, "invalid for loop syntax, expected '{% for item in items %}'");
+                            return self.fail(.syntaxError, tagStart, "invalid for loop syntax, expected '{% for item in items %}'");
                         };
                         const itemVar = std.mem.trim(u8, remainder[0..inPos], " \t\r\n");
-                        const coll_expr = std.mem.trim(u8, remainder[inPos + 4 ..], " \t\r\n");
-                        if (itemVar.len == 0 or coll_expr.len == 0) {
-                            return self.fail(.syntaxError, tag_start, "invalid for loop syntax, expected '{% for item in items %}'");
+                        const collExpr = std.mem.trim(u8, remainder[inPos + 4 ..], " \t\r\n");
+                        if (itemVar.len == 0 or collExpr.len == 0) {
+                            return self.fail(.syntaxError, tagStart, "invalid for loop syntax, expected '{% for item in items %}'");
                         }
-                        var item_name = itemVar;
-                        var item_name2: ?[]const u8 = null;
+                        var itemName = itemVar;
+                        var itemName2: ?[]const u8 = null;
                         if (std.mem.indexOfScalar(u8, itemVar, ',')) |comma| {
-                            item_name = std.mem.trim(u8, itemVar[0..comma], " \t\r\n");
-                            item_name2 = std.mem.trim(u8, itemVar[comma + 1 ..], " \t\r\n");
-                            if (item_name.len == 0 or item_name2.?.len == 0) {
-                                return self.fail(.syntaxError, tag_start, "invalid loop variables, expected '{% for key, value in items %}'");
+                            itemName = std.mem.trim(u8, itemVar[0..comma], " \t\r\n");
+                            itemName2 = std.mem.trim(u8, itemVar[comma + 1 ..], " \t\r\n");
+                            if (itemName.len == 0 or itemName2.?.len == 0) {
+                                return self.fail(.syntaxError, tagStart, "invalid loop variables, expected '{% for key, value in items %}'");
                             }
                         }
                         var bodyNodes = std.ArrayList(TemplateNode).empty;
                         var elseNodes = std.ArrayList(TemplateNode).empty;
-                        try self.parseTokenNodes(a, tokens, cursor, &bodyNodes, blocksList, includesList, macrosList, extendsPath, "endfor_else", true, strip_leading);
-                        const for_tail = self.peekDirectiveCmd(tokens, cursor.*);
-                        if (std.mem.eql(u8, for_tail, "else")) {
+                        try self.parseTokenNodes(a, tokens, cursor, &bodyNodes, blocksList, includesList, macrosList, extendsPath, "endfor_else", true, stripLeading);
+                        const forTail = self.peekDirectiveCmd(tokens, cursor.*);
+                        if (std.mem.eql(u8, forTail, "else")) {
                             trimSliceTail(bodyNodes.items);
-                            if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) strip_leading.* = true;
+                            if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) stripLeading.* = true;
                             cursor.* += 1;
-                            try self.parseTokenNodes(a, tokens, cursor, &elseNodes, blocksList, includesList, macrosList, extendsPath, "endfor", true, strip_leading);
+                            try self.parseTokenNodes(a, tokens, cursor, &elseNodes, blocksList, includesList, macrosList, extendsPath, "endfor", true, stripLeading);
                             if (!std.mem.eql(u8, self.peekDirectiveCmd(tokens, cursor.*), "endfor")) {
-                                return self.fail(.unclosed_block, tag_start, "unclosed {% for %}, expected {% endfor %}");
+                                return self.fail(.unclosedBlock, tagStart, "unclosed {% for %}, expected {% endfor %}");
                             }
                             trimSliceTail(elseNodes.items);
-                            if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) strip_leading.* = true;
+                            if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) stripLeading.* = true;
                             cursor.* += 1;
-                        } else if (std.mem.eql(u8, for_tail, "endfor")) {
+                        } else if (std.mem.eql(u8, forTail, "endfor")) {
                             trimSliceTail(bodyNodes.items);
-                            if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) strip_leading.* = true;
+                            if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) stripLeading.* = true;
                             cursor.* += 1;
                         } else {
-                            return self.fail(.unclosed_block, tag_start, "unclosed {% for %}, expected {% endfor %}");
+                            return self.fail(.unclosedBlock, tagStart, "unclosed {% for %}, expected {% endfor %}");
                         }
                         try outNodes.append(a, .{
                             .forLoop = .{
-                                .itemVar = item_name,
-                                .itemVar2 = item_name2,
-                                .collectionExpr = coll_expr,
+                                .itemVar = itemName,
+                                .itemVar2 = itemName2,
+                                .collectionExpr = collExpr,
                                 .bodyNodes = try bodyNodes.toOwnedSlice(a),
                                 .elseNodes = try elseNodes.toOwnedSlice(a),
-                                .startByte = tag_start,
+                                .startByte = tagStart,
                                 .line = loc.line,
                                 .col = loc.col,
                             },
                         });
-                    } else if (std.mem.eql(u8, tag_cmd, "block")) {
-                        const block_name = std.mem.trim(u8, tag_content[5..], " \t\r\n");
-                        if (block_name.len == 0) {
-                            return self.fail(.syntaxError, tag_start, "expected block name in '{% block name %}'");
+                    } else if (std.mem.eql(u8, tagCmd, "block")) {
+                        const blockName = std.mem.trim(u8, tagContent[5..], " \t\r\n");
+                        if (blockName.len == 0) {
+                            return self.fail(.syntaxError, tagStart, "expected block name in '{% block name %}'");
                         }
                         var bodyNodes = std.ArrayList(TemplateNode).empty;
-                        try self.parseTokenNodes(a, tokens, cursor, &bodyNodes, blocksList, includesList, macrosList, extendsPath, "endblock", inLoop, strip_leading);
+                        try self.parseTokenNodes(a, tokens, cursor, &bodyNodes, blocksList, includesList, macrosList, extendsPath, "endblock", inLoop, stripLeading);
                         if (std.mem.eql(u8, self.peekDirectiveCmd(tokens, cursor.*), "endblock")) {
                             trimSliceTail(bodyNodes.items);
-                            if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) strip_leading.* = true;
+                            if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) stripLeading.* = true;
                             cursor.* += 1;
                         } else {
-                            return self.fail(.unclosed_block, tag_start, "unclosed {% block %}, expected {% endblock %}");
+                            return self.fail(.unclosedBlock, tagStart, "unclosed {% block %}, expected {% endblock %}");
                         }
-                        const owned_body = try bodyNodes.toOwnedSlice(a);
-                        try blocksList.append(a, .{ .name = block_name, .nodes = owned_body });
+                        const ownedBody = try bodyNodes.toOwnedSlice(a);
+                        try blocksList.append(a, .{ .name = blockName, .nodes = ownedBody });
                         try outNodes.append(a, .{
-                            .block = .{ .name = block_name, .bodyNodes = owned_body, .startByte = tag_start, .line = loc.line, .col = loc.col },
+                            .block = .{ .name = blockName, .bodyNodes = ownedBody, .startByte = tagStart, .line = loc.line, .col = loc.col },
                         });
-                    } else if (std.mem.eql(u8, tag_cmd, "extends")) {
-                        const raw_path = std.mem.trim(u8, tag_content[7..], " \t\r\n");
-                        const path = parseQuotedString(raw_path) orelse {
-                            return self.fail(.syntaxError, tag_start, "invalid path in '{% extends \"...\" %}'");
+                    } else if (std.mem.eql(u8, tagCmd, "extends")) {
+                        const rawPath = std.mem.trim(u8, tagContent[7..], " \t\r\n");
+                        const path = parseQuotedString(rawPath) orelse {
+                            return self.fail(.syntaxError, tagStart, "invalid path in '{% extends \"...\" %}'");
                         };
                         extendsPath.* = path;
                         try outNodes.append(a, .{
-                            .extends = .{ .parentPath = path, .startByte = tag_start, .line = loc.line, .col = loc.col },
+                            .extends = .{ .parentPath = path, .startByte = tagStart, .line = loc.line, .col = loc.col },
                         });
-                    } else if (std.mem.eql(u8, tag_cmd, "include")) {
-                        const raw_path = std.mem.trim(u8, tag_content[7..], " \t\r\n");
-                        const path = parseQuotedString(raw_path) orelse {
-                            return self.fail(.syntaxError, tag_start, "invalid path in '{% include \"...\" %}'");
+                    } else if (std.mem.eql(u8, tagCmd, "include")) {
+                        const rawPath = std.mem.trim(u8, tagContent[7..], " \t\r\n");
+                        const path = parseQuotedString(rawPath) orelse {
+                            return self.fail(.syntaxError, tagStart, "invalid path in '{% include \"...\" %}'");
                         };
                         try includesList.append(a, path);
                         try outNodes.append(a, .{
-                            .include = .{ .templatePath = path, .startByte = tag_start, .line = loc.line, .col = loc.col },
+                            .include = .{ .templatePath = path, .startByte = tagStart, .line = loc.line, .col = loc.col },
                         });
-                    } else if (std.mem.eql(u8, tag_cmd, "set")) {
-                        const remainder = std.mem.trim(u8, tag_content[3..], " \t\r\n");
+                    } else if (std.mem.eql(u8, tagCmd, "set")) {
+                        const remainder = std.mem.trim(u8, tagContent[3..], " \t\r\n");
                         if (std.mem.indexOfScalar(u8, remainder, '=')) |eq| {
                             const name = std.mem.trim(u8, remainder[0..eq], " \t\r\n");
-                            const value_expr = std.mem.trim(u8, remainder[eq + 1 ..], " \t\r\n");
-                            if (name.len == 0 or value_expr.len == 0) {
-                                return self.fail(.syntaxError, tag_start, "invalid set syntax, expected '{% set name = value %}'");
+                            const valueExpr = std.mem.trim(u8, remainder[eq + 1 ..], " \t\r\n");
+                            if (name.len == 0 or valueExpr.len == 0) {
+                                return self.fail(.syntaxError, tagStart, "invalid set syntax, expected '{% set name = value %}'");
                             }
                             try outNodes.append(a, .{
-                                .set = .{ .name = name, .valueExpr = value_expr, .startByte = tag_start, .line = loc.line, .col = loc.col },
+                                .set = .{ .name = name, .valueExpr = valueExpr, .startByte = tagStart, .line = loc.line, .col = loc.col },
                             });
                         } else {
                             if (remainder.len == 0) {
-                                return self.fail(.syntaxError, tag_start, "invalid set syntax, expected '{% set name = value %}' or '{% set name %}...{% endset %}'");
+                                return self.fail(.syntaxError, tagStart, "invalid set syntax, expected '{% set name = value %}' or '{% set name %}...{% endset %}'");
                             }
                             var setBody = std.ArrayList(TemplateNode).empty;
-                            try self.parseTokenNodes(a, tokens, cursor, &setBody, blocksList, includesList, macrosList, extendsPath, "endset", inLoop, strip_leading);
+                            try self.parseTokenNodes(a, tokens, cursor, &setBody, blocksList, includesList, macrosList, extendsPath, "endset", inLoop, stripLeading);
                             if (!std.mem.eql(u8, self.peekDirectiveCmd(tokens, cursor.*), "endset")) {
-                                return self.fail(.unclosed_block, tag_start, "unclosed {% set %}, expected {% endset %}");
+                                return self.fail(.unclosedBlock, tagStart, "unclosed {% set %}, expected {% endset %}");
                             }
                             trimSliceTail(setBody.items);
-                            if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) strip_leading.* = true;
+                            if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) stripLeading.* = true;
                             cursor.* += 1;
                             try outNodes.append(a, .{
-                                .setBlock = .{ .name = remainder, .bodyNodes = try setBody.toOwnedSlice(a), .startByte = tag_start, .line = loc.line, .col = loc.col },
+                                .setBlock = .{ .name = remainder, .bodyNodes = try setBody.toOwnedSlice(a), .startByte = tagStart, .line = loc.line, .col = loc.col },
                             });
                         }
-                    } else if (std.mem.eql(u8, tag_cmd, "call")) {
-                        const sig = std.mem.trim(u8, tag_content[4..], " \t\r\n");
+                    } else if (std.mem.eql(u8, tagCmd, "call")) {
+                        const sig = std.mem.trim(u8, tagContent[4..], " \t\r\n");
                         const parsed = parseCallSig(a, sig) catch {
-                            return self.fail(.syntaxError, tag_start, "invalid call syntax, expected '{% call name(args) %}'");
+                            return self.fail(.syntaxError, tagStart, "invalid call syntax, expected '{% call name(args) %}'");
                         };
                         var callBody = std.ArrayList(TemplateNode).empty;
-                        try self.parseTokenNodes(a, tokens, cursor, &callBody, blocksList, includesList, macrosList, extendsPath, "endcall", inLoop, strip_leading);
+                        try self.parseTokenNodes(a, tokens, cursor, &callBody, blocksList, includesList, macrosList, extendsPath, "endcall", inLoop, stripLeading);
                         if (!std.mem.eql(u8, self.peekDirectiveCmd(tokens, cursor.*), "endcall")) {
-                            return self.fail(.unclosed_block, tag_start, "unclosed {% call %}, expected {% endcall %}");
+                            return self.fail(.unclosedBlock, tagStart, "unclosed {% call %}, expected {% endcall %}");
                         }
                         trimSliceTail(callBody.items);
-                        if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) strip_leading.* = true;
+                        if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) stripLeading.* = true;
                         cursor.* += 1;
                         try outNodes.append(a, .{
-                            .call = .{ .name = parsed.name, .args = parsed.args, .bodyNodes = try callBody.toOwnedSlice(a), .startByte = tag_start, .line = loc.line, .col = loc.col },
+                            .call = .{ .name = parsed.name, .args = parsed.args, .bodyNodes = try callBody.toOwnedSlice(a), .startByte = tagStart, .line = loc.line, .col = loc.col },
                         });
-                    } else if (std.mem.eql(u8, tag_cmd, "macro")) {
-                        const sig = std.mem.trim(u8, tag_content[5..], " \t\r\n");
+                    } else if (std.mem.eql(u8, tagCmd, "macro")) {
+                        const sig = std.mem.trim(u8, tagContent[5..], " \t\r\n");
                         const parsed = parseMacroSignature(a, sig) catch {
-                            return self.fail(.syntaxError, tag_start, "invalid macro signature, expected '{% macro name(args) %}'");
+                            return self.fail(.syntaxError, tagStart, "invalid macro signature, expected '{% macro name(args) %}'");
                         };
                         var bodyNodes = std.ArrayList(TemplateNode).empty;
-                        try self.parseTokenNodes(a, tokens, cursor, &bodyNodes, blocksList, includesList, macrosList, extendsPath, "endmacro", inLoop, strip_leading);
+                        try self.parseTokenNodes(a, tokens, cursor, &bodyNodes, blocksList, includesList, macrosList, extendsPath, "endmacro", inLoop, stripLeading);
                         if (!std.mem.eql(u8, self.peekDirectiveCmd(tokens, cursor.*), "endmacro")) {
-                            return self.fail(.unclosed_block, tag_start, "unclosed {% macro %}, expected {% endmacro %}");
+                            return self.fail(.unclosedBlock, tagStart, "unclosed {% macro %}, expected {% endmacro %}");
                         }
                         trimSliceTail(bodyNodes.items);
-                        if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) strip_leading.* = true;
+                        if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) stripLeading.* = true;
                         cursor.* += 1;
                         const def = MacroDef{
                             .name = parsed.name,
                             .params = parsed.params,
                             .bodyNodes = try bodyNodes.toOwnedSlice(a),
-                            .startByte = tag_start,
+                            .startByte = tagStart,
                             .line = loc.line,
                             .col = loc.col,
                         };
                         try macrosList.append(a, def);
                         try outNodes.append(a, .{ .macroDef = def });
-                    } else if (std.mem.eql(u8, tag_cmd, "break")) {
-                        if (!inLoop) return self.fail(.unexpectedToken, tag_start, "{% break %} outside of a loop");
-                        try outNodes.append(a, .{ .breakLoop = .{ .startByte = tag_start, .line = loc.line, .col = loc.col } });
-                    } else if (std.mem.eql(u8, tag_cmd, "continue")) {
-                        if (!inLoop) return self.fail(.unexpectedToken, tag_start, "{% continue %} outside of a loop");
-                        try outNodes.append(a, .{ .continueLoop = .{ .startByte = tag_start, .line = loc.line, .col = loc.col } });
-                    } else if (std.mem.eql(u8, tag_cmd, "endfor") or std.mem.eql(u8, tag_cmd, "endblock") or std.mem.eql(u8, tag_cmd, "endmacro") or std.mem.eql(u8, tag_cmd, "endcall") or std.mem.eql(u8, tag_cmd, "endset") or std.mem.eql(u8, tag_cmd, "endraw")) {
-                        return self.fail(.unexpectedToken, tag_start, "unexpected end tag without matching block");
+                    } else if (std.mem.eql(u8, tagCmd, "break")) {
+                        if (!inLoop) return self.fail(.unexpectedToken, tagStart, "{% break %} outside of a loop");
+                        try outNodes.append(a, .{ .breakLoop = .{ .startByte = tagStart, .line = loc.line, .col = loc.col } });
+                    } else if (std.mem.eql(u8, tagCmd, "continue")) {
+                        if (!inLoop) return self.fail(.unexpectedToken, tagStart, "{% continue %} outside of a loop");
+                        try outNodes.append(a, .{ .continueLoop = .{ .startByte = tagStart, .line = loc.line, .col = loc.col } });
+                    } else if (std.mem.eql(u8, tagCmd, "endfor") or std.mem.eql(u8, tagCmd, "endblock") or std.mem.eql(u8, tagCmd, "endmacro") or std.mem.eql(u8, tagCmd, "endcall") or std.mem.eql(u8, tagCmd, "endset") or std.mem.eql(u8, tagCmd, "endraw")) {
+                        return self.fail(.unexpectedToken, tagStart, "unexpected end tag without matching block");
                     } else {
-                        return self.fail(.unexpectedToken, tag_start, "unknown template directive");
+                        return self.fail(.unexpectedToken, tagStart, "unknown template directive");
                     }
                 },
             }
         }
     }
 
-    fn fail(self: *Parser, kind: err_mod.TemplateErrorKind, offset: usize, message: []const u8) TemplateError {
+    fn fail(self: *Parser, kind: errMod.TemplateErrorKind, offset: usize, message: []const u8) TemplateError {
         const loc = lineColFromOffset(self.source, offset);
         self.lastError = .{
             .kind = kind,
@@ -972,7 +972,7 @@ pub const Parser = struct {
         return switch (kind) {
             .syntaxError => TemplateError.SyntaxError,
             .unexpectedToken => TemplateError.UnexpectedToken,
-            .unclosed_block => TemplateError.UnclosedBlock,
+            .unclosedBlock => TemplateError.UnclosedBlock,
             .unclosedExpression => TemplateError.UnclosedExpression,
             else => TemplateError.SyntaxError,
         };
@@ -988,8 +988,8 @@ pub const Parser = struct {
         stopTag: ?[]const u8,
     ) TemplateError!void {
         while (self.pos < self.source.len) {
-            const next_open = std.mem.indexOfPos(u8, self.source, self.pos, "{");
-            if (next_open == null) {
+            const nextOpen = std.mem.indexOfPos(u8, self.source, self.pos, "{");
+            if (nextOpen == null) {
                 // Remainder is plain text
                 const text = self.source[self.pos..];
                 if (text.len > 0) {
@@ -999,7 +999,7 @@ pub const Parser = struct {
                 break;
             }
 
-            const openIdx = next_open.?;
+            const openIdx = nextOpen.?;
             if (openIdx > self.pos) {
                 try outNodes.append(a, .{ .text = self.source[self.pos..openIdx] });
                 self.pos = openIdx;
@@ -1014,77 +1014,77 @@ pub const Parser = struct {
             const second = self.source[openIdx + 1];
             if (second == '{') {
                 // Expression: {{ ... }}
-                const expr_start = self.pos;
-                const close_idx = std.mem.indexOfPos(u8, self.source, openIdx + 2, "}}") orelse {
-                    return self.fail(.unclosedExpression, expr_start, "unclosed expression, expected '}}'");
+                const exprStart = self.pos;
+                const closeIdx = std.mem.indexOfPos(u8, self.source, openIdx + 2, "}}") orelse {
+                    return self.fail(.unclosedExpression, exprStart, "unclosed expression, expected '}}'");
                 };
-                const raw_expr = std.mem.trim(u8, self.source[openIdx + 2 .. close_idx], " \t\r\n");
-                const loc = lineColFromOffset(self.source, expr_start);
+                const rawExpr = std.mem.trim(u8, self.source[openIdx + 2 .. closeIdx], " \t\r\n");
+                const loc = lineColFromOffset(self.source, exprStart);
                 try outNodes.append(a, .{
                     .expression = .{
-                        .expr = raw_expr,
-                        .startByte = expr_start,
+                        .expr = rawExpr,
+                        .startByte = exprStart,
                         .line = loc.line,
                         .col = loc.col,
                     },
                 });
-                self.pos = close_idx + 2;
+                self.pos = closeIdx + 2;
             } else if (second == '#') {
                 // Comment: {# ... #}
-                const close_idx = std.mem.indexOfPos(u8, self.source, openIdx + 2, "#}") orelse {
+                const closeIdx = std.mem.indexOfPos(u8, self.source, openIdx + 2, "#}") orelse {
                     return self.fail(.syntaxError, openIdx, "unclosed comment, expected '#}'");
                 };
-                self.pos = close_idx + 2;
+                self.pos = closeIdx + 2;
             } else if (second == '%') {
                 // Directive: {% ... %}
-                const tag_start = self.pos;
-                const close_idx = std.mem.indexOfPos(u8, self.source, openIdx + 2, "%}") orelse {
-                    return self.fail(.syntaxError, tag_start, "unclosed directive, expected '%}'");
+                const tagStart = self.pos;
+                const closeIdx = std.mem.indexOfPos(u8, self.source, openIdx + 2, "%}") orelse {
+                    return self.fail(.syntaxError, tagStart, "unclosed directive, expected '%}'");
                 };
 
-                const tag_content = std.mem.trim(u8, self.source[openIdx + 2 .. close_idx], " \t\r\n");
-                var tag_it = std.mem.tokenizeAny(u8, tag_content, " \t\r\n");
-                const tag_cmd = tag_it.next() orelse "";
+                const tagContent = std.mem.trim(u8, self.source[openIdx + 2 .. closeIdx], " \t\r\n");
+                var tagIt = std.mem.tokenizeAny(u8, tagContent, " \t\r\n");
+                const tagCmd = tagIt.next() orelse "";
 
                 // Check if this matches stopTag
                 if (stopTag) |target| {
-                    if (std.mem.eql(u8, tag_cmd, target) or
-                        (std.mem.eql(u8, target, "endif_or_else") and (std.mem.eql(u8, tag_cmd, "else") or std.mem.eql(u8, tag_cmd, "endif"))))
+                    if (std.mem.eql(u8, tagCmd, target) or
+                        (std.mem.eql(u8, target, "endif_or_else") and (std.mem.eql(u8, tagCmd, "else") or std.mem.eql(u8, tagCmd, "endif"))))
                     {
                         // Stop before consuming this tag; parent will consume
                         return;
                     }
                 }
 
-                self.pos = close_idx + 2;
-                const loc = lineColFromOffset(self.source, tag_start);
+                self.pos = closeIdx + 2;
+                const loc = lineColFromOffset(self.source, tagStart);
 
-                if (std.mem.eql(u8, tag_cmd, "if")) {
-                    const condition = std.mem.trim(u8, tag_content[2..], " \t\r\n");
+                if (std.mem.eql(u8, tagCmd, "if")) {
+                    const condition = std.mem.trim(u8, tagContent[2..], " \t\r\n");
                     var thenNodes = std.ArrayList(TemplateNode).empty;
                     var elseNodes = std.ArrayList(TemplateNode).empty;
 
                     try self.parseNodes(a, &thenNodes, blocksList, includesList, extendsPath, "endif_or_else");
 
                     if (self.pos < self.source.len) {
-                        const next_dir_close = std.mem.indexOfPos(u8, self.source, self.pos, "%}") orelse {
-                            return self.fail(.unclosed_block, tag_start, "expected {% else %} or {% endif %}");
+                        const nextDirClose = std.mem.indexOfPos(u8, self.source, self.pos, "%}") orelse {
+                            return self.fail(.unclosedBlock, tagStart, "expected {% else %} or {% endif %}");
                         };
-                        const next_dir = std.mem.trim(u8, self.source[self.pos + 2 .. next_dir_close], " \t\r\n");
-                        if (std.mem.startsWith(u8, next_dir, "else")) {
-                            self.pos = next_dir_close + 2;
+                        const nextDir = std.mem.trim(u8, self.source[self.pos + 2 .. nextDirClose], " \t\r\n");
+                        if (std.mem.startsWith(u8, nextDir, "else")) {
+                            self.pos = nextDirClose + 2;
                             try self.parseNodes(a, &elseNodes, blocksList, includesList, extendsPath, "endif");
                             if (self.pos < self.source.len) {
-                                const end_close = std.mem.indexOfPos(u8, self.source, self.pos, "%}") orelse {
-                                    return self.fail(.unclosed_block, tag_start, "expected {% endif %}");
+                                const endClose = std.mem.indexOfPos(u8, self.source, self.pos, "%}") orelse {
+                                    return self.fail(.unclosedBlock, tagStart, "expected {% endif %}");
                                 };
-                                self.pos = end_close + 2;
+                                self.pos = endClose + 2;
                             }
-                        } else if (std.mem.startsWith(u8, next_dir, "endif")) {
-                            self.pos = next_dir_close + 2;
+                        } else if (std.mem.startsWith(u8, nextDir, "endif")) {
+                            self.pos = nextDirClose + 2;
                         }
                     } else {
-                        return self.fail(.unclosed_block, tag_start, "unclosed {% if %}, expected {% endif %}");
+                        return self.fail(.unclosedBlock, tagStart, "unclosed {% if %}, expected {% endif %}");
                     }
 
                     try outNodes.append(a, .{
@@ -1093,105 +1093,105 @@ pub const Parser = struct {
                             .thenNodes = try thenNodes.toOwnedSlice(a),
                             .elifBranches = &.{},
                             .elseNodes = try elseNodes.toOwnedSlice(a),
-                            .startByte = tag_start,
+                            .startByte = tagStart,
                             .line = loc.line,
                             .col = loc.col,
                         },
                     });
-                } else if (std.mem.eql(u8, tag_cmd, "for")) {
+                } else if (std.mem.eql(u8, tagCmd, "for")) {
                     // Syntax: {% for item in collection %}
-                    const remainder = std.mem.trim(u8, tag_content[3..], " \t\r\n");
+                    const remainder = std.mem.trim(u8, tagContent[3..], " \t\r\n");
                     const inPos = std.mem.indexOf(u8, remainder, " in ") orelse {
-                        return self.fail(.syntaxError, tag_start, "invalid for loop syntax, expected '{% for item in items %}'");
+                        return self.fail(.syntaxError, tagStart, "invalid for loop syntax, expected '{% for item in items %}'");
                     };
                     const itemVar = std.mem.trim(u8, remainder[0..inPos], " \t\r\n");
-                    const coll_expr = std.mem.trim(u8, remainder[inPos + 4 ..], " \t\r\n");
+                    const collExpr = std.mem.trim(u8, remainder[inPos + 4 ..], " \t\r\n");
 
                     var bodyNodes = std.ArrayList(TemplateNode).empty;
                     try self.parseNodes(a, &bodyNodes, blocksList, includesList, extendsPath, "endfor");
 
                     if (self.pos < self.source.len) {
-                        const end_close = std.mem.indexOfPos(u8, self.source, self.pos, "%}") orelse {
-                            return self.fail(.unclosed_block, tag_start, "expected {% endfor %}");
+                        const endClose = std.mem.indexOfPos(u8, self.source, self.pos, "%}") orelse {
+                            return self.fail(.unclosedBlock, tagStart, "expected {% endfor %}");
                         };
-                        self.pos = end_close + 2;
+                        self.pos = endClose + 2;
                     } else {
-                        return self.fail(.unclosed_block, tag_start, "unclosed {% for %}, expected {% endfor %}");
+                        return self.fail(.unclosedBlock, tagStart, "unclosed {% for %}, expected {% endfor %}");
                     }
 
                     try outNodes.append(a, .{
                         .forLoop = .{
                             .itemVar = itemVar,
-                            .collectionExpr = coll_expr,
+                            .collectionExpr = collExpr,
                             .bodyNodes = try bodyNodes.toOwnedSlice(a),
-                            .startByte = tag_start,
+                            .startByte = tagStart,
                             .line = loc.line,
                             .col = loc.col,
                         },
                     });
-                } else if (std.mem.eql(u8, tag_cmd, "block")) {
-                    const block_name = std.mem.trim(u8, tag_content[5..], " \t\r\n");
-                    if (block_name.len == 0) {
-                        return self.fail(.syntaxError, tag_start, "expected block name in '{% block name %}'");
+                } else if (std.mem.eql(u8, tagCmd, "block")) {
+                    const blockName = std.mem.trim(u8, tagContent[5..], " \t\r\n");
+                    if (blockName.len == 0) {
+                        return self.fail(.syntaxError, tagStart, "expected block name in '{% block name %}'");
                     }
 
                     var bodyNodes = std.ArrayList(TemplateNode).empty;
                     try self.parseNodes(a, &bodyNodes, blocksList, includesList, extendsPath, "endblock");
 
                     if (self.pos < self.source.len) {
-                        const end_close = std.mem.indexOfPos(u8, self.source, self.pos, "%}") orelse {
-                            return self.fail(.unclosed_block, tag_start, "expected {% endblock %}");
+                        const endClose = std.mem.indexOfPos(u8, self.source, self.pos, "%}") orelse {
+                            return self.fail(.unclosedBlock, tagStart, "expected {% endblock %}");
                         };
-                        self.pos = end_close + 2;
+                        self.pos = endClose + 2;
                     } else {
-                        return self.fail(.unclosed_block, tag_start, "unclosed {% block %}, expected {% endblock %}");
+                        return self.fail(.unclosedBlock, tagStart, "unclosed {% block %}, expected {% endblock %}");
                     }
 
-                    const owned_body = try bodyNodes.toOwnedSlice(a);
+                    const ownedBody = try bodyNodes.toOwnedSlice(a);
                     try blocksList.append(a, .{
-                        .name = block_name,
-                        .nodes = owned_body,
+                        .name = blockName,
+                        .nodes = ownedBody,
                     });
 
                     try outNodes.append(a, .{
                         .block = .{
-                            .name = block_name,
-                            .bodyNodes = owned_body,
-                            .startByte = tag_start,
+                            .name = blockName,
+                            .bodyNodes = ownedBody,
+                            .startByte = tagStart,
                             .line = loc.line,
                             .col = loc.col,
                         },
                     });
-                } else if (std.mem.eql(u8, tag_cmd, "extends")) {
-                    const raw_path = std.mem.trim(u8, tag_content[7..], " \t\r\n");
-                    const path = parseQuotedString(raw_path) orelse {
-                        return self.fail(.syntaxError, tag_start, "invalid path in '{% extends \"...\" %}'");
+                } else if (std.mem.eql(u8, tagCmd, "extends")) {
+                    const rawPath = std.mem.trim(u8, tagContent[7..], " \t\r\n");
+                    const path = parseQuotedString(rawPath) orelse {
+                        return self.fail(.syntaxError, tagStart, "invalid path in '{% extends \"...\" %}'");
                     };
                     extendsPath.* = path;
                     try outNodes.append(a, .{
                         .extends = .{
                             .parentPath = path,
-                            .startByte = tag_start,
+                            .startByte = tagStart,
                             .line = loc.line,
                             .col = loc.col,
                         },
                     });
-                } else if (std.mem.eql(u8, tag_cmd, "include")) {
-                    const raw_path = std.mem.trim(u8, tag_content[7..], " \t\r\n");
-                    const path = parseQuotedString(raw_path) orelse {
-                        return self.fail(.syntaxError, tag_start, "invalid path in '{% include \"...\" %}'");
+                } else if (std.mem.eql(u8, tagCmd, "include")) {
+                    const rawPath = std.mem.trim(u8, tagContent[7..], " \t\r\n");
+                    const path = parseQuotedString(rawPath) orelse {
+                        return self.fail(.syntaxError, tagStart, "invalid path in '{% include \"...\" %}'");
                     };
                     try includesList.append(a, path);
                     try outNodes.append(a, .{
                         .include = .{
                             .templatePath = path,
-                            .startByte = tag_start,
+                            .startByte = tagStart,
                             .line = loc.line,
                             .col = loc.col,
                         },
                     });
                 } else {
-                    return self.fail(.unexpectedToken, tag_start, "unknown template directive");
+                    return self.fail(.unexpectedToken, tagStart, "unknown template directive");
                 }
             } else {
                 // Just a solitary '{'
@@ -1325,23 +1325,23 @@ test "template grammar tokenizes text, expression, directive, comment" {
     defer tree.deinit();
     try testing.expect(!tree.hasError());
     try testing.expectEqualStrings("program", tree.rootNode().nodeType());
-    var found_text = false;
-    var found_expr = false;
-    var found_dir = false;
-    var found_comment = false;
+    var foundText = false;
+    var foundExpr = false;
+    var foundDir = false;
+    var foundComment = false;
     var stack = std.ArrayList(ts.Node).empty;
     defer stack.deinit(alloc);
     try stack.append(alloc, tree.rootNode());
     while (stack.pop()) |cur| {
         const t = cur.nodeType();
-        if (std.mem.eql(u8, t, "text")) found_text = true;
+        if (std.mem.eql(u8, t, "text")) foundText = true;
         if (std.mem.eql(u8, t, "expression")) {
-            found_expr = true;
+            foundExpr = true;
             try testing.expectEqualStrings("{{ name }}", cur.text());
         }
-        if (std.mem.eql(u8, t, "directive")) found_dir = true;
+        if (std.mem.eql(u8, t, "directive")) foundDir = true;
         if (std.mem.eql(u8, t, "comment")) {
-            found_comment = true;
+            foundComment = true;
             try testing.expectEqualStrings("{# note #}", cur.text());
         }
         var i: u32 = cur.childCount();
@@ -1350,7 +1350,7 @@ test "template grammar tokenizes text, expression, directive, comment" {
             if (cur.child(i)) |c| try stack.append(alloc, c);
         }
     }
-    try testing.expect(found_text and found_expr and found_dir and found_comment);
+    try testing.expect(foundText and foundExpr and foundDir and foundComment);
 }
 
 test "template grammar flags unclosed delimiters" {
@@ -1382,10 +1382,10 @@ test "Parser tree-driven path preserves syntax positions" {
     var ast = try parser.parse();
     defer ast.deinit();
 
-    var expr_start: ?usize = null;
+    var exprStart: ?usize = null;
     for (ast.nodes) |n| {
-        if (n == .expression) expr_start = n.expression.startByte;
+        if (n == .expression) exprStart = n.expression.startByte;
     }
-    try testing.expect(expr_start != null);
-    try testing.expectEqual(std.mem.indexOf(u8, src, "{{").?, expr_start.?);
+    try testing.expect(exprStart != null);
+    try testing.expectEqual(std.mem.indexOf(u8, src, "{{").?, exprStart.?);
 }

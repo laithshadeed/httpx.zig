@@ -15,17 +15,17 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
-const parser_mod = @import("parser.zig");
+const parserMod = @import("parser.zig");
 
 pub const TypeKind = enum {
     scalar,
     object,
     interface,
-    union_type,
-    enum_type,
-    input_object,
+    unionType,
+    enumType,
+    inputObject,
     list,
-    non_null,
+    nonNull,
 };
 
 pub const FieldResolver = *const fn (ctx: ResolverContext) anyerror!std.json.Value;
@@ -41,9 +41,9 @@ pub const ResolverContext = struct {
     /// Converts any Zig value, struct, slice, or primitive directly into a std.json.Value.
     /// Eliminates manual ObjectMap/Array boilerplate in resolvers.
     pub fn value(self: ResolverContext, val: anytype) anyerror!std.json.Value {
-        const json_bytes = try std.json.Stringify.valueAlloc(self.allocator, val, .{});
-        defer self.allocator.free(json_bytes);
-        const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, json_bytes, .{});
+        const jsonBytes = try std.json.Stringify.valueAlloc(self.allocator, val, .{});
+        defer self.allocator.free(jsonBytes);
+        const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, jsonBytes, .{});
         return parsed.value;
     }
 };
@@ -89,15 +89,15 @@ pub const Schema = struct {
     }
 
     pub fn execute(self: *const Schema, arena: Allocator, query: []const u8, variablesJson: ?[]const u8, userContext: ?*anyopaque) ![]u8 {
-        var parsed_vars: std.json.Value = .null;
-        if (variablesJson) |v_str| {
-            if (v_str.len > 0 and !std.mem.eql(u8, v_str, "null")) {
-                const parsed = std.json.parseFromSlice(std.json.Value, arena, v_str, .{}) catch return self.formatError(arena, "Invalid variables JSON payload");
-                parsed_vars = parsed.value;
+        var parsedVars: std.json.Value = .null;
+        if (variablesJson) |vStr| {
+            if (vStr.len > 0 and !std.mem.eql(u8, vStr, "null")) {
+                const parsed = std.json.parseFromSlice(std.json.Value, arena, vStr, .{}) catch return self.formatError(arena, "Invalid variables JSON payload");
+                parsedVars = parsed.value;
             }
         }
 
-        var parser = parser_mod.Parser.init(arena, query, .{ .maxDepth = self.config.maxDepth }) catch |err| {
+        var parser = parserMod.Parser.init(arena, query, .{ .maxDepth = self.config.maxDepth }) catch |err| {
             return self.formatError(arena, switch (err) {
                 error.RequestEntityTooLarge => "Query payload exceeds maximum size limit",
                 error.MaxQueryDepthExceeded => "Query exceeds maximum depth limit",
@@ -109,13 +109,13 @@ pub const Schema = struct {
         const doc = parser.parseDocument() catch return self.formatError(arena, "GraphQL syntax error: failed to parse document");
 
         // Find query or mutation operation
-        var op_def: ?ast.OperationDefinition = null;
+        var opDef: ?ast.OperationDefinition = null;
         var fragments = std.StringHashMap(ast.FragmentDefinition).init(arena);
 
         for (doc.definitions) |d| {
             switch (d) {
                 .operation => |op| {
-                    if (op_def == null) op_def = op;
+                    if (opDef == null) opDef = op;
                 },
                 .fragment => |f| {
                     try fragments.put(f.name, f);
@@ -123,54 +123,54 @@ pub const Schema = struct {
             }
         }
 
-        if (op_def == null) return self.formatError(arena, "No executable operation found in GraphQL request");
+        if (opDef == null) return self.formatError(arena, "No executable operation found in GraphQL request");
 
-        const op = op_def.?;
-        const target_obj = switch (op.operationType) {
+        const op = opDef.?;
+        const targetObj = switch (op.operationType) {
             .query => self.config.query,
             .mutation => self.config.mutation orelse return self.formatError(arena, "Mutations are not supported by this schema"),
             .subscription => return self.formatError(arena, "Subscriptions are not supported over standard HTTP POST"),
         };
 
-        var root_data = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
+        var rootData = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
 
         for (op.selectionSet) |sel| {
             switch (sel) {
                 .field => |f| {
-                    const field_val = try self.resolveField(arena, target_obj, f, null, parsed_vars, &fragments, userContext);
-                    const output_name = f.alias orelse f.name;
-                    try root_data.put(arena, output_name, field_val);
+                    const fieldVal = try self.resolveField(arena, targetObj, f, null, parsedVars, &fragments, userContext);
+                    const outputName = f.alias orelse f.name;
+                    try rootData.put(arena, outputName, fieldVal);
                 },
                 .fragmentSpread => |fs| {
-                    if (fragments.get(fs.name)) |f_def| {
-                        for (f_def.selectionSet) |f_sel| {
-                            if (f_sel == .field) {
-                                const f = f_sel.field;
-                                const field_val = try self.resolveField(arena, target_obj, f, null, parsed_vars, &fragments, userContext);
-                                const output_name = f.alias orelse f.name;
-                                try root_data.put(arena, output_name, field_val);
+                    if (fragments.get(fs.name)) |fDef| {
+                        for (fDef.selectionSet) |fSel| {
+                            if (fSel == .field) {
+                                const f = fSel.field;
+                                const fieldVal = try self.resolveField(arena, targetObj, f, null, parsedVars, &fragments, userContext);
+                                const outputName = f.alias orelse f.name;
+                                try rootData.put(arena, outputName, fieldVal);
                             }
                         }
                     }
                 },
                 .inlineFragment => |inf| {
-                    for (inf.selectionSet) |inf_sel| {
-                        if (inf_sel == .field) {
-                            const f = inf_sel.field;
-                            const field_val = try self.resolveField(arena, target_obj, f, null, parsed_vars, &fragments, userContext);
-                            const output_name = f.alias orelse f.name;
-                            try root_data.put(arena, output_name, field_val);
+                    for (inf.selectionSet) |infSel| {
+                        if (infSel == .field) {
+                            const f = infSel.field;
+                            const fieldVal = try self.resolveField(arena, targetObj, f, null, parsedVars, &fragments, userContext);
+                            const outputName = f.alias orelse f.name;
+                            try rootData.put(arena, outputName, fieldVal);
                         }
                     }
                 },
             }
         }
 
-        var response_obj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
-        try response_obj.put(arena, "data", std.json.Value{ .object = root_data });
+        var responseObj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
+        try responseObj.put(arena, "data", std.json.Value{ .object = rootData });
 
         var out: std.Io.Writer.Allocating = .init(arena);
-        try std.json.fmt(std.json.Value{ .object = response_obj }, .{}).format(&out.writer);
+        try std.json.fmt(std.json.Value{ .object = responseObj }, .{}).format(&out.writer);
         return out.toOwnedSlice();
     }
 
@@ -195,15 +195,15 @@ pub const Schema = struct {
         }
 
         // Locate field definition in schema
-        var field_def: ?FieldDef = null;
+        var fieldDef: ?FieldDef = null;
         for (objDef.fields) |fd| {
             if (std.mem.eql(u8, fd.name, field.name)) {
-                field_def = fd;
+                fieldDef = fd;
                 break;
             }
         }
 
-        if (field_def == null) {
+        if (fieldDef == null) {
             // Check if parent is a JSON object with this key
             if (parentVal) |pv| {
                 if (pv == .object) {
@@ -213,99 +213,99 @@ pub const Schema = struct {
             return .null;
         }
 
-        const fd = field_def.?;
+        const fd = fieldDef.?;
 
         // Evaluate arguments
-        var args_obj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
+        var argsObj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
         for (field.arguments) |arg| {
-            const arg_val = self.evaluateValue(arena, arg.value, variables);
-            try args_obj.put(arena, arg.name, arg_val);
+            const argVal = self.evaluateValue(arena, arg.value, variables);
+            try argsObj.put(arena, arg.name, argVal);
         }
 
-        const res_ctx = ResolverContext{
+        const resCtx = ResolverContext{
             .allocator = arena,
             .parent = parentVal,
-            .args = std.json.Value{ .object = args_obj },
+            .args = std.json.Value{ .object = argsObj },
             .variables = variables,
             .fieldName = field.name,
             .userContext = userCtx,
         };
 
-        var resolved_value: std.json.Value = .null;
+        var resolvedValue: std.json.Value = .null;
         if (fd.resolver) |r| {
-            resolved_value = r(res_ctx) catch {
+            resolvedValue = r(resCtx) catch {
                 return .null;
             };
         } else if (parentVal) |pv| {
             if (pv == .object) {
-                resolved_value = pv.object.get(field.name) orelse .null;
+                resolvedValue = pv.object.get(field.name) orelse .null;
             }
         }
 
         // If field has selection set and resolved value is an object or array
         if (field.selectionSet.len > 0) {
-            const nested_type = self.findType(fd.typeName) orelse ObjectTypeDef{ .name = fd.typeName, .fields = &.{} };
-            switch (resolved_value) {
-                .object => |sub_obj| {
-                    var out_obj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
+            const nestedType = self.findType(fd.typeName) orelse ObjectTypeDef{ .name = fd.typeName, .fields = &.{} };
+            switch (resolvedValue) {
+                .object => |subObj| {
+                    var outObj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
                     for (field.selectionSet) |sel| {
                         switch (sel) {
                             .field => |sf| {
-                                const sv = try self.resolveField(arena, nested_type, sf, std.json.Value{ .object = sub_obj }, variables, fragments, userCtx);
-                                const out_name = sf.alias orelse sf.name;
-                                try out_obj.put(arena, out_name, sv);
+                                const sv = try self.resolveField(arena, nestedType, sf, std.json.Value{ .object = subObj }, variables, fragments, userCtx);
+                                const outName = sf.alias orelse sf.name;
+                                try outObj.put(arena, outName, sv);
                             },
                             .fragmentSpread => |sfs| {
-                                if (fragments.get(sfs.name)) |f_def| {
-                                    for (f_def.selectionSet) |f_sel| {
-                                        if (f_sel == .field) {
-                                            const sf = f_sel.field;
-                                            const sv = try self.resolveField(arena, nested_type, sf, std.json.Value{ .object = sub_obj }, variables, fragments, userCtx);
-                                            const out_name = sf.alias orelse sf.name;
-                                            try out_obj.put(arena, out_name, sv);
+                                if (fragments.get(sfs.name)) |fDef| {
+                                    for (fDef.selectionSet) |fSel| {
+                                        if (fSel == .field) {
+                                            const sf = fSel.field;
+                                            const sv = try self.resolveField(arena, nestedType, sf, std.json.Value{ .object = subObj }, variables, fragments, userCtx);
+                                            const outName = sf.alias orelse sf.name;
+                                            try outObj.put(arena, outName, sv);
                                         }
                                     }
                                 }
                             },
                             .inlineFragment => |inf| {
-                                for (inf.selectionSet) |inf_sel| {
-                                    if (inf_sel == .field) {
-                                        const sf = inf_sel.field;
-                                        const sv = try self.resolveField(arena, nested_type, sf, std.json.Value{ .object = sub_obj }, variables, fragments, userCtx);
-                                        const out_name = sf.alias orelse sf.name;
-                                        try out_obj.put(arena, out_name, sv);
+                                for (inf.selectionSet) |infSel| {
+                                    if (infSel == .field) {
+                                        const sf = infSel.field;
+                                        const sv = try self.resolveField(arena, nestedType, sf, std.json.Value{ .object = subObj }, variables, fragments, userCtx);
+                                        const outName = sf.alias orelse sf.name;
+                                        try outObj.put(arena, outName, sv);
                                     }
                                 }
                             },
                         }
                     }
-                    return std.json.Value{ .object = out_obj };
+                    return std.json.Value{ .object = outObj };
                 },
                 .array => |arr| {
-                    var out_arr = std.json.Array.init(arena);
+                    var outArr = std.json.Array.init(arena);
                     for (arr.items) |elem| {
                         if (elem == .object) {
-                            var elem_obj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
+                            var elemObj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
                             for (field.selectionSet) |sel| {
                                 if (sel == .field) {
                                     const sf = sel.field;
-                                    const sv = try self.resolveField(arena, nested_type, sf, elem, variables, fragments, userCtx);
-                                    const out_name = sf.alias orelse sf.name;
-                                    try elem_obj.put(arena, out_name, sv);
+                                    const sv = try self.resolveField(arena, nestedType, sf, elem, variables, fragments, userCtx);
+                                    const outName = sf.alias orelse sf.name;
+                                    try elemObj.put(arena, outName, sv);
                                 }
                             }
-                            try out_arr.append(std.json.Value{ .object = elem_obj });
+                            try outArr.append(std.json.Value{ .object = elemObj });
                         } else {
-                            try out_arr.append(elem);
+                            try outArr.append(elem);
                         }
                     }
-                    return std.json.Value{ .array = out_arr };
+                    return std.json.Value{ .array = outArr };
                 },
-                else => return resolved_value,
+                else => return resolvedValue,
             }
         }
 
-        return resolved_value;
+        return resolvedValue;
     }
 
     fn findType(self: *const Schema, name: []const u8) ?ObjectTypeDef {
@@ -321,9 +321,9 @@ pub const Schema = struct {
 
     fn evaluateValue(self: *const Schema, arena: Allocator, val: ast.Value, variables: std.json.Value) std.json.Value {
         return switch (val) {
-            .variable => |v_name| {
+            .variable => |vName| {
                 if (variables == .object) {
-                    return variables.object.get(v_name) orelse .null;
+                    return variables.object.get(vName) orelse .null;
                 }
                 return .null;
             },
@@ -352,111 +352,111 @@ pub const Schema = struct {
 
     fn resolveSchemaIntrospection(self: *const Schema, arena: Allocator, field: ast.Field) !std.json.Value {
         _ = field;
-        var s_obj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
-        var q_type = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
-        try q_type.put(arena, "name", std.json.Value{ .string = self.config.query.name });
-        try s_obj.put(arena, "queryType", std.json.Value{ .object = q_type });
+        var sObj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
+        var qType = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
+        try qType.put(arena, "name", std.json.Value{ .string = self.config.query.name });
+        try sObj.put(arena, "queryType", std.json.Value{ .object = qType });
 
         if (self.config.mutation) |m| {
-            var m_type = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
-            try m_type.put(arena, "name", std.json.Value{ .string = m.name });
-            try s_obj.put(arena, "mutationType", std.json.Value{ .object = m_type });
+            var mType = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
+            try mType.put(arena, "name", std.json.Value{ .string = m.name });
+            try sObj.put(arena, "mutationType", std.json.Value{ .object = mType });
         } else {
-            try s_obj.put(arena, "mutationType", .null);
+            try sObj.put(arena, "mutationType", .null);
         }
 
-        try s_obj.put(arena, "subscriptionType", .null);
-        try s_obj.put(arena, "directives", std.json.Value{ .array = std.json.Array.init(arena) });
+        try sObj.put(arena, "subscriptionType", .null);
+        try sObj.put(arena, "directives", std.json.Value{ .array = std.json.Array.init(arena) });
 
-        var types_list = std.json.Array.init(arena);
+        var typesList = std.json.Array.init(arena);
 
         // Add standard built-in scalar types (Int, Float, String, Boolean, ID)
-        for ([_][]const u8{ "Int", "Float", "String", "Boolean", "ID" }) |scalar_name| {
-            var sc_obj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
-            try sc_obj.put(arena, "kind", std.json.Value{ .string = "SCALAR" });
-            try sc_obj.put(arena, "name", std.json.Value{ .string = scalar_name });
-            try sc_obj.put(arena, "description", .null);
-            try sc_obj.put(arena, "fields", .null);
-            try sc_obj.put(arena, "interfaces", .null);
-            try sc_obj.put(arena, "possibleTypes", .null);
-            try sc_obj.put(arena, "enumValues", .null);
-            try sc_obj.put(arena, "inputFields", .null);
-            try sc_obj.put(arena, "ofType", .null);
-            try types_list.append(std.json.Value{ .object = sc_obj });
+        for ([_][]const u8{ "Int", "Float", "String", "Boolean", "ID" }) |scalarName| {
+            var scObj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
+            try scObj.put(arena, "kind", std.json.Value{ .string = "SCALAR" });
+            try scObj.put(arena, "name", std.json.Value{ .string = scalarName });
+            try scObj.put(arena, "description", .null);
+            try scObj.put(arena, "fields", .null);
+            try scObj.put(arena, "interfaces", .null);
+            try scObj.put(arena, "possibleTypes", .null);
+            try scObj.put(arena, "enumValues", .null);
+            try scObj.put(arena, "inputFields", .null);
+            try scObj.put(arena, "ofType", .null);
+            try typesList.append(std.json.Value{ .object = scObj });
         }
 
         // Add Query type
-        try types_list.append(try self.formatIntrospectionType(arena, self.config.query));
+        try typesList.append(try self.formatIntrospectionType(arena, self.config.query));
 
         // Add Mutation type if present
         if (self.config.mutation) |m| {
-            try types_list.append(try self.formatIntrospectionType(arena, m));
+            try typesList.append(try self.formatIntrospectionType(arena, m));
         }
 
         // Add user types
         for (self.config.types) |t| {
-            try types_list.append(try self.formatIntrospectionType(arena, t));
+            try typesList.append(try self.formatIntrospectionType(arena, t));
         }
 
-        try s_obj.put(arena, "types", std.json.Value{ .array = types_list });
-        return std.json.Value{ .object = s_obj };
+        try sObj.put(arena, "types", std.json.Value{ .array = typesList });
+        return std.json.Value{ .object = sObj };
     }
 
     fn formatIntrospectionType(self: *const Schema, arena: Allocator, obj: ObjectTypeDef) !std.json.Value {
         _ = self;
-        var t_obj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
-        try t_obj.put(arena, "kind", std.json.Value{ .string = "OBJECT" });
-        try t_obj.put(arena, "name", std.json.Value{ .string = obj.name });
+        var tObj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
+        try tObj.put(arena, "kind", std.json.Value{ .string = "OBJECT" });
+        try tObj.put(arena, "name", std.json.Value{ .string = obj.name });
         if (obj.description) |d| {
-            try t_obj.put(arena, "description", std.json.Value{ .string = d });
+            try tObj.put(arena, "description", std.json.Value{ .string = d });
         } else {
-            try t_obj.put(arena, "description", .null);
+            try tObj.put(arena, "description", .null);
         }
 
-        var fields_list = std.json.Array.init(arena);
+        var fieldsList = std.json.Array.init(arena);
         for (obj.fields) |f| {
-            var f_map = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
-            try f_map.put(arena, "name", std.json.Value{ .string = f.name });
+            var fMap = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
+            try fMap.put(arena, "name", std.json.Value{ .string = f.name });
             if (f.description) |fd| {
-                try f_map.put(arena, "description", std.json.Value{ .string = fd });
+                try fMap.put(arena, "description", std.json.Value{ .string = fd });
             } else {
-                try f_map.put(arena, "description", .null);
+                try fMap.put(arena, "description", .null);
             }
-            try f_map.put(arena, "isDeprecated", std.json.Value{ .bool = false });
-            try f_map.put(arena, "deprecationReason", .null);
+            try fMap.put(arena, "isDeprecated", std.json.Value{ .bool = false });
+            try fMap.put(arena, "deprecationReason", .null);
 
             var typeRef = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
             try typeRef.put(arena, "kind", std.json.Value{ .string = "SCALAR" });
             try typeRef.put(arena, "name", std.json.Value{ .string = f.typeName });
             try typeRef.put(arena, "ofType", .null);
-            try f_map.put(arena, "type", std.json.Value{ .object = typeRef });
+            try fMap.put(arena, "type", std.json.Value{ .object = typeRef });
 
-            try f_map.put(arena, "args", std.json.Value{ .array = std.json.Array.init(arena) });
-            try fields_list.append(std.json.Value{ .object = f_map });
+            try fMap.put(arena, "args", std.json.Value{ .array = std.json.Array.init(arena) });
+            try fieldsList.append(std.json.Value{ .object = fMap });
         }
-        try t_obj.put(arena, "fields", std.json.Value{ .array = fields_list });
-        try t_obj.put(arena, "interfaces", std.json.Value{ .array = std.json.Array.init(arena) });
-        try t_obj.put(arena, "possibleTypes", .null);
-        try t_obj.put(arena, "enumValues", .null);
-        try t_obj.put(arena, "inputFields", .null);
-        try t_obj.put(arena, "ofType", .null);
+        try tObj.put(arena, "fields", std.json.Value{ .array = fieldsList });
+        try tObj.put(arena, "interfaces", std.json.Value{ .array = std.json.Array.init(arena) });
+        try tObj.put(arena, "possibleTypes", .null);
+        try tObj.put(arena, "enumValues", .null);
+        try tObj.put(arena, "inputFields", .null);
+        try tObj.put(arena, "ofType", .null);
 
-        return std.json.Value{ .object = t_obj };
+        return std.json.Value{ .object = tObj };
     }
 
     fn formatError(self: *const Schema, arena: Allocator, msg: []const u8) ![]u8 {
         _ = self;
-        var err_obj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
-        try err_obj.put(arena, "message", std.json.Value{ .string = msg });
+        var errObj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
+        try errObj.put(arena, "message", std.json.Value{ .string = msg });
 
-        var errs_list = std.json.Array.init(arena);
-        try errs_list.append(std.json.Value{ .object = err_obj });
+        var errsList = std.json.Array.init(arena);
+        try errsList.append(std.json.Value{ .object = errObj });
 
-        var res_obj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
-        try res_obj.put(arena, "errors", std.json.Value{ .array = errs_list });
+        var resObj = std.json.ObjectMap.init(arena, &.{}, &.{}) catch unreachable;
+        try resObj.put(arena, "errors", std.json.Value{ .array = errsList });
 
         var out: std.Io.Writer.Allocating = .init(arena);
-        try std.json.fmt(std.json.Value{ .object = res_obj }, .{}).format(&out.writer);
+        try std.json.fmt(std.json.Value{ .object = resObj }, .{}).format(&out.writer);
         return out.toOwnedSlice();
     }
 };

@@ -1,7 +1,7 @@
 # Transfer Progress
 
 Download progress with percentage, speed, ETA, and cancellation. See
-`examples/download_custom_progress.zig`.
+`examples/downloadCustomProgress.zig`.
 
 ```zig
 const Observer = struct {

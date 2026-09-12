@@ -12,23 +12,23 @@ const Allocator = std.mem.Allocator;
 pub const TokenKind = enum {
     eof,
     name,
-    int_value,
-    float_value,
-    string_value,
-    punctuator_bang, // !
-    punctuator_dollar, // $
-    punctuator_amp, // &
-    punctuator_paren_l, // (
-    punctuator_paren_r, // )
-    punctuator_spread, // ...
-    punctuator_colon, // :
-    punctuator_equals, // =
-    punctuator_at, // @
-    punctuator_bracket_l, // [
-    punctuator_bracket_r, // ]
-    punctuator_brace_l, // {
-    punctuator_pipe, // |
-    punctuator_brace_r, // }
+    intValue,
+    floatValue,
+    stringValue,
+    punctuatorBang, // !
+    punctuatorDollar, // $
+    punctuatorAmp, // &
+    punctuatorParenL, // (
+    punctuatorParenR, // )
+    punctuatorSpread, // ...
+    punctuatorColon, // :
+    punctuatorEquals, // =
+    punctuatorAt, // @
+    punctuatorBracketL, // [
+    punctuatorBracketR, // ]
+    punctuatorBraceL, // {
+    punctuatorPipe, // |
+    punctuatorBraceR, // }
 };
 
 pub const Token = struct {

@@ -5,7 +5,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const router_mod = @import("../router/router.zig");
+const routerMod = @import("../router/router.zig");
 
 pub const Credentials = struct {
     username: []const u8,
@@ -48,11 +48,11 @@ pub fn parse(headerValue: []const u8, decoded: []u8) ParseError!Credentials {
 
 /// Builds a "Basic <base64(user:pass)>" header value into `buf`.
 pub fn encodeHeaderValue(buf: []u8, username: []const u8, password: []const u8) []const u8 {
-    var payload_buf: [512]u8 = undefined;
-    const payload = std.fmt.bufPrint(&payload_buf, "{s}:{s}", .{ username, password }) catch return "";
+    var payloadBuf: [512]u8 = undefined;
+    const payload = std.fmt.bufPrint(&payloadBuf, "{s}:{s}", .{ username, password }) catch return "";
     const enc = std.base64.standard.Encoder;
-    var b64_buf: [700]u8 = undefined;
-    const b64 = enc.encode(&b64_buf, payload);
+    var b64Buf: [700]u8 = undefined;
+    const b64 = enc.encode(&b64Buf, payload);
     return std.fmt.bufPrint(buf, "Basic {s}", .{b64}) catch "";
 }
 
@@ -66,10 +66,10 @@ pub fn ctEql(a: []const u8, b: []const u8) bool {
 
 /// Constant-time credential verification against expected values.
 pub fn verify(creds: Credentials, expectUser: []const u8, expectPass: []const u8) bool {
-    const user_ok = ctEql(creds.username, expectUser);
+    const userOk = ctEql(creds.username, expectUser);
     // Compare both always to keep timing uniform on user mismatch.
-    const pass_ok = ctEql(creds.password, expectPass);
-    return user_ok and pass_ok;
+    const passOk = ctEql(creds.password, expectPass);
+    return userOk and passOk;
 }
 
 // Tests

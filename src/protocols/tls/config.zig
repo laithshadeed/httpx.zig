@@ -23,7 +23,7 @@ pub const TrustStore = trustMod.TrustStore;
 pub const TrustMode = trustMod.TrustMode;
 pub const TlsError = errorsMod.TlsError;
 
-const fs_mod = @import("../../utils/fs.zig");
+const fsMod = @import("../../utils/fs.zig");
 
 pub const TlsVersion = enum {
     tls12,
@@ -91,30 +91,30 @@ pub const ServerConfig = struct {
 
     /// Loads certificate and private key from PEM buffers or file paths.
     pub fn loadCertificates(self: *ServerConfig, certPemOrPath: []const u8, keyPemOrPath: []const u8) !void {
-        var cert_buf: ?[]u8 = null;
-        defer if (cert_buf) |b| self.allocator.free(b);
+        var certBuf: ?[]u8 = null;
+        defer if (certBuf) |b| self.allocator.free(b);
         const certData = if (std.mem.indexOf(u8, certPemOrPath, "-----BEGIN") != null)
             certPemOrPath
         else blk: {
-            cert_buf = try fs_mod.readFileLimited(self.allocator, certPemOrPath, 10 * 1024 * 1024);
-            break :blk cert_buf.?;
+            certBuf = try fsMod.readFileLimited(self.allocator, certPemOrPath, 10 * 1024 * 1024);
+            break :blk certBuf.?;
         };
 
-        var key_buf: ?[]u8 = null;
-        defer if (key_buf) |b| {
+        var keyBuf: ?[]u8 = null;
+        defer if (keyBuf) |b| {
             std.crypto.secureZero(u8, b);
             self.allocator.free(b);
         };
-        const key_data = if (std.mem.indexOf(u8, keyPemOrPath, "-----BEGIN") != null)
+        const keyData = if (std.mem.indexOf(u8, keyPemOrPath, "-----BEGIN") != null)
             keyPemOrPath
         else blk: {
-            key_buf = try fs_mod.readFileLimited(self.allocator, keyPemOrPath, 10 * 1024 * 1024);
-            break :blk key_buf.?;
+            keyBuf = try fsMod.readFileLimited(self.allocator, keyPemOrPath, 10 * 1024 * 1024);
+            break :blk keyBuf.?;
         };
 
         self.certChain = try certMod.parseCertificateChainPem(self.allocator, certData);
-        const parsed_key = try keyMod.parsePrivateKeyPem(self.allocator, key_data);
-        self.privateKeyDer = parsed_key.der;
+        const parsedKey = try keyMod.parsePrivateKeyPem(self.allocator, keyData);
+        self.privateKeyDer = parsedKey.der;
     }
 
     /// Returns true if server identity (certificate + private key) is loaded.

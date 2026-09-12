@@ -1,7 +1,7 @@
 # HTTP/3 Advanced Example
 
 QPACK stream instructions, QUIC stream cancellation frames, and transport
-parameters. See `examples/http3_quic.zig`.
+parameters. See `examples/http3Quic.zig`.
 
 ```zig
 var clientConn = httpx.http3.Connection.init(allocator, .client);

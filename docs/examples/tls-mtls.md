@@ -1,7 +1,7 @@
 # TLS Mutual Authentication (mTLS)
 
 The server requests and enforces client certificates; only clients with
-a trusted certificate complete the handshake. See `examples/tls_mtls.zig`,
+a trusted certificate complete the handshake. See `examples/tlsMtls.zig`,
 which runs the whole flow over loopback through the high-level API:
 `client.get(url, .{ .tls = .{ .clientCertPem, .clientKeyPem } })`
 performs HTTPS over mTLS, then a cert-less request is rejected during

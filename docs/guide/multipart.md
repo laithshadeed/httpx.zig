@@ -66,7 +66,7 @@ pub fn main() !void {
 
 | Method | Description |
 |--------|-------------|
-| `init(allocator)` / `initWithSubtype(allocator, subtype)` | Create builder (boundary auto-generated; override with `setBoundary`) |
+| `init(allocator, subtype)` | Create builder (boundary auto-generated; override with `setBoundary`) |
 | `field(name, value)` | Append a text form field |
 | `file(name, data, .{ .filename, .contentType, ... })` | Append a file upload part |
 | `encodeAlloc()` | Finalize and return the complete body (caller owns) |
@@ -111,7 +111,7 @@ for (fields) |part| {
 }
 ```
 
-Use `Limits` presets (`.strict` / `.relaxed`, or `Parser.initWithLimits`) to
+Use `Limits` presets (`.strict` / `.relaxed`, or `Parser.init(allocator, limits)`) to
 bound part counts, header sizes, and body sizes.
 
 ### `Field` fields

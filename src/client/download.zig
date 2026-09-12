@@ -362,7 +362,7 @@ pub const Hasher = struct {
 const FileOps = struct {
     const isWin = builtin.os.tag == .windows;
 
-    pub const Handle = if (isWin) std.os.windows.HANDLE else std.posix.fd_t;
+    pub const Handle = if (isWin) std.os.windows.HANDLE else std.posix.fdT;
     pub const invalidHandle: Handle = if (isWin) std.os.windows.INVALID_HANDLE_VALUE else -1;
 
     pub fn createTruncate(path: []const u8) ?Handle {
@@ -394,7 +394,7 @@ const FileOps = struct {
             if (path.len >= nullTerm.len) return null;
             @memcpy(nullTerm[0..path.len], path);
             nullTerm[path.len] = 0;
-            const fd = std.c.open(&nullTerm, .{ .ACCMODE = .RDWR, .CREAT = true }, @as(std.c.mode_t, 0o644));
+            const fd = std.c.open(&nullTerm, .{ .ACCMODE = .RDWR, .CREAT = true }, @as(std.c.modeT, 0o644));
             if (fd < 0) return null;
             return fd;
         }
@@ -623,7 +623,7 @@ pub fn sanitizeFilename(name: []const u8) []const u8 {
     // Get the base filename
     s = std.fs.path.basename(s);
 
-    // If completely empty or dot, default to downloaded_file
+    // If completely empty or dot, default to downloadedFile
     if (s.len == 0 or std.mem.eql(u8, s, ".") or std.mem.eql(u8, s, "..")) {
         return "downloaded_file";
     }
@@ -699,16 +699,6 @@ pub const Downloader = struct {
             .allocator = allocator,
             .client = client,
         };
-    }
-
-    /// Queries the remote server via HEAD (or range GET fallback) to inspect metadata,
-    /// file size, remote filename, Content-Type, ETag, Last-Modified, and range support without downloading.
-    pub fn lookupFileInfo(
-        self: *Downloader,
-        url: []const u8,
-        options: DownloadOptions,
-    ) DownloadError!RemoteFileInfo {
-        return lookupFileInfoWithClient(self.client, url, options);
     }
 
     /// Downloads a remote HTTP/HTTPS resource to a local destination file.
@@ -907,7 +897,7 @@ pub const Downloader = struct {
             .headers = customHeaders.items,
             .followRedirects = options.followRedirects,
             .maxRedirects = options.maxRedirects,
-            .timeoutMs = options.timeoutMs orelse 15000,
+            .timeoutMs = options.timeoutMs orelse self.client.config.timeoutMs orelse 15000,
         }) catch |e| switch (e) {
             error.ConnectFailed => return DownloadError.ConnectionFailed,
             error.TooManyRedirects => return DownloadError.TooManyRedirects,
@@ -1170,16 +1160,16 @@ pub const ProgressTracker = struct {
 
     pub fn update(self: *ProgressTracker, downloadedBytes: u64) void {
         const now = clock.millisNow();
-        const elapsed_total_s = @as(f64, @floatFromInt(now - self.startTime)) / 1000.0;
-        const speed_bps = if (elapsed_total_s > 0.01) @as(f64, @floatFromInt(downloadedBytes)) / elapsed_total_s else 0.0;
+        const elapsedTotalS = @as(f64, @floatFromInt(now - self.startTime)) / 1000.0;
+        const speedBps = if (elapsedTotalS > 0.01) @as(f64, @floatFromInt(downloadedBytes)) / elapsedTotalS else 0.0;
 
         var etaS: ?u64 = null;
         var percent: ?f32 = null;
         if (self.totalBytes) |tot| {
             if (tot > 0) {
                 percent = @as(f32, @floatFromInt(downloadedBytes)) / @as(f32, @floatFromInt(tot)) * 100.0;
-                if (speed_bps > 0 and downloadedBytes < tot) {
-                    etaS = @intFromFloat(@as(f64, @floatFromInt(tot - downloadedBytes)) / speed_bps);
+                if (speedBps > 0 and downloadedBytes < tot) {
+                    etaS = @intFromFloat(@as(f64, @floatFromInt(tot - downloadedBytes)) / speedBps);
                 }
             }
         }
@@ -1197,7 +1187,7 @@ pub const ProgressTracker = struct {
                 .downloadedBytes = downloadedBytes,
                 .totalBytes = self.totalBytes,
                 .percentage = percent,
-                .speedBps = speed_bps,
+                .speedBps = speedBps,
                 .etaSeconds = etaS,
                 .elapsedMs = @intCast(@max(0, now - self.startTime)),
                 .statusCode = 200,
@@ -1207,17 +1197,17 @@ pub const ProgressTracker = struct {
     }
 
     pub fn finish(self: *ProgressTracker) void {
-        const final_bytes = if (self.totalBytes) |tot| tot else self.lastBytes;
+        const finalBytes = if (self.totalBytes) |tot| tot else self.lastBytes;
         if (self.bar) |*b| {
-            b.setProgress(final_bytes);
+            b.setProgress(finalBytes);
             b.finish(.{ .clear = false, .newline = true });
         }
         if (self.options.onProgress) |cb| {
             cb(.{
                 .url = self.url,
                 .destination = self.destination,
-                .downloadedBytes = final_bytes,
-                .totalBytes = self.totalBytes orelse final_bytes,
+                .downloadedBytes = finalBytes,
+                .totalBytes = self.totalBytes orelse finalBytes,
                 .percentage = 100.0,
                 .speedBps = 0.0,
                 .etaSeconds = 0,
@@ -1288,12 +1278,12 @@ pub fn updateFile(
     var dl = Downloader.init(allocator, client);
 
     const targetPath = options.path;
-    const temp_target = std.fmt.allocPrint(allocator, "{s}.update-tmp", .{targetPath}) catch return DownloadError.OutOfMemory;
-    defer allocator.free(temp_target);
+    const tempTarget = std.fmt.allocPrint(allocator, "{s}.update-tmp", .{targetPath}) catch return DownloadError.OutOfMemory;
+    defer allocator.free(tempTarget);
 
     // 1. Download to temporary file
     const res = try dl.download(url, .{
-        .path = temp_target,
+        .path = tempTarget,
         .verify = options.verify,
         .progress = options.progress,
         .atomic = true,
@@ -1312,16 +1302,16 @@ pub fn updateFile(
     defer if (backupPath) |bp| allocator.free(bp);
 
     // 3. Atomically replace target with verified new file
-    if (!FileOps.renameFile(temp_target, targetPath)) {
+    if (!FileOps.renameFile(tempTarget, targetPath)) {
         return DownloadError.FileRenameFailed;
     }
 
-    var final_res = res;
-    const len = @min(targetPath.len, final_res.destinationBuf.len);
-    @memcpy(final_res.destinationBuf[0..len], targetPath[0..len]);
-    final_res.destinationLen = len;
-    final_res.destination = final_res.destinationBuf[0..len];
-    return final_res;
+    var finalRes = res;
+    const len = @min(targetPath.len, finalRes.destinationBuf.len);
+    @memcpy(finalRes.destinationBuf[0..len], targetPath[0..len]);
+    finalRes.destinationLen = len;
+    finalRes.destination = finalRes.destinationBuf[0..len];
+    return finalRes;
 }
 
 // FTP Download Helper
@@ -1354,7 +1344,7 @@ pub fn ftpDownload(
     const dest = resolveDestination(allocator, options.destinationPath, options.remotePath, null) catch return DownloadError.OutOfMemory;
     defer allocator.free(dest);
 
-    var ftp = ftpClientMod.Client.connectWithAlloc(allocator, .{
+    var ftp = ftpClientMod.Client.connect(allocator, .{
         .host = options.host,
         .port = options.port,
         .user = options.user,
@@ -1370,7 +1360,7 @@ pub fn ftpDownload(
         else => return DownloadError.AuthenticationFailed,
     };
 
-    const remote_size = ftp.size(options.remotePath) catch null;
+    const remoteSize = ftp.size(options.remotePath) catch null;
 
     var threaded: std.Io.Threaded = .init_single_threaded;
     var tracker = ProgressTracker.init(allocator, threaded.io(), options.remotePath, dest, .{
@@ -1378,12 +1368,12 @@ pub fn ftpDownload(
         .verify = options.verify,
     });
     defer tracker.deinit();
-    tracker.start(remote_size);
+    tracker.start(remoteSize);
 
-    const temp_dest = if (options.atomic) try std.fmt.allocPrint(allocator, "{s}.ftp-part", .{dest}) else try allocator.dupe(u8, dest);
-    defer allocator.free(temp_dest);
+    const tempDest = if (options.atomic) try std.fmt.allocPrint(allocator, "{s}.ftp-part", .{dest}) else try allocator.dupe(u8, dest);
+    defer allocator.free(tempDest);
 
-    const fileHandle = FileOps.createTruncate(temp_dest) orelse return DownloadError.FileCreateFailed;
+    const fileHandle = FileOps.createTruncate(tempDest) orelse return DownloadError.FileCreateFailed;
     defer FileOps.close(fileHandle);
 
     var hasher = Hasher.init(options.verify);
@@ -1415,27 +1405,27 @@ pub fn ftpDownload(
 
     ftp.download(options.remotePath, &ctx, Context.sink) catch |e| {
         tracker.fail();
-        if (options.atomic) _ = FileOps.deleteFile(temp_dest);
+        if (options.atomic) _ = FileOps.deleteFile(tempDest);
         if (e == ftpClientMod.FtpError.ConnectFailed) return DownloadError.ConnectionFailed;
         return DownloadError.HttpError;
     };
 
     hasher.verify(options.verify) catch |err| {
         tracker.fail();
-        if (options.atomic) _ = FileOps.deleteFile(temp_dest);
+        if (options.atomic) _ = FileOps.deleteFile(tempDest);
         return err;
     };
 
     tracker.finish();
 
     if (options.atomic) {
-        if (!FileOps.renameFile(temp_dest, dest)) return DownloadError.FileRenameFailed;
+        if (!FileOps.renameFile(tempDest, dest)) return DownloadError.FileRenameFailed;
     }
 
     return .{
         .destination = dest,
         .downloadedBytes = ctx.written,
-        .totalBytes = remote_size,
+        .totalBytes = remoteSize,
         .elapsedMs = @intCast(clock.millisNow() - startTime),
         .statusCode = 226,
         .verified = true,
@@ -1449,16 +1439,8 @@ pub fn lookupFileInfo(
     url: []const u8,
     options: DownloadOptions,
 ) DownloadError!RemoteFileInfo {
-    return lookupFileInfoWithClient(client, url, options);
-}
-
-pub fn lookupFileInfoWithClient(
-    client: *Client,
-    url: []const u8,
-    options: DownloadOptions,
-) DownloadError!RemoteFileInfo {
     // 1. Try HEAD request first with Connection: close and sensible timeout
-    const defaultTimeout: u64 = options.timeoutMs orelse 15000;
+    const defaultTimeout: u64 = options.timeoutMs orelse client.config.timeoutMs orelse 15000;
     var headHeaders: std.ArrayList(Header) = .empty;
     defer headHeaders.deinit(client.allocator);
     for (options.headers) |h| {
@@ -1466,7 +1448,7 @@ pub fn lookupFileInfoWithClient(
     }
     headHeaders.append(client.allocator, .{ .name = "Connection", .value = "close" }) catch return DownloadError.OutOfMemory;
 
-    var head_resp = client.head(url, .{
+    var headResp = client.head(url, .{
         .headers = headHeaders.items,
         .followRedirects = options.followRedirects,
         .maxRedirects = options.maxRedirects,
@@ -1476,10 +1458,10 @@ pub fn lookupFileInfoWithClient(
         error.TooManyRedirects => return DownloadError.TooManyRedirects,
         else => return DownloadError.HttpError,
     };
-    defer head_resp.deinit();
+    defer headResp.deinit();
 
-    if (head_resp.status != 405 and head_resp.status != 501) {
-        return parseRemoteFileInfo(url, head_resp.status, head_resp.headers);
+    if (headResp.status != 405 and headResp.status != 501) {
+        return parseRemoteFileInfo(url, headResp.status, headResp.headers);
     }
 
     // 2. Fallback to GET with Range: bytes=0-0 if HEAD method is not allowed
@@ -1491,7 +1473,7 @@ pub fn lookupFileInfoWithClient(
     getHeaders.append(client.allocator, .{ .name = "Range", .value = "bytes=0-0" }) catch return DownloadError.OutOfMemory;
     getHeaders.append(client.allocator, .{ .name = "Connection", .value = "close" }) catch return DownloadError.OutOfMemory;
 
-    var get_resp = client.get(url, .{
+    var getResp = client.get(url, .{
         .headers = getHeaders.items,
         .followRedirects = options.followRedirects,
         .maxRedirects = options.maxRedirects,
@@ -1501,9 +1483,9 @@ pub fn lookupFileInfoWithClient(
         error.TooManyRedirects => return DownloadError.TooManyRedirects,
         else => return DownloadError.HttpError,
     };
-    defer get_resp.deinit();
+    defer getResp.deinit();
 
-    return parseRemoteFileInfo(url, get_resp.status, get_resp.headers);
+    return parseRemoteFileInfo(url, getResp.status, getResp.headers);
 }
 
 fn parseRemoteFileInfo(sourceUrl: []const u8, status: u16, headers: []const Header) RemoteFileInfo {
@@ -1521,10 +1503,10 @@ fn parseRemoteFileInfo(sourceUrl: []const u8, status: u16, headers: []const Head
         if (std.ascii.eqlIgnoreCase(h.name, "Content-Length")) {
             info.fileSize = std.fmt.parseInt(u64, std.mem.trim(u8, h.value, " \t"), 10) catch null;
         } else if (std.ascii.eqlIgnoreCase(h.name, "Content-Range")) {
-            if (std.mem.lastIndexOfScalar(u8, h.value, '/')) |slash_idx| {
-                const total_part = std.mem.trim(u8, h.value[slash_idx + 1 ..], " \t");
-                if (!std.mem.eql(u8, total_part, "*")) {
-                    if (std.fmt.parseInt(u64, total_part, 10)) |tot| {
+            if (std.mem.lastIndexOfScalar(u8, h.value, '/')) |slashIdx| {
+                const totalPart = std.mem.trim(u8, h.value[slashIdx + 1 ..], " \t");
+                if (!std.mem.eql(u8, totalPart, "*")) {
+                    if (std.fmt.parseInt(u64, totalPart, 10)) |tot| {
                         info.fileSize = tot;
                     } else |_| {}
                 }
@@ -1560,8 +1542,8 @@ fn parseRemoteFileInfo(sourceUrl: []const u8, status: u16, headers: []const Head
 
     var fname: []const u8 = "downloaded_file";
     if (contentDisposition) |cd| {
-        if (extractFilenameFromContentDisposition(cd)) |cd_name| {
-            fname = sanitizeFilename(cd_name);
+        if (extractFilenameFromContentDisposition(cd)) |cdName| {
+            fname = sanitizeFilename(cdName);
         } else {
             fname = sanitizeFilename(sourceUrl);
         }

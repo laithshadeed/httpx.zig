@@ -30,8 +30,8 @@ fn createUser(ctx: *httpx.Context) anyerror!httpx.Response {
 }
 ```
 
-See `examples/custom_headers.zig`, `examples/custom_responses.zig`, and
-`examples/custom_server.zig`.
+See `examples/customHeaders.zig`, `examples/customResponses.zig`, and
+`examples/customServer.zig`.
 
 ## Run
 

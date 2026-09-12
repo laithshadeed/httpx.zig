@@ -1,6 +1,6 @@
 # Example: Auth And Errors
 
-Demonstrates auth_and_errors.zig using the canonical HTTPX API.
+Demonstrates authAndErrors.zig using the canonical HTTPX API.
 
 ## Complete Example
 

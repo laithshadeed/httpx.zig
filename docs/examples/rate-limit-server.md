@@ -1,6 +1,6 @@
 # Example: Rate Limit Server
 
-Demonstrates rate_limit_server.zig using the canonical HTTPX API.
+Demonstrates rateLimitServer.zig using the canonical HTTPX API.
 
 ## Complete Example
 

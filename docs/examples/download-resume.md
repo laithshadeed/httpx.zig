@@ -1,6 +1,6 @@
 # Example: Download Resume
 
-Demonstrates download_resume.zig using the canonical HTTPX API.
+Demonstrates downloadResume.zig using the canonical HTTPX API.
 
 ## Complete Example
 

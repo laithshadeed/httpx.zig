@@ -21,18 +21,18 @@ const NO_NODE = dom.NO_NODE;
 pub const HtmlTree = ts.Tree;
 pub const HtmlNode = ts.Node;
 
-const html_sym_end: u16 = 0;
-const html_sym_open_tag: u16 = 1;
-const html_sym_close_tag: u16 = 2;
-const html_sym_selfclose_tag: u16 = 3;
-const html_sym_comment: u16 = 4;
-const html_sym_doctype: u16 = 5;
-const html_sym_pi: u16 = 6;
-const html_sym_text: u16 = 7;
-const html_sym_program: u16 = 8;
-const html_sym_nodes: u16 = 9;
-const html_sym_node: u16 = 10;
-const html_sym_error: u16 = 11;
+const htmlSymEnd: u16 = 0;
+const htmlSymOpenTag: u16 = 1;
+const htmlSymCloseTag: u16 = 2;
+const htmlSymSelfcloseTag: u16 = 3;
+const htmlSymComment: u16 = 4;
+const htmlSymDoctype: u16 = 5;
+const htmlSymPi: u16 = 6;
+const htmlSymText: u16 = 7;
+const htmlSymProgram: u16 = 8;
+const htmlSymNodes: u16 = 9;
+const htmlSymNode: u16 = 10;
+const htmlSymError: u16 = 11;
 
 fn isHtmlTagChar(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == ':' or c == '.';
@@ -50,16 +50,16 @@ fn matchHtmlOpenTag(source: []const u8, start: usize) ?usize {
     if (c1 == '/' or c1 == '!' or c1 == '?') return null;
     if (!std.ascii.isAlphabetic(c1)) return null;
     var i = start + 1 + matchHtmlTagName(source, start + 1);
-    var in_quote: u8 = 0;
+    var inQuote: u8 = 0;
     while (i < source.len) {
         const c = source[i];
-        if (in_quote != 0) {
-            if (c == in_quote) in_quote = 0;
+        if (inQuote != 0) {
+            if (c == inQuote) inQuote = 0;
             i += 1;
             continue;
         }
         if (c == '"' or c == '\'') {
-            in_quote = c;
+            inQuote = c;
             i += 1;
             continue;
         }
@@ -76,9 +76,9 @@ fn matchHtmlCloseTag(source: []const u8, start: usize) ?usize {
     if (start + 3 > source.len or source[start] != '<' or source[start + 1] != '/') return null;
     var i = start + 2;
     while (i < source.len and (source[i] == ' ' or source[i] == '\t' or source[i] == '\r' or source[i] == '\n')) : (i += 1) {}
-    const name_len = matchHtmlTagName(source, i);
-    if (name_len == 0) return null;
-    i += name_len;
+    const nameLen = matchHtmlTagName(source, i);
+    if (nameLen == 0) return null;
+    i += nameLen;
     while (i < source.len and (source[i] == ' ' or source[i] == '\t' or source[i] == '\r' or source[i] == '\n')) : (i += 1) {}
     if (i >= source.len or source[i] != '>') return null;
     return i + 1 - start;
@@ -90,16 +90,16 @@ fn matchHtmlSelfCloseTag(source: []const u8, start: usize) ?usize {
     if (c1 == '/' or c1 == '!' or c1 == '?') return null;
     if (!std.ascii.isAlphabetic(c1)) return null;
     var i = start + 1 + matchHtmlTagName(source, start + 1);
-    var in_quote: u8 = 0;
+    var inQuote: u8 = 0;
     while (i < source.len) {
         const c = source[i];
-        if (in_quote != 0) {
-            if (c == in_quote) in_quote = 0;
+        if (inQuote != 0) {
+            if (c == inQuote) inQuote = 0;
             i += 1;
             continue;
         }
         if (c == '"' or c == '\'') {
-            in_quote = c;
+            inQuote = c;
             i += 1;
             continue;
         }
@@ -121,16 +121,16 @@ fn matchHtmlDoctype(source: []const u8, start: usize) ?usize {
     if (start + 2 > source.len or source[start] != '<' or source[start + 1] != '!') return null;
     if (start + 4 <= source.len and std.mem.eql(u8, source[start .. start + 4], "<!--")) return null;
     var i = start + 2;
-    var in_quote: u8 = 0;
+    var inQuote: u8 = 0;
     while (i < source.len) {
         const c = source[i];
-        if (in_quote != 0) {
-            if (c == in_quote) in_quote = 0;
+        if (inQuote != 0) {
+            if (c == inQuote) inQuote = 0;
             i += 1;
             continue;
         }
         if (c == '"' or c == '\'') {
-            in_quote = c;
+            inQuote = c;
             i += 1;
             continue;
         }
@@ -159,178 +159,178 @@ fn matchHtmlText(source: []const u8, start: usize) ?usize {
     return i - start;
 }
 
-const html_symbol_table: []const ts.language_mod.symbols.SymbolInfo = &.{
-    .{ .id = html_sym_end, .name = "end", .kind = .end, .metadata = .{ .visible = false, .named = false } },
-    .{ .id = html_sym_open_tag, .name = "open_tag", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = html_sym_close_tag, .name = "close_tag", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = html_sym_selfclose_tag, .name = "selfclose_tag", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = html_sym_comment, .name = "comment", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = html_sym_doctype, .name = "doctype", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = html_sym_pi, .name = "pi", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = html_sym_text, .name = "text", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = html_sym_program, .name = "program", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = html_sym_nodes, .name = "nodes", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = html_sym_node, .name = "node", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = html_sym_error, .name = "ERROR", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
+const htmlSymbolTable: []const ts.language_mod.symbols.SymbolInfo = &.{
+    .{ .id = htmlSymEnd, .name = "end", .kind = .end, .metadata = .{ .visible = false, .named = false } },
+    .{ .id = htmlSymOpenTag, .name = "open_tag", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = htmlSymCloseTag, .name = "close_tag", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = htmlSymSelfcloseTag, .name = "selfclose_tag", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = htmlSymComment, .name = "comment", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = htmlSymDoctype, .name = "doctype", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = htmlSymPi, .name = "pi", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = htmlSymText, .name = "text", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = htmlSymProgram, .name = "program", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = htmlSymNodes, .name = "nodes", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = htmlSymNode, .name = "node", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = htmlSymError, .name = "ERROR", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
 };
 
-const html_token_matchers: []const ts.language_mod.TokenMatcher = &.{
-    .{ .symbol = html_sym_comment, .match = matchHtmlComment },
-    .{ .symbol = html_sym_doctype, .match = matchHtmlDoctype },
-    .{ .symbol = html_sym_pi, .match = matchHtmlPi },
-    .{ .symbol = html_sym_close_tag, .match = matchHtmlCloseTag },
-    .{ .symbol = html_sym_selfclose_tag, .match = matchHtmlSelfCloseTag },
-    .{ .symbol = html_sym_open_tag, .match = matchHtmlOpenTag },
-    .{ .symbol = html_sym_text, .match = matchHtmlText },
+const htmlTokenMatchers: []const ts.language_mod.TokenMatcher = &.{
+    .{ .symbol = htmlSymComment, .match = matchHtmlComment },
+    .{ .symbol = htmlSymDoctype, .match = matchHtmlDoctype },
+    .{ .symbol = htmlSymPi, .match = matchHtmlPi },
+    .{ .symbol = htmlSymCloseTag, .match = matchHtmlCloseTag },
+    .{ .symbol = htmlSymSelfcloseTag, .match = matchHtmlSelfCloseTag },
+    .{ .symbol = htmlSymOpenTag, .match = matchHtmlOpenTag },
+    .{ .symbol = htmlSymText, .match = matchHtmlText },
 };
 
-const html_s0_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = html_sym_open_tag, .action = .{ .shift = 6 } },
-    .{ .symbol = html_sym_close_tag, .action = .{ .shift = 12 } },
-    .{ .symbol = html_sym_selfclose_tag, .action = .{ .shift = 7 } },
-    .{ .symbol = html_sym_text, .action = .{ .shift = 8 } },
-    .{ .symbol = html_sym_comment, .action = .{ .shift = 9 } },
-    .{ .symbol = html_sym_doctype, .action = .{ .shift = 10 } },
-    .{ .symbol = html_sym_pi, .action = .{ .shift = 11 } },
-    .{ .symbol = html_sym_end, .action = .{ .reduce = .{ .symbol = html_sym_program, .child_count = 0, .production_id = 0 } } },
+const htmlS0Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = htmlSymOpenTag, .action = .{ .shift = 6 } },
+    .{ .symbol = htmlSymCloseTag, .action = .{ .shift = 12 } },
+    .{ .symbol = htmlSymSelfcloseTag, .action = .{ .shift = 7 } },
+    .{ .symbol = htmlSymText, .action = .{ .shift = 8 } },
+    .{ .symbol = htmlSymComment, .action = .{ .shift = 9 } },
+    .{ .symbol = htmlSymDoctype, .action = .{ .shift = 10 } },
+    .{ .symbol = htmlSymPi, .action = .{ .shift = 11 } },
+    .{ .symbol = htmlSymEnd, .action = .{ .reduce = .{ .symbol = htmlSymProgram, .child_count = 0, .production_id = 0 } } },
 };
-const html_s0_gotos: []const ts.language_mod.tables.GotoEntry = &.{
-    .{ .symbol = html_sym_program, .state = 1 },
-    .{ .symbol = html_sym_nodes, .state = 2 },
-    .{ .symbol = html_sym_node, .state = 3 },
+const htmlS0Gotos: []const ts.language_mod.tables.GotoEntry = &.{
+    .{ .symbol = htmlSymProgram, .state = 1 },
+    .{ .symbol = htmlSymNodes, .state = 2 },
+    .{ .symbol = htmlSymNode, .state = 3 },
 };
-const html_s1_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = html_sym_end, .action = .accept },
+const htmlS1Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = htmlSymEnd, .action = .accept },
 };
-const html_s2_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = html_sym_open_tag, .action = .{ .shift = 6 } },
-    .{ .symbol = html_sym_close_tag, .action = .{ .shift = 12 } },
-    .{ .symbol = html_sym_selfclose_tag, .action = .{ .shift = 7 } },
-    .{ .symbol = html_sym_text, .action = .{ .shift = 8 } },
-    .{ .symbol = html_sym_comment, .action = .{ .shift = 9 } },
-    .{ .symbol = html_sym_doctype, .action = .{ .shift = 10 } },
-    .{ .symbol = html_sym_pi, .action = .{ .shift = 11 } },
-    .{ .symbol = html_sym_end, .action = .{ .reduce = .{ .symbol = html_sym_program, .child_count = 1, .production_id = 1 } } },
+const htmlS2Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = htmlSymOpenTag, .action = .{ .shift = 6 } },
+    .{ .symbol = htmlSymCloseTag, .action = .{ .shift = 12 } },
+    .{ .symbol = htmlSymSelfcloseTag, .action = .{ .shift = 7 } },
+    .{ .symbol = htmlSymText, .action = .{ .shift = 8 } },
+    .{ .symbol = htmlSymComment, .action = .{ .shift = 9 } },
+    .{ .symbol = htmlSymDoctype, .action = .{ .shift = 10 } },
+    .{ .symbol = htmlSymPi, .action = .{ .shift = 11 } },
+    .{ .symbol = htmlSymEnd, .action = .{ .reduce = .{ .symbol = htmlSymProgram, .child_count = 1, .production_id = 1 } } },
 };
-const html_s2_gotos: []const ts.language_mod.tables.GotoEntry = &.{
-    .{ .symbol = html_sym_node, .state = 4 },
+const htmlS2Gotos: []const ts.language_mod.tables.GotoEntry = &.{
+    .{ .symbol = htmlSymNode, .state = 4 },
 };
-const html_s3_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = html_sym_open_tag, .action = .{ .reduce = .{ .symbol = html_sym_nodes, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = html_sym_close_tag, .action = .{ .reduce = .{ .symbol = html_sym_nodes, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = html_sym_selfclose_tag, .action = .{ .reduce = .{ .symbol = html_sym_nodes, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = html_sym_comment, .action = .{ .reduce = .{ .symbol = html_sym_nodes, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = html_sym_doctype, .action = .{ .reduce = .{ .symbol = html_sym_nodes, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = html_sym_pi, .action = .{ .reduce = .{ .symbol = html_sym_nodes, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = html_sym_text, .action = .{ .reduce = .{ .symbol = html_sym_nodes, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = html_sym_end, .action = .{ .reduce = .{ .symbol = html_sym_nodes, .child_count = 1, .production_id = 2 } } },
+const htmlS3Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = htmlSymOpenTag, .action = .{ .reduce = .{ .symbol = htmlSymNodes, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = htmlSymCloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNodes, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = htmlSymSelfcloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNodes, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = htmlSymComment, .action = .{ .reduce = .{ .symbol = htmlSymNodes, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = htmlSymDoctype, .action = .{ .reduce = .{ .symbol = htmlSymNodes, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = htmlSymPi, .action = .{ .reduce = .{ .symbol = htmlSymNodes, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = htmlSymText, .action = .{ .reduce = .{ .symbol = htmlSymNodes, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = htmlSymEnd, .action = .{ .reduce = .{ .symbol = htmlSymNodes, .child_count = 1, .production_id = 2 } } },
 };
-const html_s4_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = html_sym_open_tag, .action = .{ .reduce = .{ .symbol = html_sym_nodes, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = html_sym_close_tag, .action = .{ .reduce = .{ .symbol = html_sym_nodes, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = html_sym_selfclose_tag, .action = .{ .reduce = .{ .symbol = html_sym_nodes, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = html_sym_comment, .action = .{ .reduce = .{ .symbol = html_sym_nodes, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = html_sym_doctype, .action = .{ .reduce = .{ .symbol = html_sym_nodes, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = html_sym_pi, .action = .{ .reduce = .{ .symbol = html_sym_nodes, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = html_sym_text, .action = .{ .reduce = .{ .symbol = html_sym_nodes, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = html_sym_end, .action = .{ .reduce = .{ .symbol = html_sym_nodes, .child_count = 2, .production_id = 3 } } },
+const htmlS4Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = htmlSymOpenTag, .action = .{ .reduce = .{ .symbol = htmlSymNodes, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = htmlSymCloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNodes, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = htmlSymSelfcloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNodes, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = htmlSymComment, .action = .{ .reduce = .{ .symbol = htmlSymNodes, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = htmlSymDoctype, .action = .{ .reduce = .{ .symbol = htmlSymNodes, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = htmlSymPi, .action = .{ .reduce = .{ .symbol = htmlSymNodes, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = htmlSymText, .action = .{ .reduce = .{ .symbol = htmlSymNodes, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = htmlSymEnd, .action = .{ .reduce = .{ .symbol = htmlSymNodes, .child_count = 2, .production_id = 3 } } },
 };
-const html_s5_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = html_sym_open_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = html_sym_close_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = html_sym_selfclose_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = html_sym_comment, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = html_sym_doctype, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = html_sym_pi, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = html_sym_text, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = html_sym_end, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 4 } } },
+const htmlS5Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = htmlSymOpenTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = htmlSymCloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = htmlSymSelfcloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = htmlSymComment, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = htmlSymDoctype, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = htmlSymPi, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = htmlSymText, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = htmlSymEnd, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 4 } } },
 };
-const html_s6_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = html_sym_open_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 5 } } },
-    .{ .symbol = html_sym_close_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 5 } } },
-    .{ .symbol = html_sym_selfclose_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 5 } } },
-    .{ .symbol = html_sym_comment, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 5 } } },
-    .{ .symbol = html_sym_doctype, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 5 } } },
-    .{ .symbol = html_sym_pi, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 5 } } },
-    .{ .symbol = html_sym_text, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 5 } } },
-    .{ .symbol = html_sym_end, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 5 } } },
+const htmlS6Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = htmlSymOpenTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 5 } } },
+    .{ .symbol = htmlSymCloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 5 } } },
+    .{ .symbol = htmlSymSelfcloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 5 } } },
+    .{ .symbol = htmlSymComment, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 5 } } },
+    .{ .symbol = htmlSymDoctype, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 5 } } },
+    .{ .symbol = htmlSymPi, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 5 } } },
+    .{ .symbol = htmlSymText, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 5 } } },
+    .{ .symbol = htmlSymEnd, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 5 } } },
 };
-const html_s7_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = html_sym_open_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 6 } } },
-    .{ .symbol = html_sym_close_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 6 } } },
-    .{ .symbol = html_sym_selfclose_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 6 } } },
-    .{ .symbol = html_sym_comment, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 6 } } },
-    .{ .symbol = html_sym_doctype, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 6 } } },
-    .{ .symbol = html_sym_pi, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 6 } } },
-    .{ .symbol = html_sym_text, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 6 } } },
-    .{ .symbol = html_sym_end, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 6 } } },
+const htmlS7Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = htmlSymOpenTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 6 } } },
+    .{ .symbol = htmlSymCloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 6 } } },
+    .{ .symbol = htmlSymSelfcloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 6 } } },
+    .{ .symbol = htmlSymComment, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 6 } } },
+    .{ .symbol = htmlSymDoctype, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 6 } } },
+    .{ .symbol = htmlSymPi, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 6 } } },
+    .{ .symbol = htmlSymText, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 6 } } },
+    .{ .symbol = htmlSymEnd, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 6 } } },
 };
-const html_s8_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = html_sym_open_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 7 } } },
-    .{ .symbol = html_sym_close_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 7 } } },
-    .{ .symbol = html_sym_selfclose_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 7 } } },
-    .{ .symbol = html_sym_comment, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 7 } } },
-    .{ .symbol = html_sym_doctype, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 7 } } },
-    .{ .symbol = html_sym_pi, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 7 } } },
-    .{ .symbol = html_sym_text, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 7 } } },
-    .{ .symbol = html_sym_end, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 7 } } },
+const htmlS8Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = htmlSymOpenTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 7 } } },
+    .{ .symbol = htmlSymCloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 7 } } },
+    .{ .symbol = htmlSymSelfcloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 7 } } },
+    .{ .symbol = htmlSymComment, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 7 } } },
+    .{ .symbol = htmlSymDoctype, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 7 } } },
+    .{ .symbol = htmlSymPi, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 7 } } },
+    .{ .symbol = htmlSymText, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 7 } } },
+    .{ .symbol = htmlSymEnd, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 7 } } },
 };
-const html_s9_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = html_sym_open_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 8 } } },
-    .{ .symbol = html_sym_close_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 8 } } },
-    .{ .symbol = html_sym_selfclose_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 8 } } },
-    .{ .symbol = html_sym_comment, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 8 } } },
-    .{ .symbol = html_sym_doctype, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 8 } } },
-    .{ .symbol = html_sym_pi, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 8 } } },
-    .{ .symbol = html_sym_text, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 8 } } },
-    .{ .symbol = html_sym_end, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 8 } } },
+const htmlS9Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = htmlSymOpenTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 8 } } },
+    .{ .symbol = htmlSymCloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 8 } } },
+    .{ .symbol = htmlSymSelfcloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 8 } } },
+    .{ .symbol = htmlSymComment, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 8 } } },
+    .{ .symbol = htmlSymDoctype, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 8 } } },
+    .{ .symbol = htmlSymPi, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 8 } } },
+    .{ .symbol = htmlSymText, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 8 } } },
+    .{ .symbol = htmlSymEnd, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 8 } } },
 };
-const html_s10_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = html_sym_open_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 9 } } },
-    .{ .symbol = html_sym_close_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 9 } } },
-    .{ .symbol = html_sym_selfclose_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 9 } } },
-    .{ .symbol = html_sym_comment, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 9 } } },
-    .{ .symbol = html_sym_doctype, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 9 } } },
-    .{ .symbol = html_sym_pi, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 9 } } },
-    .{ .symbol = html_sym_text, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 9 } } },
-    .{ .symbol = html_sym_end, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 9 } } },
+const htmlS10Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = htmlSymOpenTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 9 } } },
+    .{ .symbol = htmlSymCloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 9 } } },
+    .{ .symbol = htmlSymSelfcloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 9 } } },
+    .{ .symbol = htmlSymComment, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 9 } } },
+    .{ .symbol = htmlSymDoctype, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 9 } } },
+    .{ .symbol = htmlSymPi, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 9 } } },
+    .{ .symbol = htmlSymText, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 9 } } },
+    .{ .symbol = htmlSymEnd, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 9 } } },
 };
-const html_s11_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = html_sym_open_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 10 } } },
-    .{ .symbol = html_sym_close_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 10 } } },
-    .{ .symbol = html_sym_selfclose_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 10 } } },
-    .{ .symbol = html_sym_comment, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 10 } } },
-    .{ .symbol = html_sym_doctype, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 10 } } },
-    .{ .symbol = html_sym_pi, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 10 } } },
-    .{ .symbol = html_sym_text, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 10 } } },
-    .{ .symbol = html_sym_end, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 10 } } },
-};
-
-const html_s12_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = html_sym_open_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 11 } } },
-    .{ .symbol = html_sym_close_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 11 } } },
-    .{ .symbol = html_sym_selfclose_tag, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 11 } } },
-    .{ .symbol = html_sym_comment, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 11 } } },
-    .{ .symbol = html_sym_doctype, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 11 } } },
-    .{ .symbol = html_sym_pi, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 11 } } },
-    .{ .symbol = html_sym_text, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 11 } } },
-    .{ .symbol = html_sym_end, .action = .{ .reduce = .{ .symbol = html_sym_node, .child_count = 1, .production_id = 11 } } },
+const htmlS11Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = htmlSymOpenTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 10 } } },
+    .{ .symbol = htmlSymCloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 10 } } },
+    .{ .symbol = htmlSymSelfcloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 10 } } },
+    .{ .symbol = htmlSymComment, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 10 } } },
+    .{ .symbol = htmlSymDoctype, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 10 } } },
+    .{ .symbol = htmlSymPi, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 10 } } },
+    .{ .symbol = htmlSymText, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 10 } } },
+    .{ .symbol = htmlSymEnd, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 10 } } },
 };
 
-const html_parse_states: []const ts.language_mod.tables.ParseState = &.{
-    .{ .actions = html_s0_actions, .gotos = html_s0_gotos },
-    .{ .actions = html_s1_actions },
-    .{ .actions = html_s2_actions, .gotos = html_s2_gotos },
-    .{ .actions = html_s3_actions },
-    .{ .actions = html_s4_actions },
-    .{ .actions = html_s5_actions },
-    .{ .actions = html_s6_actions },
-    .{ .actions = html_s7_actions },
-    .{ .actions = html_s8_actions },
-    .{ .actions = html_s9_actions },
-    .{ .actions = html_s10_actions },
-    .{ .actions = html_s11_actions },
-    .{ .actions = html_s12_actions },
+const htmlS12Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = htmlSymOpenTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 11 } } },
+    .{ .symbol = htmlSymCloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 11 } } },
+    .{ .symbol = htmlSymSelfcloseTag, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 11 } } },
+    .{ .symbol = htmlSymComment, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 11 } } },
+    .{ .symbol = htmlSymDoctype, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 11 } } },
+    .{ .symbol = htmlSymPi, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 11 } } },
+    .{ .symbol = htmlSymText, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 11 } } },
+    .{ .symbol = htmlSymEnd, .action = .{ .reduce = .{ .symbol = htmlSymNode, .child_count = 1, .production_id = 11 } } },
+};
+
+const htmlParseStates: []const ts.language_mod.tables.ParseState = &.{
+    .{ .actions = htmlS0Actions, .gotos = htmlS0Gotos },
+    .{ .actions = htmlS1Actions },
+    .{ .actions = htmlS2Actions, .gotos = htmlS2Gotos },
+    .{ .actions = htmlS3Actions },
+    .{ .actions = htmlS4Actions },
+    .{ .actions = htmlS5Actions },
+    .{ .actions = htmlS6Actions },
+    .{ .actions = htmlS7Actions },
+    .{ .actions = htmlS8Actions },
+    .{ .actions = htmlS9Actions },
+    .{ .actions = htmlS10Actions },
+    .{ .actions = htmlS11Actions },
+    .{ .actions = htmlS12Actions },
 };
 
 pub const htmlLanguage: ts.Language = .{
@@ -342,14 +342,14 @@ pub const htmlLanguage: ts.Language = .{
         .state_count = 13,
         .field_count = 0,
     },
-    .symbols = html_symbol_table,
-    .token_matchers = html_token_matchers,
+    .symbols = htmlSymbolTable,
+    .token_matchers = htmlTokenMatchers,
     .extra_symbols = &.{},
     .table = .{
-        .states = html_parse_states,
+        .states = htmlParseStates,
         .start_state = 0,
-        .end_symbol = html_sym_end,
-        .error_symbol = html_sym_error,
+        .end_symbol = htmlSymEnd,
+        .error_symbol = htmlSymError,
     },
     .fields = .{},
 };
@@ -361,7 +361,7 @@ fn parseHtmlTree(allocator: Allocator, src: []const u8) ParseError!HtmlTree {
     return parser.parseString(src) catch return error.OutOfMemory;
 }
 
-const HtmlTokenKind = enum { open_tag, close_tag, selfclose_tag, comment, doctype, pi, text };
+const HtmlTokenKind = enum { openTag, closeTag, selfcloseTag, comment, doctype, pi, text };
 
 const HtmlToken = struct {
     kind: HtmlTokenKind,
@@ -400,7 +400,7 @@ fn collectHtmlTokens(tree: *const HtmlTree, allocator: Allocator) Allocator.Erro
     }.less);
     for (ordered.items) |n| {
         const t = n.nodeType();
-        const kind: HtmlTokenKind = if (std.mem.eql(u8, t, "open_tag")) .open_tag else if (std.mem.eql(u8, t, "close_tag")) .close_tag else if (std.mem.eql(u8, t, "selfclose_tag")) .selfclose_tag else if (std.mem.eql(u8, t, "comment")) .comment else if (std.mem.eql(u8, t, "doctype")) .doctype else if (std.mem.eql(u8, t, "pi")) .pi else .text;
+        const kind: HtmlTokenKind = if (std.mem.eql(u8, t, "open_tag")) .openTag else if (std.mem.eql(u8, t, "close_tag")) .closeTag else if (std.mem.eql(u8, t, "selfclose_tag")) .selfcloseTag else if (std.mem.eql(u8, t, "comment")) .comment else if (std.mem.eql(u8, t, "doctype")) .doctype else if (std.mem.eql(u8, t, "pi")) .pi else .text;
         try out.append(allocator, .{ .kind = kind, .start = n.startByte(), .end = n.endByte() });
     }
     return out.toOwnedSlice(allocator);
@@ -410,8 +410,8 @@ pub fn changedRanges(allocator: Allocator, oldSrc: []const u8, newSrc: []const u
     var parser = ts.Parser.init(allocator);
     defer parser.deinit();
     parser.setLanguage(htmlLanguage) catch return error.OutOfMemory;
-    var old_tree = parser.parseString(oldSrc) catch return error.OutOfMemory;
-    defer old_tree.deinit();
+    var oldTree = parser.parseString(oldSrc) catch return error.OutOfMemory;
+    defer oldTree.deinit();
     const edit = ts.InputEdit{
         .start_byte = 0,
         .old_end_byte = @intCast(oldSrc.len),
@@ -420,9 +420,9 @@ pub fn changedRanges(allocator: Allocator, oldSrc: []const u8, newSrc: []const u
         .old_end_point = pointForOffsetTs(oldSrc, oldSrc.len),
         .new_end_point = pointForOffsetTs(newSrc, newSrc.len),
     };
-    var new_tree = parser.parse(&old_tree, edit, newSrc) catch return error.OutOfMemory;
-    defer new_tree.deinit();
-    const ranges = ts.getChangedRanges(allocator, &old_tree, &new_tree) catch return error.OutOfMemory;
+    var newTree = parser.parse(&oldTree, edit, newSrc) catch return error.OutOfMemory;
+    defer newTree.deinit();
+    const ranges = ts.getChangedRanges(allocator, &oldTree, &newTree) catch return error.OutOfMemory;
     defer ts.freeChangedRanges(allocator, ranges);
     return ranges.len;
 }
@@ -491,10 +491,10 @@ pub fn parse(arena: Allocator, htmlSrc: []const u8, limits: Limits) ParseError!T
         .limits = limits,
     };
     try builder.openStack.append(arena, root);
-    var ts_tree = try parseHtmlTree(arena, htmlSrc);
-    defer ts_tree.deinit();
-    const tokens = try collectHtmlTokens(&ts_tree, arena);
-    try builder.runTokens(htmlSrc, tokens, ts_tree.hasError());
+    var tsTree = try parseHtmlTree(arena, htmlSrc);
+    defer tsTree.deinit();
+    const tokens = try collectHtmlTokens(&tsTree, arena);
+    try builder.runTokens(htmlSrc, tokens, tsTree.hasError());
     return tree;
 }
 
@@ -515,8 +515,8 @@ const Builder = struct {
         return @intCast(self.openStack.items.len);
     }
 
-    fn runTokens(self: *Builder, src: []const u8, tokens: []const HtmlToken, had_error: bool) ParseError!void {
-        self.tree.getMut(self.openStack.items[0]).hasError = had_error;
+    fn runTokens(self: *Builder, src: []const u8, tokens: []const HtmlToken, hadError: bool) ParseError!void {
+        self.tree.getMut(self.openStack.items[0]).hasError = hadError;
         var covered: usize = 0;
         var ti: usize = 0;
         while (ti < tokens.len) {
@@ -556,7 +556,7 @@ const Builder = struct {
                 .pi => {
                     ti += 1;
                 },
-                .selfclose_tag => {
+                .selfcloseTag => {
                     const info = try self.parseTagToken(src[tok.start..tok.end], tok.start, src);
                     const nodeIdx = try self.tree.append(self.arena, .{
                         .kind = .element,
@@ -567,7 +567,7 @@ const Builder = struct {
                     self.tree.appendChild(self.currentParent(), nodeIdx);
                     ti += 1;
                 },
-                .open_tag => {
+                .openTag => {
                     const info = try self.parseTagToken(src[tok.start..tok.end], tok.start, src);
                     if (self.depth() >= self.limits.maxDepth) return error.TooDeep;
                     const nodeIdx = try self.tree.append(self.arena, .{
@@ -584,24 +584,24 @@ const Builder = struct {
                     try self.openStack.append(self.arena, nodeIdx);
                     if (RAW_TEXT_ELEMENTS.has(info.tag)) {
                         var j = ti + 1;
-                        var close_idx: ?usize = null;
+                        var closeIdx: ?usize = null;
                         while (j < tokens.len) : (j += 1) {
-                            if (tokens[j].kind == .close_tag and closeTagNameEql(src[tokens[j].start..tokens[j].end], info.tag)) {
-                                close_idx = j;
+                            if (tokens[j].kind == .closeTag and closeTagNameEql(src[tokens[j].start..tokens[j].end], info.tag)) {
+                                closeIdx = j;
                                 break;
                             }
                         }
-                        const content_end = if (close_idx) |cj| tokens[cj].start else src.len;
-                        if (content_end > tok.end) {
-                            const raw_content = src[tok.end..content_end];
-                            const txt_idx = try self.tree.append(self.arena, .{
+                        const contentEnd = if (closeIdx) |cj| tokens[cj].start else src.len;
+                        if (contentEnd > tok.end) {
+                            const rawContent = src[tok.end..contentEnd];
+                            const txtIdx = try self.tree.append(self.arena, .{
                                 .kind = .text,
-                                .data = raw_content,
-                                .range = makeRange(src, tok.end, content_end),
+                                .data = rawContent,
+                                .range = makeRange(src, tok.end, contentEnd),
                             });
-                            self.tree.appendChild(nodeIdx, txt_idx);
+                            self.tree.appendChild(nodeIdx, txtIdx);
                         }
-                        if (close_idx) |cj| {
+                        if (closeIdx) |cj| {
                             self.tree.getMut(nodeIdx).range.endByte = @intCast(tokens[cj].end);
                             self.tree.getMut(nodeIdx).range.endPoint = pointForOffset(src, tokens[cj].end);
                             covered = @max(covered, tokens[cj].end);
@@ -617,7 +617,7 @@ const Builder = struct {
                     }
                     ti += 1;
                 },
-                .close_tag => {
+                .closeTag => {
                     const name = closeTagName(src[tok.start..tok.end]);
                     const tag = lowerBuf(self.arena, name) catch name;
                     self.popToTag(tag, tok.end, src);
@@ -634,14 +634,14 @@ const Builder = struct {
         }
     }
 
-    fn appendText(self: *Builder, src: []const u8, raw: []const u8, start: usize, end: usize, is_error: bool) ParseError!void {
+    fn appendText(self: *Builder, src: []const u8, raw: []const u8, start: usize, end: usize, isError: bool) ParseError!void {
         if (raw.len == 0) return;
         if (raw.len > self.limits.maxTextBlock) return error.InputTooLarge;
         const idx = try self.tree.append(self.arena, .{
             .kind = .text,
             .data = raw,
             .range = makeRange(src, start, end),
-            .hasError = is_error,
+            .hasError = isError,
         });
         self.tree.appendChild(self.currentParent(), idx);
     }
@@ -651,16 +651,16 @@ const Builder = struct {
         attrs: []const Attribute,
     };
 
-    fn parseTagToken(self: *Builder, slice: []const u8, abs_start: usize, src: []const u8) ParseError!TagInfo {
-        _ = abs_start;
+    fn parseTagToken(self: *Builder, slice: []const u8, absStart: usize, src: []const u8) ParseError!TagInfo {
+        _ = absStart;
         _ = src;
-        var name_end: usize = 1;
-        while (name_end < slice.len and !isTagNameEnd(slice[name_end])) : (name_end += 1) {}
-        const tag = try lowerBuf(self.arena, slice[1..name_end]);
+        var nameEnd: usize = 1;
+        while (nameEnd < slice.len and !isTagNameEnd(slice[nameEnd])) : (nameEnd += 1) {}
+        const tag = try lowerBuf(self.arena, slice[1..nameEnd]);
         var attrs: std.ArrayList(Attribute) = .empty;
         defer attrs.deinit(self.arena);
         var selfClosing = false;
-        _ = try parseAttrs(self.arena, slice, name_end, &attrs, &selfClosing, self.limits);
+        _ = try parseAttrs(self.arena, slice, nameEnd, &attrs, &selfClosing, self.limits);
         if (attrs.items.len > self.limits.maxAttrs) return error.TooManyAttributes;
         return .{ .tag = tag, .attrs = try attrs.toOwnedSlice(self.arena) };
     }
@@ -676,14 +676,14 @@ const Builder = struct {
         return std.ascii.eqlIgnoreCase(closeTagName(slice), tag);
     }
 
-    fn popToTag(self: *Builder, tag: []const u8, end_offset: usize, src: []const u8) void {
+    fn popToTag(self: *Builder, tag: []const u8, endOffset: usize, src: []const u8) void {
         var k: usize = self.openStack.items.len;
         while (k > 0) : (k -= 1) {
             const idx = self.openStack.items[k - 1];
             const node = self.tree.getMut(idx);
             if (node.kind == .element and node.hasTag(tag)) {
-                node.range.endByte = @intCast(end_offset);
-                node.range.endPoint = pointForOffset(src, end_offset);
+                node.range.endByte = @intCast(endOffset);
+                node.range.endPoint = pointForOffset(src, endOffset);
                 self.openStack.shrinkRetainingCapacity(k - 1);
                 return;
             }
@@ -738,38 +738,38 @@ fn parseAttrs(
             break;
         }
 
-        const name_start = i;
+        const nameStart = i;
         while (i < src.len and !isAttrNameEnd(src[i])) : (i += 1) {}
-        if (i == name_start) {
+        if (i == nameStart) {
             i += 1;
             continue;
         }
-        const attr_name = src[name_start..i];
+        const attrName = src[nameStart..i];
 
         while (i < src.len and isWhitespace(src[i])) : (i += 1) {}
 
         if (i >= src.len or src[i] != '=') {
-            try attrs.append(arena, .{ .name = attr_name, .value = "" });
+            try attrs.append(arena, .{ .name = attrName, .value = "" });
             continue;
         }
         i += 1;
         while (i < src.len and isWhitespace(src[i])) : (i += 1) {}
 
-        var attr_value: []const u8 = "";
+        var attrValue: []const u8 = "";
         if (i < src.len and (src[i] == '"' or src[i] == '\'')) {
             const quote = src[i];
             i += 1;
-            const val_start = i;
+            const valStart = i;
             while (i < src.len and src[i] != quote) : (i += 1) {}
-            attr_value = src[val_start..i];
+            attrValue = src[valStart..i];
             if (i < src.len) i += 1;
         } else {
-            const val_start = i;
+            const valStart = i;
             while (i < src.len and !isWhitespace(src[i]) and src[i] != '>') : (i += 1) {}
-            attr_value = src[val_start..i];
+            attrValue = src[valStart..i];
         }
-        if (attr_value.len > limits.maxAttrValue) return error.InputTooLarge;
-        try attrs.append(arena, .{ .name = attr_name, .value = attr_value });
+        if (attrValue.len > limits.maxAttrValue) return error.InputTooLarge;
+        try attrs.append(arena, .{ .name = attrName, .value = attrValue });
     }
     return i;
 }
@@ -809,17 +809,17 @@ test "html parses nested elements with attributes via syntax tree" {
     var tree = try parse(al, "<html><body><a href=\"/l\" class=\"x y\">Click</a><br><img src=\"i.png\"></body></html>", .{});
     const root = tree.get(0);
     try std.testing.expect(root.kind == .document);
-    var found_a = false;
-    var found_br = false;
+    var foundA = false;
+    var foundBr = false;
     for (tree.nodes.items) |n| {
         if (n.kind == .element and std.mem.eql(u8, n.tag, "a")) {
-            found_a = true;
+            foundA = true;
             try std.testing.expectEqualStrings("/l", n.attr("href").?);
             try std.testing.expect(n.hasClass("x"));
         }
-        if (n.kind == .element and std.mem.eql(u8, n.tag, "br")) found_br = true;
+        if (n.kind == .element and std.mem.eql(u8, n.tag, "br")) foundBr = true;
     }
-    try std.testing.expect(found_a and found_br);
+    try std.testing.expect(foundA and foundBr);
 }
 
 test "html flags malformed input with error recovery" {
@@ -837,13 +837,13 @@ test "html tracks source ranges from syntax nodes" {
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     const tree = try parse(arena.allocator(), "<p>hi</p>", .{});
-    var found_p = false;
+    var foundP = false;
     for (tree.nodes.items) |n| {
         if (n.kind == .element and std.mem.eql(u8, n.tag, "p")) {
-            found_p = true;
+            foundP = true;
             try std.testing.expectEqual(@as(u32, 0), n.range.startByte);
             try std.testing.expect(n.range.endByte > n.range.startByte);
         }
     }
-    try std.testing.expect(found_p);
+    try std.testing.expect(foundP);
 }

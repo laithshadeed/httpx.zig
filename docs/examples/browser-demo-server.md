@@ -1,6 +1,6 @@
 # Example: Browser Demo Server
 
-Demonstrates browser_demo_server.zig using the canonical HTTPX API.
+Demonstrates browserDemoServer.zig using the canonical HTTPX API.
 
 ## Complete Example
 

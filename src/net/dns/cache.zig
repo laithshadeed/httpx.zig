@@ -159,14 +159,14 @@ pub const Cache = struct {
             return error.OutOfMemory;
         };
         node.* = .{ .sem = sync.Semaphore.init(0) };
-        const name_copy = self.allocator.dupe(u8, name) catch {
+        const nameCopy = self.allocator.dupe(u8, name) catch {
             self.allocator.destroy(node);
             self.mu.unlock();
             return error.OutOfMemory;
         };
-        self.inflight.put(name_copy, node) catch {
+        self.inflight.put(nameCopy, node) catch {
             self.allocator.destroy(node);
-            self.allocator.free(name_copy);
+            self.allocator.free(nameCopy);
             self.mu.unlock();
             return error.OutOfMemory;
         };
@@ -177,43 +177,43 @@ pub const Cache = struct {
         // Network I/O strictly outside the lock.
         const outcome = self.lookupFn(self.lookupCtx, self.io, name, self.allocator);
         var fresh: []const []const u8 = &.{};
-        var failed_err: ?LookupError = null;
-        if (outcome) |ok_addrs| {
-            fresh = ok_addrs;
+        var failedErr: ?LookupError = null;
+        if (outcome) |okAddrs| {
+            fresh = okAddrs;
         } else |e| {
-            failed_err = e;
+            failedErr = e;
         }
 
         var joiners: usize = 0;
-        if (failed_err == null) {
+        if (failedErr == null) {
             self.mu.lock();
             node.owned = fresh; // ownership moves into the node
             node.addrs = fresh;
             joiners = node.refs - 1;
-            _ = self.inflight.remove(name_copy);
+            _ = self.inflight.remove(nameCopy);
             const cloned = self.cloneAddrs(fresh) catch null;
             if (cloned) |cl| {
                 if (self.entries.count() >= self.cfg.maxEntries) self.evictOneLocked();
-                self.entries.put(name_copy, .{
+                self.entries.put(nameCopy, .{
                     .addrs = cl,
                     .expiresAt = clock.millisNow() + self.cfg.ttlMs,
                     .failed = false,
                 }) catch {
                     self.freeAddrs(cl);
-                    self.allocator.free(name_copy);
+                    self.allocator.free(nameCopy);
                 };
             } else {
                 // Cache write skipped on OOM; lookup still succeeds.
-                self.allocator.free(name_copy);
+                self.allocator.free(nameCopy);
             }
             self.mu.unlock();
         } else {
             self.mu.lock();
             node.failed = true;
-            node.err = failed_err.?;
+            node.err = failedErr.?;
             joiners = node.refs - 1;
-            _ = self.inflight.remove(name_copy);
-            self.putNegativeLocked(name_copy);
+            _ = self.inflight.remove(nameCopy);
+            self.putNegativeLocked(nameCopy);
             self.mu.unlock();
         }
 
@@ -224,7 +224,7 @@ pub const Cache = struct {
         // Clone our own return copy while we still hold a reference.
         var mine: []const []const u8 = &.{};
         var oom = false;
-        if (failed_err == null) {
+        if (failedErr == null) {
             if (self.cloneAddrs(fresh)) |cl| {
                 mine = cl;
             } else |_| {
@@ -233,18 +233,18 @@ pub const Cache = struct {
         }
         self.releaseNode(node);
         if (oom) return error.OutOfMemory;
-        if (failed_err) |e| return e;
+        if (failedErr) |e| return e;
         return mine;
     }
 
-    fn putNegativeLocked(self: *Cache, name_owned: []u8) void {
+    fn putNegativeLocked(self: *Cache, nameOwned: []u8) void {
         if (self.entries.count() >= self.cfg.maxEntries) self.evictOneLocked();
-        self.entries.put(name_owned, .{
+        self.entries.put(nameOwned, .{
             .addrs = &.{},
             .expiresAt = clock.millisNow() + self.cfg.negativeTtlMs,
             .failed = true,
         }) catch {
-            self.allocator.free(name_owned);
+            self.allocator.free(nameOwned);
         };
     }
 

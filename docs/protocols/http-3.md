@@ -39,7 +39,7 @@ Live since the QUIC transport landing: `client.get` with
 `.httpVersion = .http3` performs a real QUIC + TLS 1.3 handshake (ALPN
 `h3`, verified chain) over UDP. Reliable paths (loopback/LAN) — no loss
 recovery yet, so lossy networks stall to the request deadline. Runnable
-end to end in `examples/http3_client.zig`:
+end to end in `examples/http3Client.zig`:
 
 ```zig
 const std = @import("std");

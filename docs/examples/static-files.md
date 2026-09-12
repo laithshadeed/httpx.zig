@@ -2,7 +2,7 @@
 
 Serve a directory with automatic MIME type resolution (`httpx.mime.fromPath`),
 ETag / `If-None-Match` conditional requests, range requests, and index
-resolution. See `examples/static_files.zig`.
+resolution. See `examples/staticFiles.zig`.
 
 ## Demo Program
 

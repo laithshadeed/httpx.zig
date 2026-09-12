@@ -5,7 +5,7 @@
 
 const std = @import("std");
 
-const mime_map = std.static_string_map.StaticStringMap([]const u8).initComptime(.{
+const mimeMap = std.static_string_map.StaticStringMap([]const u8).initComptime(.{
     .{ "html", "text/html; charset=utf-8" },
     .{ "htm", "text/html; charset=utf-8" },
     .{ "css", "text/css; charset=utf-8" },
@@ -60,7 +60,7 @@ pub fn fromPath(path: []const u8) []const u8 {
     for (ext, 0..) |c, i| lower[i] = std.ascii.toLower(c);
     const key = lower[0..ext.len];
 
-    return mime_map.get(key) orelse octetStream;
+    return mimeMap.get(key) orelse octetStream;
 }
 
 pub const octetStream = "application/octet-stream";

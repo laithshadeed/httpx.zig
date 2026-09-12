@@ -61,7 +61,7 @@ const hdr = parsed.hdr; // fin, opcode, masked, payloadLen, maskKey
 
 ## Full Example
 
-See `examples/websocket_server.zig`, which serves an interactive browser
+See `examples/websocketServer.zig`, which serves an interactive browser
 WebSocket client and verifies the endpoint:
 
 ```zig

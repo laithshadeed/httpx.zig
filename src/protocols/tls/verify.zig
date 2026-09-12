@@ -14,7 +14,7 @@ const Certificate = crypto.Certificate;
 const certMod = @import("certificate.zig");
 const trustStoreMod = @import("trustStore.zig");
 const transportMod = @import("transport.zig");
-const clock_mod = @import("../../common/clock.zig");
+const clockMod = @import("../../common/clock.zig");
 const errorsMod = @import("errors.zig");
 pub const TlsError = errorsMod.TlsError;
 
@@ -44,14 +44,14 @@ pub fn verifyServerChain(
         },
         .caBundle => {
             if (caPem) |pem| {
-                var search_from: usize = 0;
+                var searchFrom: usize = 0;
                 var blocks: usize = 0;
-                while (std.mem.indexOfPos(u8, pem, search_from, "-----BEGIN CERTIFICATE-----")) |idx| {
+                while (std.mem.indexOfPos(u8, pem, searchFrom, "-----BEGIN CERTIFICATE-----")) |idx| {
                     const der = certMod.decodePemBlock(allocator, pem[idx..], "CERTIFICATE") catch return error.CertificateUntrusted;
                     defer allocator.free(der);
                     if (!certMod.checkDerStructure(der)) return error.CertificateUntrusted;
                     blocks += 1;
-                    search_from = idx + 26;
+                    searchFrom = idx + 26;
                 }
                 if (blocks == 0) return error.CertificateUntrusted;
                 store.addCertPem(pem) catch return error.CertificateUntrusted;
@@ -61,8 +61,8 @@ pub fn verifyServerChain(
         },
     }
     const chain = certMod.CertificateChain{ .certs = ders, .allocator = allocator };
-    const now_sec: i64 = @divFloor(clock_mod.millisNow(), 1000);
-    verifyCertificateChain(chain, &store, host, now_sec) catch |e| switch (e) {
+    const nowSec: i64 = @divFloor(clockMod.millisNow(), 1000);
+    verifyCertificateChain(chain, &store, host, nowSec) catch |e| switch (e) {
         error.CertificateExpired => return error.CertificateExpired,
         error.CertificateHostMismatch, error.HostnameMismatch => return error.CertificateHostMismatch,
         error.CertificateUntrusted => return error.CertificateUntrusted,
@@ -79,19 +79,19 @@ pub fn matchDnsPattern(pattern: []const u8, hostname: []const u8) bool {
 
     // Wildcard matching: only valid if pattern starts with "*."
     if (pattern.len >= 3 and pattern[0] == '*' and pattern[1] == '.') {
-        const pattern_suffix = pattern[1..]; // e.g. ".example.com"
+        const patternSuffix = pattern[1..]; // e.g. ".example.com"
 
         // Hostname must be longer than the suffix
-        if (hostname.len <= pattern_suffix.len) return false;
+        if (hostname.len <= patternSuffix.len) return false;
 
-        // Hostname must end with pattern_suffix case-insensitively
-        const host_suffix = hostname[hostname.len - pattern_suffix.len ..];
-        if (!std.ascii.eqlIgnoreCase(host_suffix, pattern_suffix)) return false;
+        // Hostname must end with patternSuffix case-insensitively
+        const hostSuffix = hostname[hostname.len - patternSuffix.len ..];
+        if (!std.ascii.eqlIgnoreCase(hostSuffix, patternSuffix)) return false;
 
         // The prefix matched by "*" must be a single label (no dots)
-        const host_prefix = hostname[0 .. hostname.len - pattern_suffix.len];
-        if (host_prefix.len == 0) return false;
-        if (std.mem.indexOfScalar(u8, host_prefix, '.') != null) {
+        const hostPrefix = hostname[0 .. hostname.len - patternSuffix.len];
+        if (hostPrefix.len == 0) return false;
+        if (std.mem.indexOfScalar(u8, hostPrefix, '.') != null) {
             // Cannot match across dots (e.g. *.example.com does not match a.b.example.com)
             return false;
         }
@@ -110,25 +110,25 @@ pub fn verifyHostname(parsed: Certificate.Parsed, targetHost: []const u8) TlsErr
     if (targetHost.len == 0) return TlsError.HostnameMismatch;
 
     // Split host/port: [v6]:port, host:port (single colon), or bare host.
-    var host_only = targetHost;
+    var hostOnly = targetHost;
     if (targetHost[0] == '[') {
         const close = std.mem.indexOfScalar(u8, targetHost, ']') orelse return TlsError.HostnameMismatch;
-        host_only = targetHost[1..close];
+        hostOnly = targetHost[1..close];
     } else if (std.mem.count(u8, targetHost, ":") == 1) {
         const colon = std.mem.indexOfScalar(u8, targetHost, ':').?;
-        host_only = targetHost[0..colon];
+        hostOnly = targetHost[0..colon];
     }
-    if (host_only.len == 0) return TlsError.HostnameMismatch;
+    if (hostOnly.len == 0) return TlsError.HostnameMismatch;
 
     // IP literal targets must match an iPAddress SAN (RFC 6125 Section 6.4.4);
     // DNS matching never applies to them.
-    if (parseIpLiteral(host_only)) |ip| {
+    if (parseIpLiteral(hostOnly)) |ip| {
         if (sanHasIp(parsed, ip)) return;
         return TlsError.CertificateHostMismatch;
     }
 
     // Use std.crypto.Certificate.Parsed hostname verification.
-    parsed.verifyHostName(host_only) catch |err| switch (err) {
+    parsed.verifyHostName(hostOnly) catch |err| switch (err) {
         error.CertificateHostMismatch => return TlsError.CertificateHostMismatch,
         error.CertificateFieldHasInvalidLength => return TlsError.HostnameMismatch,
     };
@@ -168,44 +168,44 @@ fn parseIpv4(text: []const u8) ?[4]u8 {
 fn parseIpv6(text: []const u8) ?[16]u8 {
     // Split around at most one "::" compression marker.
     var halves: [2][]const u8 = .{ "", "" };
-    var n_halves: usize = 1;
+    var nHalves: usize = 1;
     halves[0] = text;
     if (std.mem.indexOf(u8, text, "::")) |dc| {
         if (std.mem.indexOfPos(u8, text, dc + 2, "::") != null) return null;
         halves[0] = text[0..dc];
         halves[1] = text[dc + 2 ..];
-        n_halves = 2;
+        nHalves = 2;
     }
     var head: [8]u16 = undefined;
-    var head_len: usize = 0;
+    var headLen: usize = 0;
     var tail: [8]u16 = undefined;
-    var tail_len: usize = 0;
-    for (halves[0..n_halves], 0..) |half, hi| {
+    var tailLen: usize = 0;
+    for (halves[0..nHalves], 0..) |half, hi| {
         if (half.len == 0) continue;
         var it = std.mem.splitScalar(u8, half, ':');
         while (it.next()) |g| {
             if (g.len == 0 or g.len > 4) return null;
             const v = std.fmt.parseInt(u16, g, 16) catch return null;
             if (hi == 0) {
-                if (head_len >= 8) return null;
-                head[head_len] = v;
-                head_len += 1;
+                if (headLen >= 8) return null;
+                head[headLen] = v;
+                headLen += 1;
             } else {
-                if (tail_len >= 8) return null;
-                tail[tail_len] = v;
-                tail_len += 1;
+                if (tailLen >= 8) return null;
+                tail[tailLen] = v;
+                tailLen += 1;
             }
         }
     }
-    if (n_halves == 1) {
-        if (head_len != 8) return null;
-    } else if (head_len + tail_len >= 8) {
+    if (nHalves == 1) {
+        if (headLen != 8) return null;
+    } else if (headLen + tailLen >= 8) {
         return null;
     }
     var out: [16]u8 = [_]u8{0} ** 16;
-    for (head[0..head_len], 0..) |g, i| std.mem.writeInt(u16, out[i * 2 ..][0..2], g, .big);
-    const tail_off = 16 - tail_len * 2;
-    for (tail[0..tail_len], 0..) |g, i| std.mem.writeInt(u16, out[tail_off + i * 2 ..][0..2], g, .big);
+    for (head[0..headLen], 0..) |g, i| std.mem.writeInt(u16, out[i * 2 ..][0..2], g, .big);
+    const tailOff = 16 - tailLen * 2;
+    for (tail[0..tailLen], 0..) |g, i| std.mem.writeInt(u16, out[tailOff + i * 2 ..][0..2], g, .big);
     return out;
 }
 
@@ -220,24 +220,24 @@ fn sanHasIp(parsed: Certificate.Parsed, ip: ParsedIp) bool {
     var end = san.len;
     if (san.len >= 2 and san[0] == 0x30) {
         pos += 1;
-        const seq_len = derLen(san, &pos) orelse return false;
-        if (pos + seq_len > san.len) return false;
-        end = pos + seq_len;
+        const seqLen = derLen(san, &pos) orelse return false;
+        if (pos + seqLen > san.len) return false;
+        end = pos + seqLen;
     }
     while (pos + 2 <= end) {
         const tag = san[pos];
-        const is_ip = (tag & 0x1F) == 7 and (tag & 0xC0) == 0x80;
+        const isIp = (tag & 0x1F) == 7 and (tag & 0xC0) == 0x80;
         pos += 1;
-        const field_len = derLen(san, &pos) orelse return false;
-        if (pos + field_len > end) return false;
-        if (is_ip) {
-            const val = san[pos..][0..field_len];
+        const fieldLen = derLen(san, &pos) orelse return false;
+        if (pos + fieldLen > end) return false;
+        if (isIp) {
+            const val = san[pos..][0..fieldLen];
             switch (ip) {
-                .v4 => |b| if (field_len == 4 and std.mem.eql(u8, val, &b)) return true,
-                .v6 => |b| if (field_len == 16 and std.mem.eql(u8, val, &b)) return true,
+                .v4 => |b| if (fieldLen == 4 and std.mem.eql(u8, val, &b)) return true,
+                .v6 => |b| if (fieldLen == 16 and std.mem.eql(u8, val, &b)) return true,
             }
         }
-        pos += field_len;
+        pos += fieldLen;
     }
     return false;
 }
@@ -344,14 +344,14 @@ test "IP literal parsing covers v4, v6, and garbage" {
     try std.testing.expect(parseIpLiteral("1::2::3") == null);
 }
 
-const localhost_cert_pem = @embedFile("testdata/localhost_cert.pem");
+const localhostCertPem = @embedFile("testdata/localhostCert.pem");
 
 // Test fixture validity: 2026-09-09 .. 2036-09-06. nowSec values below are
 // chosen well inside (1800000000 = 2027-01-15), before (1700000000), and
 // after (2200000000 = 2039) that window.
 test "self-signed fixture verifies hostname and validity window" {
     const a = std.testing.allocator;
-    var chain = try certMod.parseCertificateChainPem(a, localhost_cert_pem);
+    var chain = try certMod.parseCertificateChainPem(a, localhostCertPem);
     defer chain.deinit();
     try std.testing.expectEqual(@as(usize, 1), chain.count());
     const leaf = chain.leaf().?;
@@ -370,7 +370,7 @@ test "self-signed fixture verifies hostname and validity window" {
 test "self-signed trust mode accepts the fixture, default mode rejects it" {
     const a = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var chain = try certMod.parseCertificateChainPem(a, localhost_cert_pem);
+    var chain = try certMod.parseCertificateChainPem(a, localhostCertPem);
     defer chain.deinit();
 
     var permissive = trustStoreMod.TrustStore.init(a, io);
@@ -390,12 +390,12 @@ test "self-signed trust mode accepts the fixture, default mode rejects it" {
 test "custom CA bundle trusts the fixture leaf" {
     const a = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var chain = try certMod.parseCertificateChainPem(a, localhost_cert_pem);
+    var chain = try certMod.parseCertificateChainPem(a, localhostCertPem);
     defer chain.deinit();
 
     var ts = trustStoreMod.TrustStore.init(a, io);
     defer ts.deinit();
-    try ts.addCertPem(localhost_cert_pem);
+    try ts.addCertPem(localhostCertPem);
     try std.testing.expectEqual(@as(usize, 1), ts.count());
     try verifyCertificateChain(chain, &ts, "localhost", 1800000000);
 }

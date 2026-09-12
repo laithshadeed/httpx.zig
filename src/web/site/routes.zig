@@ -219,7 +219,7 @@ fn parseFile(
 
     it = std.mem.splitScalar(u8, file, '/');
     var idx: usize = 0;
-    var is_index = false;
+    var isIndex = false;
     var rank: u8 = 3;
     while (it.next()) |seg| {
         idx += 1;
@@ -238,9 +238,9 @@ fn parseFile(
         }
         const dot = std.mem.lastIndexOfScalar(u8, seg, '.') orelse return error.InvalidFilePath;
         const stem = seg[0..dot];
-        const file_ext = seg[dot..];
-        if (!isHtmlExt(file_ext)) return error.InvalidFilePath;
-        const lower_htm = file_ext.len == 4;
+        const fileExt = seg[dot..];
+        if (!isHtmlExt(fileExt)) return error.InvalidFilePath;
+        const lowerHtm = fileExt.len == 4;
         if (stem.len >= 2 and stem[0] == '[' and stem[stem.len - 1] == ']') {
             const inner = stem[1 .. stem.len - 1];
             if (std.mem.startsWith(u8, inner, "...")) {
@@ -257,16 +257,16 @@ fn parseFile(
         } else {
             if (stem.len == 0) return error.InvalidFilePath;
             if (std.mem.eql(u8, stem, indexBase)) {
-                is_index = true;
-                rank = if (lower_htm) 2 else 1;
+                isIndex = true;
+                rank = if (lowerHtm) 2 else 1;
             } else {
                 try segments.append(allocator, stem);
                 try patterns.append(allocator, try allocator.dupe(u8, stem));
-                rank = if (lower_htm) 4 else 3;
+                rank = if (lowerHtm) 4 else 3;
             }
         }
     }
-    return .{ .segments = segments, .patterns = patterns, .isIndex = is_index, .rank = rank };
+    return .{ .segments = segments, .patterns = patterns, .isIndex = isIndex, .rank = rank };
 }
 
 fn joinSlashed(allocator: Allocator, base: []const u8, segments: []const []const u8) ![]u8 {
@@ -331,24 +331,24 @@ fn buildOne(allocator: Allocator, file: []const u8, options: Options, customs: *
     // Relative (base-independent) forms drive names; registered forms
     // carry the base prefix. Dynamic files register router syntax
     // (`{param}`/`*rest`) as their clean route.
-    const rel_clean: []u8 = if (custom) |c| blk: {
+    const relClean: []u8 = if (custom) |c| blk: {
         if (c.route.len == 0 or c.route[0] != '/') return error.InvalidFilePath;
         break :blk try allocator.dupe(u8, c.route);
     } else try joinSlashed(allocator, "/", parsed.segments.items);
-    defer allocator.free(rel_clean);
-    const rel_route: []u8 = if (custom != null) try allocator.dupe(u8, rel_clean) else try joinSlashed(allocator, "/", parsed.patterns.items);
-    defer allocator.free(rel_route);
-    const clean: []u8 = try joinBase(allocator, options.base, rel_route);
+    defer allocator.free(relClean);
+    const relRoute: []u8 = if (custom != null) try allocator.dupe(u8, relClean) else try joinSlashed(allocator, "/", parsed.patterns.items);
+    defer allocator.free(relRoute);
+    const clean: []u8 = try joinBase(allocator, options.base, relRoute);
     errdefer allocator.free(clean);
 
     // Extension URLs keep the on-disk form and only exist for static
     // pages; dynamic files serve clean routes only.
-    var ext_route: ?[]u8 = null;
-    errdefer if (ext_route) |e| allocator.free(e);
+    var extRoute: ?[]u8 = null;
+    errdefer if (extRoute) |e| allocator.free(e);
     if (options.urls != .clean and !dynamic) {
         const full = try std.fmt.allocPrint(allocator, "/{s}", .{file});
         defer allocator.free(full);
-        ext_route = try joinBase(allocator, options.base, full);
+        extRoute = try joinBase(allocator, options.base, full);
     }
 
     // Encoded aliases for static segments needing percent-encoding.
@@ -377,16 +377,16 @@ fn buildOne(allocator: Allocator, file: []const u8, options: Options, customs: *
         }
     }
 
-    const route_name: []u8 = if (custom) |c| (if (c.name) |n| try allocator.dupe(u8, n) else try dottedName(allocator, rel_clean)) else try dottedName(allocator, rel_route);
-    errdefer allocator.free(route_name);
-    const file_owned = try allocator.dupe(u8, file);
-    errdefer allocator.free(file_owned);
+    const routeName: []u8 = if (custom) |c| (if (c.name) |n| try allocator.dupe(u8, n) else try dottedName(allocator, relClean)) else try dottedName(allocator, relRoute);
+    errdefer allocator.free(routeName);
+    const fileOwned = try allocator.dupe(u8, file);
+    errdefer allocator.free(fileOwned);
 
     return .{
-        .file = file_owned,
+        .file = fileOwned,
         .clean = clean,
-        .name = route_name,
-        .ext = ext_route,
+        .name = routeName,
+        .ext = extRoute,
         .aliases = try aliases.toOwnedSlice(allocator),
         .isIndex = parsed.isIndex,
         .rank = rank,
@@ -394,9 +394,9 @@ fn buildOne(allocator: Allocator, file: []const u8, options: Options, customs: *
     };
 }
 
-fn beats(rank_a: u8, file_a: []const u8, rank_b: u8, file_b: []const u8) bool {
-    if (rank_a != rank_b) return rank_a < rank_b;
-    return std.mem.order(u8, file_a, file_b) == .lt;
+fn beats(rankA: u8, fileA: []const u8, rankB: u8, fileB: []const u8) bool {
+    if (rankA != rankB) return rankA < rankB;
+    return std.mem.order(u8, fileA, fileB) == .lt;
 }
 
 /// Builds a deterministic route table from logical file paths.
@@ -492,11 +492,11 @@ fn placeCandidate(
 
     const shape = try shapeKey(allocator, pend.clean);
     defer allocator.free(shape);
-    var shape_hit: ?usize = null;
+    var shapeHit: ?usize = null;
     if (shapeIndexOf(shapes, shape)) |idx| {
-        if (!std.mem.eql(u8, routes.items[idx].route, pend.clean)) shape_hit = idx;
+        if (!std.mem.eql(u8, routes.items[idx].route, pend.clean)) shapeHit = idx;
     }
-    if (shape_hit) |idx| {
+    if (shapeHit) |idx| {
         var dup = false;
         for (foes[0..foeCount]) |f| if (f == idx) {
             dup = true;
@@ -534,20 +534,20 @@ fn placeCandidate(
         return;
     }
 
-    var best_file: []const u8 = pend.file;
-    var cand_wins = true;
+    var bestFile: []const u8 = pend.file;
+    var candWins = true;
     for (foes[0..foeCount]) |idx| {
         const o = &routes.items[idx];
         if (!beats(pend.rank, pend.file, o.rank, o.file)) {
-            cand_wins = false;
-            best_file = o.file;
+            candWins = false;
+            bestFile = o.file;
             break;
         }
     }
-    if (!cand_wins) {
+    if (!candWins) {
         try collisions.append(allocator, .{
             .route = try allocator.dupe(u8, pend.clean),
-            .winner = try allocator.dupe(u8, best_file),
+            .winner = try allocator.dupe(u8, bestFile),
             .loser = try allocator.dupe(u8, pend.file),
         });
         freePending(allocator, pend);
@@ -632,13 +632,13 @@ test "routes: index, nested, htm, slugs, base" {
 
 test "routes: url styles and custom overrides" {
     const files = [_][]const u8{ "index.html", "about.html" };
-    var clean_only = try buildRoutes(std.testing.allocator, &files, .{ .urls = .clean });
-    defer clean_only.deinit(std.testing.allocator);
-    try std.testing.expect(clean_only.routes[1].extRoute == null);
+    var cleanOnly = try buildRoutes(std.testing.allocator, &files, .{ .urls = .clean });
+    defer cleanOnly.deinit(std.testing.allocator);
+    try std.testing.expect(cleanOnly.routes[1].extRoute == null);
 
-    var ext_only = try buildRoutes(std.testing.allocator, &files, .{ .urls = .extension });
-    defer ext_only.deinit(std.testing.allocator);
-    try std.testing.expect(ext_only.routes[1].extRoute != null);
+    var extOnly = try buildRoutes(std.testing.allocator, &files, .{ .urls = .extension });
+    defer extOnly.deinit(std.testing.allocator);
+    try std.testing.expect(extOnly.routes[1].extRoute != null);
 
     const custom = [_]CustomRoute{.{ .file = "about.html", .route = "/account", .name = "account" }};
     var over = try buildRoutes(std.testing.allocator, &files, .{ .custom = &custom });

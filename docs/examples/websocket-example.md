@@ -1,7 +1,7 @@
 # WebSocket Example
 
 WebSocket handshake and framing primitives (`httpx.websocket`, RFC 6455).
-See `examples/websocket_server.zig`.
+See `examples/websocketServer.zig`.
 
 ```zig
 // Compute Sec-WebSocket-Accept for an upgrade response.

@@ -39,12 +39,12 @@ pub const RawEvent = struct {
 };
 
 pub const RawKind = enum {
-    dir_changed,
-    dir_gone,
+    dirChanged,
+    dirGone,
 };
 
 const WatchedDir = struct {
-    fd: std.posix.fd_t,
+    fd: std.posix.fdT,
     path: []u8,
 };
 
@@ -55,7 +55,7 @@ pub const Backend = struct {
     /// udata index -> watched directory (fd stays open for the watch).
     dirs: std.ArrayList(WatchedDir),
     /// path -> index in dirs (owned keys for lookup).
-    by_path: std.StringHashMap(usize),
+    byPath: std.StringHashMap(usize),
     dirty: bool = false,
 
     pub fn init(allocator: Allocator, io: std.Io, root: []const u8) !Backend {
@@ -63,7 +63,7 @@ pub const Backend = struct {
             .allocator = allocator,
             .io = io,
             .dirs = std.ArrayList(WatchedDir).empty,
-            .by_path = std.StringHashMap(usize).init(allocator),
+            .byPath = std.StringHashMap(usize).init(allocator),
         };
         errdefer self.deinit();
         self.kq = std.c.kqueue();
@@ -78,9 +78,9 @@ pub const Backend = struct {
             self.allocator.free(w.path);
         }
         self.dirs.deinit(self.allocator);
-        // by_path keys borrow dirs[].path (no separate allocation),
+        // byPath keys borrow dirs[].path (no separate allocation),
         // so only the table itself is released here.
-        self.by_path.deinit();
+        self.byPath.deinit();
         if (self.kq >= 0) {
             _ = close(self.kq);
             self.kq = -1;
@@ -88,26 +88,26 @@ pub const Backend = struct {
     }
 
     fn watchOne(self: *Backend, path: []const u8) void {
-        if (self.by_path.contains(path)) return;
+        if (self.byPath.contains(path)) return;
         const cpath = self.allocator.dupeZ(u8, path) catch return;
         defer self.allocator.free(cpath);
         const fd = std.posix.openat(std.posix.AT.FDCWD, cpath, .{ .ACCMODE = .RDONLY }, 0) catch return;
-        // Single ownership: dirs[].path owns the bytes; by_path only
+        // Single ownership: dirs[].path owns the bytes; byPath only
         // borrows the slice. Freeing both (as separate frees) would
         // double-free the same allocation on deinit/removeWatch.
-        const owned_path = self.allocator.dupe(u8, path) catch {
+        const ownedPath = self.allocator.dupe(u8, path) catch {
             _ = close(fd);
             return;
         };
         const idx = self.dirs.items.len;
-        self.dirs.append(self.allocator, .{ .fd = fd, .path = owned_path }) catch {
-            self.allocator.free(owned_path);
+        self.dirs.append(self.allocator, .{ .fd = fd, .path = ownedPath }) catch {
+            self.allocator.free(ownedPath);
             _ = close(fd);
             return;
         };
-        self.by_path.put(owned_path, idx) catch {
+        self.byPath.put(ownedPath, idx) catch {
             _ = self.dirs.pop();
-            self.allocator.free(owned_path);
+            self.allocator.free(ownedPath);
             _ = close(fd);
             return;
         };
@@ -122,9 +122,9 @@ pub const Backend = struct {
         var evts: [1]std.c.Kevent = undefined;
         const rc = std.c.kevent(self.kq, @ptrCast(&change), 1, &evts, 0, null);
         if (rc < 0) {
-            _ = self.by_path.remove(owned_path);
+            _ = self.byPath.remove(ownedPath);
             _ = self.dirs.pop();
-            self.allocator.free(owned_path);
+            self.allocator.free(ownedPath);
             _ = close(fd);
             return;
         }
@@ -146,8 +146,8 @@ pub const Backend = struct {
         }
     }
 
-    /// Blocks up to timeout_ms for directory-level changes.
-    pub fn poll(self: *Backend, allocator: Allocator, timeout_ms: i32) ![]RawEvent {
+    /// Blocks up to timeoutMs for directory-level changes.
+    pub fn poll(self: *Backend, allocator: Allocator, timeoutMs: i32) ![]RawEvent {
         var out = std.ArrayList(RawEvent).empty;
         errdefer {
             for (out.items) |*e| e.deinit(allocator);
@@ -155,15 +155,15 @@ pub const Backend = struct {
         }
         if (self.kq < 0) return out.toOwnedSlice(allocator);
         var evts: [64]std.c.Kevent = undefined;
-        var no_changes: [0]std.c.Kevent = .{};
-        var ts = std.c.timespec{ .sec = @divTrunc(timeout_ms, 1000), .nsec = @mod(timeout_ms, 1000) * 1_000_000 };
-        if (timeout_ms < 0) {
-            const n = std.c.kevent(self.kq, &no_changes, 0, &evts, evts.len, null);
+        var noChanges: [0]std.c.Kevent = .{};
+        var ts = std.c.timespec{ .sec = @divTrunc(timeoutMs, 1000), .nsec = @mod(timeoutMs, 1000) * 1_000_000 };
+        if (timeoutMs < 0) {
+            const n = std.c.kevent(self.kq, &noChanges, 0, &evts, evts.len, null);
             if (n <= 0) return out.toOwnedSlice(allocator);
             try self.translate(allocator, &out, evts[0..@intCast(n)]);
             return out.toOwnedSlice(allocator);
         }
-        const n = std.c.kevent(self.kq, &no_changes, 0, &evts, evts.len, &ts);
+        const n = std.c.kevent(self.kq, &noChanges, 0, &evts, evts.len, &ts);
         if (n < 0) return out.toOwnedSlice(allocator);
         if (n == 0) return out.toOwnedSlice(allocator);
         try self.translate(allocator, &out, evts[0..@intCast(n)]);
@@ -178,23 +178,23 @@ pub const Backend = struct {
             }
             const idx: usize = @intCast(ev.udata);
             if (idx >= self.dirs.items.len) continue;
-            const dir_path = self.dirs.items[idx].path;
+            const dirPath = self.dirs.items[idx].path;
             if (ev.fflags & (NOTE_DELETE | NOTE_RENAME | NOTE_REVOKE) != 0) {
                 // Copy the path BEFORE removeWatch frees it.
-                const gone = try allocator.dupe(u8, dir_path);
+                const gone = try allocator.dupe(u8, dirPath);
                 errdefer allocator.free(gone);
                 self.removeWatch(idx);
                 try out.append(allocator, .{
                     .dir = gone,
-                    .kind = .dir_gone,
+                    .kind = .dirGone,
                 });
                 continue;
             }
             if (ev.fflags & (NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB) != 0) {
-                self.adoptNewSubdirs(dir_path);
+                self.adoptNewSubdirs(dirPath);
                 try out.append(allocator, .{
-                    .dir = try allocator.dupe(u8, dir_path),
-                    .kind = .dir_changed,
+                    .dir = try allocator.dupe(u8, dirPath),
+                    .kind = .dirChanged,
                 });
             }
         }
@@ -206,24 +206,24 @@ pub const Backend = struct {
         _ = close(removed.fd);
         // Borrowed map key: drop the entry without freeing; the bytes
         // are freed once below via removed.path.
-        _ = self.by_path.remove(removed.path);
+        _ = self.byPath.remove(removed.path);
         self.allocator.free(removed.path);
-        var it = self.by_path.iterator();
+        var it = self.byPath.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.* > idx) entry.value_ptr.* -= 1;
         }
     }
 
-    fn adoptNewSubdirs(self: *Backend, dir_path: []const u8) void {
+    fn adoptNewSubdirs(self: *Backend, dirPath: []const u8) void {
         const cwd: std.Io.Dir = .cwd();
-        var dir = cwd.openDir(self.io, dir_path, .{ .iterate = true }) catch return;
+        var dir = cwd.openDir(self.io, dirPath, .{ .iterate = true }) catch return;
         defer dir.close(self.io);
         var it = dir.iterate();
         while (it.next(self.io) catch null) |entry| {
             if (entry.kind != .directory) continue;
             if (entry.name.len > 512) continue;
             var buf: [1024]u8 = undefined;
-            const full = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
+            const full = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dirPath, entry.name }) catch continue;
             self.watchOne(full);
         }
     }

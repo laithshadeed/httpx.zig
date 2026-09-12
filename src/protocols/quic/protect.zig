@@ -30,7 +30,7 @@ pub fn hpMaskAesCtx(ctx: anytype, sample: *const [16]u8) [5]u8 {
     return .{ block[0], block[1], block[2], block[3], block[4] };
 }
 
-const chacha_core = std.crypto.stream.chacha.ChaCha20IETF;
+const chachaCore = std.crypto.stream.chacha.ChaCha20IETF;
 
 /// ChaCha20 header-protection mask (key must be 32 bytes).
 pub fn hpMaskChacha(key: [32]u8, sample: *const [16]u8) [5]u8 {
@@ -38,7 +38,7 @@ pub fn hpMaskChacha(key: [32]u8, sample: *const [16]u8) [5]u8 {
     @memcpy(&nonce, sample[4..16]);
     var zeros: [16]u8 = .{0} ** 16;
     var ks: [16]u8 = undefined;
-    chacha_core.xor(&ks, &zeros, 0, key, nonce);
+    chachaCore.xor(&ks, &zeros, 0, key, nonce);
     return .{ ks[0], ks[1], ks[2], ks[3], ks[4] };
 }
 
@@ -53,17 +53,17 @@ pub fn removeHeaderProtection(
     comptime cipher: enum { aes, chacha },
     key: if (cipher == .aes) [16]u8 else [32]u8,
 ) u8 {
-    const sample_off = pnOffset + 4;
+    const sampleOff = pnOffset + 4;
     var sample: [16]u8 = undefined;
-    @memcpy(&sample, hdr[sample_off..][0..16]);
+    @memcpy(&sample, hdr[sampleOff..][0..16]);
 
     const mask = switch (cipher) {
         .aes => hpMaskAesCtx(Aes.Aes128.initEnc(key), &sample),
         .chacha => hpMaskChacha(key, &sample),
     };
 
-    const is_long = hdr[0] & 0x80 != 0;
-    const bits: u8 = if (is_long) 0x0F else 0x1F;
+    const isLong = hdr[0] & 0x80 != 0;
+    const bits: u8 = if (isLong) 0x0F else 0x1F;
     hdr[0] ^= mask[0] & bits;
 
     for (0..pnLen) |i| {
@@ -166,18 +166,18 @@ pub fn sealWithKeys(
 ) void {
     const nonce = buildNonce(&keys.iv, pn);
     switch (keys.cipher) {
-        .aes_128_gcm => {
+        .aes128Gcm => {
             var k16: [16]u8 = undefined;
             @memcpy(&k16, keys.key[0..16]);
             Aes128Gcm.encrypt(out, tag, plaintext, aad, nonce, k16);
         },
-        .aes_256_gcm => {
+        .aes256Gcm => {
             const Aes256Gcm = std.crypto.aead.aes_gcm.Aes256Gcm;
             var k32: [32]u8 = undefined;
             @memcpy(&k32, keys.key[0..32]);
             Aes256Gcm.encrypt(out, tag, plaintext, aad, nonce, k32);
         },
-        .chacha20_poly1305 => {
+        .chacha20Poly1305 => {
             const ChaChaPoly = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
             var k32: [32]u8 = undefined;
             @memcpy(&k32, keys.key[0..32]);
@@ -197,20 +197,20 @@ pub fn openWithKeys(
 ) Error!void {
     const nonce = buildNonce(&keys.iv, pn);
     switch (keys.cipher) {
-        .aes_128_gcm => {
+        .aes128Gcm => {
             var k16: [16]u8 = undefined;
             @memcpy(&k16, keys.key[0..16]);
             Aes128Gcm.decrypt(plaintextOut, ciphertext, tag, aad, nonce, k16) catch
                 return Error.AuthenticationFailed;
         },
-        .aes_256_gcm => {
+        .aes256Gcm => {
             const Aes256Gcm = std.crypto.aead.aes_gcm.Aes256Gcm;
             var k32: [32]u8 = undefined;
             @memcpy(&k32, keys.key[0..32]);
             Aes256Gcm.decrypt(plaintextOut, ciphertext, tag, aad, nonce, k32) catch
                 return Error.AuthenticationFailed;
         },
-        .chacha20_poly1305 => {
+        .chacha20Poly1305 => {
             const ChaChaPoly = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
             var k32: [32]u8 = undefined;
             @memcpy(&k32, keys.key[0..32]);
@@ -222,7 +222,7 @@ pub fn openWithKeys(
 
 /// Header protection with ProtectionKeys (handles AES vs ChaCha).
 pub fn removeHeaderProtectionWithKeys(hdr: []u8, pnOffset: usize, pnLen: usize, keys: @import("crypto.zig").ProtectionKeys) u8 {
-    if (keys.cipher == .chacha20_poly1305) {
+    if (keys.cipher == .chacha20Poly1305) {
         var hp32: [32]u8 = undefined;
         @memcpy(&hp32, keys.hp[0..32]);
         return removeHeaderProtection(hdr, pnOffset, pnLen, .chacha, hp32);
@@ -270,7 +270,7 @@ pub const retrySecretV1 = [_]u8{
     0x87, 0x6e, 0xca, 0x87, 0x6e, 0x6f, 0xca, 0x8e,
 };
 
-const crypto_mod = @import("crypto.zig");
+const cryptoMod = @import("crypto.zig");
 
 /// Fixed Retry protection keys (QUIC v1).
 pub const retryKeysV1 = struct {
@@ -279,7 +279,7 @@ pub const retryKeysV1 = struct {
 };
 
 /// Computes the 16-byte Retry integrity tag over the pseudo-packet:
-/// odcid_len || odcid || retry_packet_without_tag.
+/// odcidLen || odcid || retryPacketWithoutTag.
 pub fn retryIntegrityTag(
     odcid: []const u8,
     retryPacketNoTag: []const u8,
@@ -289,19 +289,19 @@ pub fn retryIntegrityTag(
     // would overflow for large packets; stream through GCM's AD is not
     // exposed by std, so build the buffer.
     // NOTE: called once per Retry; allocation-free path uses a fixed cap.
-    var pseudo_buf: [1500]u8 = undefined;
+    var pseudoBuf: [1500]u8 = undefined;
     var len: usize = 0;
-    pseudo_buf[len] = @intCast(odcid.len);
+    pseudoBuf[len] = @intCast(odcid.len);
     len += 1;
-    @memcpy(pseudo_buf[len..][0..odcid.len], odcid);
+    @memcpy(pseudoBuf[len..][0..odcid.len], odcid);
     len += odcid.len;
-    const bodyLen = @min(retryPacketNoTag.len, pseudo_buf.len - len);
-    @memcpy(pseudo_buf[len..][0..bodyLen], retryPacketNoTag[0..bodyLen]);
+    const bodyLen = @min(retryPacketNoTag.len, pseudoBuf.len - len);
+    @memcpy(pseudoBuf[len..][0..bodyLen], retryPacketNoTag[0..bodyLen]);
     len += bodyLen;
 
     var empty: [0]u8 = .{};
-    const zero_iv: [12]u8 = retryKeysV1.nonce;
-    Aes128Gcm.encrypt(tagOut[0..0], tagOut, empty[0..], pseudo_buf[0..len], zero_iv, retryKeysV1.key);
+    const zeroIv: [12]u8 = retryKeysV1.nonce;
+    Aes128Gcm.encrypt(tagOut[0..0], tagOut, empty[0..], pseudoBuf[0..len], zeroIv, retryKeysV1.key);
 }
 
 // Tests
@@ -328,13 +328,13 @@ test "unprotecting RFC 9001 A.2 protected header recovers original" {
     var hdr: [22]u8 = protected;
     // Header-protection sample = first 16 bytes of protected PAYLOAD
     // (RFC A.2). Real packets carry these; tests append them explicitly.
-    const payload_sample = [_]u8{
+    const payloadSample = [_]u8{
         0xd1, 0xb1, 0xc9, 0x8d, 0xd7, 0x68, 0x9f, 0xb8,
         0xec, 0x11, 0xd2, 0x42, 0xb1, 0x23, 0xdc, 0x9b,
     };
     var buf: [22 + 16]u8 = undefined;
     @memcpy(buf[0..22], hdr[0..]);
-    @memcpy(buf[22..], payload_sample[0..]);
+    @memcpy(buf[22..], payloadSample[0..]);
 
     const pnOffset = 18;
     // Exposed low 2 bits of the FIRST PROTECTED PN byte give the length.
@@ -364,17 +364,17 @@ test "payload seal/open roundtrip and tamper detection" {
     const plaintext = "CRYPTO frame payload goes here";
     var ct: [plaintext.len]u8 = undefined;
     var tag: [16]u8 = undefined;
-    var pt_back: [plaintext.len]u8 = undefined;
+    var ptBack: [plaintext.len]u8 = undefined;
 
     const aad = [_]u8{ 0xc3, 0x00, 0x00, 0x00, 0x01 };
     seal(ct[0..], &tag, plaintext, aad[0..], &key, &iv, 2);
-    try open(pt_back[0..], ct[0..], tag, aad[0..], &key, &iv, 2);
-    try std.testing.expectEqualStrings(plaintext, pt_back[0..]);
+    try open(ptBack[0..], ct[0..], tag, aad[0..], &key, &iv, 2);
+    try std.testing.expectEqualStrings(plaintext, ptBack[0..]);
 
     // Flip one bit in the AAD -> authentication failure.
-    var bad_aad = aad;
-    bad_aad[4] ^= 1;
-    try std.testing.expectError(Error.AuthenticationFailed, open(pt_back[0..], ct[0..], tag, bad_aad[0..], &key, &iv, 2));
+    var badAad = aad;
+    badAad[4] ^= 1;
+    try std.testing.expectError(Error.AuthenticationFailed, open(ptBack[0..], ct[0..], tag, badAad[0..], &key, &iv, 2));
 }
 
 test "pn encoding length selection" {
@@ -397,13 +397,13 @@ test "pn reconstruction window behavior" {
 
 test "retry integrity tag matches RFC 9001 A.4" {
     const odcid = [_]u8{ 0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08 };
-    const retry_body = [_]u8{
+    const retryBody = [_]u8{
         0xff, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0xf0,
         0x67, 0xa5, 0x50, 0x2a, 0x42, 0x62, 0xb5, 0x74,
         0x6f, 0x6b, 0x65, 0x6e,
     };
     var tag: [16]u8 = undefined;
-    retryIntegrityTag(odcid[0..], retry_body[0..], &tag);
+    retryIntegrityTag(odcid[0..], retryBody[0..], &tag);
     const want = [_]u8{ 0x04, 0xa2, 0x65, 0xba, 0x2e, 0xff, 0x4d, 0x82, 0x90, 0x58, 0xfb, 0x3f, 0x0f, 0x24, 0x96, 0xba };
     try std.testing.expectEqualSlices(u8, &want, &tag);
 }

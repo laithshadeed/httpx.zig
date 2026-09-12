@@ -2,8 +2,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const parser_mod = @import("parser.zig");
-pub const TemplateAst = parser_mod.TemplateAst;
+const parserMod = @import("parser.zig");
+pub const TemplateAst = parserMod.TemplateAst;
 
 pub const CachedTemplate = struct {
     name: []const u8,
@@ -24,7 +24,7 @@ pub const Cache = struct {
     lock: sync.Spinlock = .{},
     // map templateName -> CachedTemplate
     entries: std.StringHashMap(CachedTemplate),
-    // map dependency_name -> list of dependents
+    // map dependencyName -> list of dependents
     // e.g. "base.html" -> ["index.html", "about.html"]
     dependents: std.StringHashMap(std.ArrayList([]const u8)),
 
@@ -49,8 +49,8 @@ pub const Cache = struct {
         }
         self.entries.deinit();
 
-        var dep_it = self.dependents.iterator();
-        while (dep_it.next()) |entry| {
+        var depIt = self.dependents.iterator();
+        while (depIt.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
             for (entry.value_ptr.items) |dep| {
                 self.allocator.free(dep);
@@ -81,8 +81,8 @@ pub const Cache = struct {
         ast: TemplateAst,
     ) !void {
         if (!self.config.enabled) {
-            var mut_ast = ast;
-            mut_ast.deinit();
+            var mutAst = ast;
+            mutAst.deinit();
             self.allocator.free(source);
             return;
         }
@@ -94,15 +94,15 @@ pub const Cache = struct {
         if (self.entries.fetchRemove(name)) |kv| {
             self.allocator.free(kv.key);
             self.allocator.free(kv.value.source);
-            var old_ast = kv.value.ast;
-            old_ast.deinit();
+            var oldAst = kv.value.ast;
+            oldAst.deinit();
         }
 
-        const owned_name = try self.allocator.dupe(u8, name);
-        errdefer self.allocator.free(owned_name);
+        const ownedName = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(ownedName);
 
-        try self.entries.put(owned_name, .{
-            .name = owned_name,
+        try self.entries.put(ownedName, .{
+            .name = ownedName,
             .ast = ast,
             .source = source,
         });
@@ -129,8 +129,8 @@ pub const Cache = struct {
             if (std.mem.eql(u8, existing, dependent)) return;
         }
 
-        const owned_dep = try self.allocator.dupe(u8, dependent);
-        try gop.value_ptr.append(self.allocator, owned_dep);
+        const ownedDep = try self.allocator.dupe(u8, dependent);
+        try gop.value_ptr.append(self.allocator, ownedDep);
     }
 
     /// Invalidates a template and recursively invalidates all templates that depend on it.
@@ -146,13 +146,13 @@ pub const Cache = struct {
         if (self.entries.fetchRemove(name)) |kv| {
             self.allocator.free(kv.key);
             self.allocator.free(kv.value.source);
-            var old_ast = kv.value.ast;
-            old_ast.deinit();
+            var oldAst = kv.value.ast;
+            oldAst.deinit();
         }
 
         // Invalidate dependents
-        if (self.dependents.get(name)) |dep_list| {
-            for (dep_list.items) |dep| {
+        if (self.dependents.get(name)) |depList| {
+            for (depList.items) |dep| {
                 self.invalidateRecursive(dep);
             }
         }
@@ -181,16 +181,16 @@ test "Cache stores and invalidates with dependency tracking" {
     defer cache.deinit();
 
     // Create a base template AST
-    const base_src = try alloc.dupe(u8, "<html>{% block body %}{% endblock %}</html>");
-    var base_parser = parser_mod.Parser.init(alloc, "base.html", base_src);
-    const base_ast = try base_parser.parse();
-    try cache.put("base.html", base_src, base_ast);
+    const baseSrc = try alloc.dupe(u8, "<html>{% block body %}{% endblock %}</html>");
+    var baseParser = parserMod.Parser.init(alloc, "base.html", baseSrc);
+    const baseAst = try baseParser.parse();
+    try cache.put("base.html", baseSrc, baseAst);
 
     // Create a child template AST that extends base.html
-    const child_src = try alloc.dupe(u8, "{% extends \"base.html\" %}{% block body %}Hello{% endblock %}");
-    var child_parser = parser_mod.Parser.init(alloc, "index.html", child_src);
-    const child_ast = try child_parser.parse();
-    try cache.put("index.html", child_src, child_ast);
+    const childSrc = try alloc.dupe(u8, "{% extends \"base.html\" %}{% block body %}Hello{% endblock %}");
+    var childParser = parserMod.Parser.init(alloc, "index.html", childSrc);
+    const childAst = try childParser.parse();
+    try cache.put("index.html", childSrc, childAst);
 
     try testing.expect(cache.get("base.html") != null);
     try testing.expect(cache.get("index.html") != null);

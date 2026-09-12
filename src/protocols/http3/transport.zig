@@ -21,13 +21,13 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const quic_conn = @import("../quic/connection.zig");
-const quic_ep = @import("../quic/transport.zig");
-const quic_hs = @import("../quic/handshake.zig");
+const quicConn = @import("../quic/connection.zig");
+const quicEp = @import("../quic/transport.zig");
+const quicHs = @import("../quic/handshake.zig");
 const h3conn = @import("connection.zig");
 const h3frame = @import("frame.zig");
 const h3qpack = @import("qpack.zig");
-const clock_mod = @import("../../common/clock.zig");
+const clockMod = @import("../../common/clock.zig");
 
 pub const Error = error{
     HandshakeFailed,
@@ -71,13 +71,13 @@ const RespState = struct {
 
 pub const Client = struct {
     allocator: Allocator,
-    ep: *quic_ep.Endpoint,
+    ep: *quicEp.Endpoint,
     h3: h3conn.Connection,
     controlDone: bool = false,
     resp: RespState = .{},
     maxBytes: usize = 64 * 1024 * 1024,
 
-    pub fn init(allocator: Allocator, ep: *quic_ep.Endpoint) Client {
+    pub fn init(allocator: Allocator, ep: *quicEp.Endpoint) Client {
         return .{ .allocator = allocator, .ep = ep, .h3 = h3conn.Connection.init(allocator, .client) };
     }
 
@@ -126,13 +126,13 @@ pub const Client = struct {
         authority: []const u8,
         path: []const u8,
         extra: []const Header,
-        pump: *quic_ep.Pump,
+        pump: *quicEp.Pump,
         dest: std.Io.net.IpAddress,
         deadlineMs: u64,
     ) !H3Response {
         const a = self.allocator;
         self.ep.conn.cbs = .{ .ctx = self, .onStreamData = onStream };
-        try self.setupStreams(@intCast(clock_mod.millisNow()));
+        try self.setupStreams(@intCast(clockMod.millisNow()));
         _ = try self.ep.flush(dest);
 
         const sid = self.h3.nextBidiStreamId();
@@ -145,15 +145,15 @@ pub const Client = struct {
         for (extra) |h| try qextra.append(a, .{ .name = h.name, .value = h.value });
         const head = try rs.buildRequestHeaders(method, scheme, authority, path, qextra.items);
         defer a.free(head);
-        try sendStream(self.ep.conn, sid, 0, head, true, @intCast(clock_mod.millisNow()));
+        try sendStream(self.ep.conn, sid, 0, head, true, @intCast(clockMod.millisNow()));
         _ = try self.ep.flush(dest);
 
-        const start: u64 = @intCast(clock_mod.millisNow());
+        const start: u64 = @intCast(clockMod.millisNow());
         while (true) {
-            const now: u64 = @intCast(clock_mod.millisNow());
+            const now: u64 = @intCast(clockMod.millisNow());
             if (now -| start > deadlineMs) return error.Timeout;
             const remain = deadlineMs -| (now -| start);
-            try quic_hs.feedPumped(self.ep, pump, dest, @min(remain, 1000), now);
+            try quicHs.feedPumped(self.ep, pump, dest, @min(remain, 1000), now);
             if (self.resp.overflow) return error.ResponseTooLarge;
             if (self.resp.fin) break;
             if (self.ep.conn.state == .closed or self.ep.conn.state == .draining) {
@@ -181,7 +181,7 @@ pub const Client = struct {
         while (off < bytes.len) {
             const fr = try h3frame.parseFrame(bytes, &off);
             if (fr.frameType == 0x1) {
-                const fields = try self.h3.qdec.decodeSectionWithPrefix(fr.payload);
+                const fields = try self.h3.qdec.decodeSectionCounted(fr.payload, 0, null);
                 defer self.h3.qdec.freeFields(fields);
                 for (fields) |f| {
                     if (std.mem.eql(u8, f.name, ":status")) {
@@ -211,33 +211,33 @@ pub const Client = struct {
 };
 
 /// Sends `bytes` as one QUIC STREAM frame on `sid`.
-fn sendStream(conn: *quic_conn.Connection, sid: u64, offset: u64, bytes: []const u8, fin: bool, nowMs: u64) !void {
+fn sendStream(conn: *quicConn.Connection, sid: u64, offset: u64, bytes: []const u8, fin: bool, nowMs: u64) !void {
     const B = struct {
-        var s_id: u64 = 0;
-        var s_off: u64 = 0;
-        var s_fin: bool = false;
-        var s_data: []const u8 = "";
-        pub fn build(gpa: Allocator, payload: *std.ArrayList(u8)) quic_conn.Error!void {
-            @import("../quic/frames.zig").encode(payload, gpa, .{ .stream = .{ .id = s_id, .offset = s_off, .data = s_data, .fin = s_fin } }) catch
-                return quic_conn.Error.OutOfMemory;
+        var sId: u64 = 0;
+        var sOff: u64 = 0;
+        var sFin: bool = false;
+        var sData: []const u8 = "";
+        pub fn build(gpa: Allocator, payload: *std.ArrayList(u8)) quicConn.Error!void {
+            @import("../quic/frames.zig").encode(payload, gpa, .{ .stream = .{ .id = sId, .offset = sOff, .data = sData, .fin = sFin } }) catch
+                return quicConn.Error.OutOfMemory;
         }
     };
-    B.s_id = sid;
-    B.s_off = offset;
-    B.s_fin = fin;
-    B.s_data = bytes;
+    B.sId = sid;
+    B.sOff = offset;
+    B.sFin = fin;
+    B.sData = bytes;
     try conn.sendFrames(.application, B.build, nowMs);
 }
 
 /// Maps QUIC/driver failures onto the H3 error set, preserving the
 /// driver's precise cause (ALPN vs certificate vs generic).
-pub fn mapHandshakeError(err: anyerror, detail: quic_hs.Driver.Detail) Error {
+pub fn mapHandshakeError(err: anyerror, detail: quicHs.Driver.Detail) Error {
     return switch (err) {
         error.OutOfMemory => Error.OutOfMemory,
         error.HandshakeTimeout => Error.Timeout,
         else => switch (detail) {
-            .alpn_mismatch => Error.AlpnMismatch,
-            .cert_failed => Error.TlsCertificateNotVerified,
+            .alpnMismatch => Error.AlpnMismatch,
+            .certFailed => Error.TlsCertificateNotVerified,
             else => Error.TlsHandshakeFailed,
         },
     };

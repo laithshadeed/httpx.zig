@@ -60,7 +60,7 @@ pub const EventParser = struct {
         self.lineBuf.deinit(self.allocator);
     }
 
-    /// Resets per-event data while keeping stream-level state (last_id and retryMs).
+    /// Resets per-event data while keeping stream-level state (lastId and retryMs).
     pub fn resetEventData(self: *EventParser) void {
         self.dataBuf.clearRetainingCapacity();
         self.eventTypeBuf.clearRetainingCapacity();
@@ -79,20 +79,20 @@ pub const EventParser = struct {
         // Empty line: dispatch event if data was accumulated
         if (line.len == 0) {
             if (self.dataBuf.items.len > 0) {
-                const ev_type = if (self.eventTypeBuf.items.len > 0)
+                const evType = if (self.eventTypeBuf.items.len > 0)
                     self.eventTypeBuf.items
                 else
                     "message";
 
-                const ev_id: ?[]const u8 = if (self.hasId)
+                const evId: ?[]const u8 = if (self.hasId)
                     self.lastIdBuf.items
                 else
                     null;
 
                 const event = Event{
-                    .eventType = ev_type,
+                    .eventType = evType,
                     .data = self.dataBuf.items,
-                    .id = ev_id,
+                    .id = evId,
                     .retryMs = self.retryMs,
                 };
                 return event;
@@ -108,32 +108,32 @@ pub const EventParser = struct {
         }
 
         // Field parsing: field: value OR field (no colon)
-        const colon_idx = std.mem.indexOfScalar(u8, line, ':');
-        const field_name = if (colon_idx) |idx| line[0..idx] else line;
-        var field_value = if (colon_idx) |idx| line[idx + 1 ..] else "";
+        const colonIdx = std.mem.indexOfScalar(u8, line, ':');
+        const fieldName = if (colonIdx) |idx| line[0..idx] else line;
+        var fieldValue = if (colonIdx) |idx| line[idx + 1 ..] else "";
 
         // If value starts with a single space, remove it per WHATWG spec
-        if (field_value.len > 0 and field_value[0] == ' ') {
-            field_value = field_value[1..];
+        if (fieldValue.len > 0 and fieldValue[0] == ' ') {
+            fieldValue = fieldValue[1..];
         }
 
-        if (std.mem.eql(u8, field_name, "event")) {
+        if (std.mem.eql(u8, fieldName, "event")) {
             self.eventTypeBuf.clearRetainingCapacity();
-            try self.eventTypeBuf.appendSlice(self.allocator, field_value);
-        } else if (std.mem.eql(u8, field_name, "data")) {
+            try self.eventTypeBuf.appendSlice(self.allocator, fieldValue);
+        } else if (std.mem.eql(u8, fieldName, "data")) {
             if (self.dataBuf.items.len > 0) {
                 try self.dataBuf.append(self.allocator, '\n');
             }
-            try self.dataBuf.appendSlice(self.allocator, field_value);
-        } else if (std.mem.eql(u8, field_name, "id")) {
+            try self.dataBuf.appendSlice(self.allocator, fieldValue);
+        } else if (std.mem.eql(u8, fieldName, "id")) {
             // Null characters inside ID are rejected / ignored per spec
-            if (std.mem.indexOfScalar(u8, field_value, 0) == null) {
+            if (std.mem.indexOfScalar(u8, fieldValue, 0) == null) {
                 self.lastIdBuf.clearRetainingCapacity();
-                try self.lastIdBuf.appendSlice(self.allocator, field_value);
+                try self.lastIdBuf.appendSlice(self.allocator, fieldValue);
                 self.hasId = true;
             }
-        } else if (std.mem.eql(u8, field_name, "retry")) {
-            if (std.fmt.parseInt(u32, field_value, 10)) |val| {
+        } else if (std.mem.eql(u8, fieldName, "retry")) {
+            if (std.fmt.parseInt(u32, fieldValue, 10)) |val| {
                 self.retryMs = val;
             } else |_| {}
         }
@@ -150,8 +150,8 @@ pub const EventParser = struct {
     ) ParseError!void {
         var pos: usize = 0;
         while (pos < chunk.len) {
-            const next_nl = std.mem.indexOfScalar(u8, chunk[pos..], '\n');
-            if (next_nl) |offset| {
+            const nextNl = std.mem.indexOfScalar(u8, chunk[pos..], '\n');
+            if (nextNl) |offset| {
                 const end = pos + offset;
                 const part = chunk[pos..end];
                 if (self.lineBuf.items.len > 0) {
@@ -197,25 +197,25 @@ pub fn parseAll(allocator: Allocator, stream: []const u8) ParseError![]Event {
         list: *std.ArrayList(Event),
 
         fn onEvent(ctx: *@This(), ev: Event) void {
-            const owned_data = ctx.a.dupe(u8, ev.data) catch return;
-            const owned_type = if (!std.mem.eql(u8, ev.eventType, "message"))
+            const ownedData = ctx.a.dupe(u8, ev.data) catch return;
+            const ownedType = if (!std.mem.eql(u8, ev.eventType, "message"))
                 ctx.a.dupe(u8, ev.eventType) catch {
-                    ctx.a.free(owned_data);
+                    ctx.a.free(ownedData);
                     return;
                 }
             else
                 "message";
-            const owned_id = if (ev.id) |id| ctx.a.dupe(u8, id) catch null else null;
+            const ownedId = if (ev.id) |id| ctx.a.dupe(u8, id) catch null else null;
 
             ctx.list.append(ctx.a, .{
-                .eventType = owned_type,
-                .data = owned_data,
-                .id = owned_id,
+                .eventType = ownedType,
+                .data = ownedData,
+                .id = ownedId,
                 .retryMs = ev.retryMs,
             }) catch {
-                ctx.a.free(owned_data);
-                if (!std.mem.eql(u8, owned_type, "message")) ctx.a.free(owned_type);
-                if (owned_id) |id| ctx.a.free(id);
+                ctx.a.free(ownedData);
+                if (!std.mem.eql(u8, ownedType, "message")) ctx.a.free(ownedType);
+                if (ownedId) |id| ctx.a.free(id);
             };
         }
     };

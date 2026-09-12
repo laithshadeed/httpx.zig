@@ -1,7 +1,7 @@
 # Transfer Checksum
 
 Cryptographic verification happens inline during downloads via
-`VerifyOptions`. See `examples/download_verify.zig`.
+`VerifyOptions`. See `examples/downloadVerify.zig`.
 
 ```zig
 const res = try client.download(url, .{

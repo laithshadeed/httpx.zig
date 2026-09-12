@@ -1,6 +1,6 @@
 # Example: Cookie Server
 
-Demonstrates cookie_server.zig using the canonical HTTPX API.
+Demonstrates cookieServer.zig using the canonical HTTPX API.
 
 ## Complete Example
 

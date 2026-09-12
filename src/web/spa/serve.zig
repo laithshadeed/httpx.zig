@@ -5,11 +5,11 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const router_mod = @import("../router/router.zig");
-const Router = router_mod.Router;
-const Context = router_mod.Context;
-const Response = router_mod.Response;
-const static_files = @import("../static_files/serve.zig");
+const routerMod = @import("../router/router.zig");
+const Router = routerMod.Router;
+const Context = routerMod.Context;
+const Response = routerMod.Response;
+const staticFiles = @import("../static_files/serve.zig");
 
 pub const Config = struct {
     /// The filesystem path to the SPA directory (e.g. "./dist").
@@ -28,7 +28,7 @@ pub const Config = struct {
 /// precedence; register it last so the static mount only claims what
 /// remains.
 pub fn register(router: *Router, cfg: Config) !void {
-    try static_files.register(router, .{
+    try staticFiles.register(router, .{
         .root = cfg.root,
         .mount = cfg.mount,
         .indexFile = cfg.fallback,

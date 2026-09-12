@@ -1,7 +1,7 @@
 # HTTP Auth Helpers
 
 Bearer and Basic auth on both sides of the wire. See
-`examples/auth_and_errors.zig`.
+`examples/authAndErrors.zig`.
 
 ```zig
 // Server side: read credentials from the context.

@@ -397,7 +397,7 @@ pub const Response = struct {
 HTTPX has no client interceptor registry. Cross-cutting request/response
 behavior belongs in server middleware (`httpx.middleware.*`) or in small
 wrappers around the URL-first client calls. The
-`examples/interceptor_example.zig` demo exercises a plain server route plus
+`examples/interceptorExample.zig` demo exercises a plain server route plus
 a client GET against it.
 
 ## Error Handling

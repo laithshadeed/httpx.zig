@@ -77,11 +77,11 @@ fn mapTlsHandshakeErr(err: anyerror) FtpError {
     };
 }
 
-const max_reply_bytes: usize = 1024 * 1024;
-const max_command_bytes: usize = 510;
+const maxReplyBytes: usize = 1024 * 1024;
+const maxCommandBytes: usize = 510;
 
 fn validCommandLine(line: []const u8) bool {
-    return line.len <= max_command_bytes and std.mem.indexOfAny(u8, line, "\r\n") == null;
+    return line.len <= maxCommandBytes and std.mem.indexOfAny(u8, line, "\r\n") == null;
 }
 
 /// Parses one full reply starting at `buf[pos]`; multiline-aware.
@@ -89,14 +89,14 @@ fn validCommandLine(line: []const u8) bool {
 fn parseReplyAt(buf: []const u8, pos: usize) ?struct { reply: Reply, consumed: usize } {
     if (pos > buf.len) return null;
     const firstEnd = std.mem.indexOfPos(u8, buf, pos, "\r\n") orelse return null;
-    const first_line = buf[pos..firstEnd];
-    if (first_line.len < 3) return null;
-    const code = std.fmt.parseInt(u16, first_line[0..3], 10) catch return null;
+    const firstLine = buf[pos..firstEnd];
+    if (firstLine.len < 3) return null;
+    const code = std.fmt.parseInt(u16, firstLine[0..3], 10) catch return null;
 
-    if (first_line.len == 3 or first_line[3] == ' ') {
-        return .{ .reply = .{ .code = code, .text = first_line }, .consumed = firstEnd + 2 - pos };
+    if (firstLine.len == 3 or firstLine[3] == ' ') {
+        return .{ .reply = .{ .code = code, .text = firstLine }, .consumed = firstEnd + 2 - pos };
     }
-    if (first_line[3] != '-') return null;
+    if (firstLine[3] != '-') return null;
 
     var marker: [4]u8 = undefined;
     _ = std.fmt.bufPrint(&marker, "{d}", .{code}) catch return null;
@@ -119,8 +119,8 @@ fn parseReplyAt(buf: []const u8, pos: usize) ?struct { reply: Reply, consumed: u
 /// "227 ... (h1,h2,h3,h4,p1,p2)" -> IPv4 + port.
 fn parsePasv(replyText: []const u8) ?struct { ip: [4]u8, port: u16 } {
     const open = std.mem.indexOfScalar(u8, replyText, '(') orelse return null;
-    const close_rel = std.mem.indexOfScalar(u8, replyText[open..], ')') orelse return null;
-    const inner = replyText[open + 1 ..][0 .. close_rel - 1];
+    const closeRel = std.mem.indexOfScalar(u8, replyText[open..], ')') orelse return null;
+    const inner = replyText[open + 1 ..][0 .. closeRel - 1];
 
     var nums: [6]u16 = undefined;
     var it = std.mem.splitScalar(u8, inner, ',');
@@ -226,12 +226,9 @@ pub const Client = struct {
     lastPwdLen: usize = 0,
     lastListing: std.ArrayList(u8) = .empty,
 
-    /// Connect to an FTP server with zero-config default allocator.
-    pub fn connect(opts: Options) FtpError!Client {
-        return connectWithAlloc(std.heap.page_allocator, opts);
-    }
-
-    pub fn connectWithAlloc(allocator: Allocator, opts: Options) FtpError!Client {
+    /// Connect to an FTP server. The client owns its IO engine unless
+    /// one is supplied later via configuration.
+    pub fn connect(allocator: Allocator, opts: Options) FtpError!Client {
         const threaded = try allocator.create(std.Io.Threaded);
         errdefer allocator.destroy(threaded);
         threaded.* = .init(allocator, .{});
@@ -421,7 +418,7 @@ pub const Client = struct {
             const n = try self.ctrlRead(buf[0..]);
             if (n == 0) return FtpError.UnexpectedEof;
             self.readBuf.appendSlice(self.allocator, buf[0..n]) catch return FtpError.OutOfMemory;
-            if (self.readBuf.items.len > max_reply_bytes) return FtpError.ReplyTooLarge;
+            if (self.readBuf.items.len > maxReplyBytes) return FtpError.ReplyTooLarge;
         }
     }
 
@@ -430,9 +427,9 @@ pub const Client = struct {
         return self.readReply();
     }
 
-    fn expectCode(self: *Client, cmd: []const u8, code_lo: u16, code_hi: u16) FtpError!Reply {
+    fn expectCode(self: *Client, cmd: []const u8, codeLo: u16, codeHi: u16) FtpError!Reply {
         const r = try self.command(cmd);
-        if (r.code < code_lo or r.code > code_hi) {
+        if (r.code < codeLo or r.code > codeHi) {
             self.allocator.free(r.text);
             return FtpError.ProtocolError;
         }
@@ -441,15 +438,15 @@ pub const Client = struct {
 
     pub fn login(self: *Client, user: []const u8, password: []const u8) FtpError!void {
         var buf: [512]u8 = undefined;
-        const user_cmd = std.fmt.bufPrint(&buf, "USER {s}", .{user}) catch return FtpError.WriteFailed;
-        const r1 = try self.command(user_cmd);
+        const userCmd = std.fmt.bufPrint(&buf, "USER {s}", .{user}) catch return FtpError.WriteFailed;
+        const r1 = try self.command(userCmd);
         defer self.allocator.free(r1.text);
         switch (r1.code) {
             230 => {},
             331 => {
                 var pbuf: [512]u8 = undefined;
-                const pass_cmd = std.fmt.bufPrint(&pbuf, "PASS {s}", .{password}) catch return FtpError.WriteFailed;
-                const r2 = try self.expectCode(pass_cmd, 200, 299);
+                const passCmd = std.fmt.bufPrint(&pbuf, "PASS {s}", .{password}) catch return FtpError.WriteFailed;
+                const r2 = try self.expectCode(passCmd, 200, 299);
                 self.allocator.free(r2.text);
             },
             else => {
@@ -473,9 +470,9 @@ pub const Client = struct {
         defer self.allocator.free(r.text);
         var dir: []const u8 = "";
         // Reply format: 257 "/path/name" ...
-        if (std.mem.indexOfScalar(u8, r.text, '"')) |first_quote| {
-            if (std.mem.indexOfScalarPos(u8, r.text, first_quote + 1, '"')) |second_quote| {
-                dir = r.text[first_quote + 1 .. second_quote];
+        if (std.mem.indexOfScalar(u8, r.text, '"')) |firstQuote| {
+            if (std.mem.indexOfScalarPos(u8, r.text, firstQuote + 1, '"')) |secondQuote| {
+                dir = r.text[firstQuote + 1 .. secondQuote];
             } else {
                 dir = std.mem.trim(u8, r.text[3..], " \r\n");
             }
@@ -616,7 +613,7 @@ pub const Client = struct {
         return tcp.connectAddress(self.ctrl.io, &addr) catch FtpError.ConnectFailed;
     }
 
-    /// Downloads `path`, streaming each chunk to `sink(data_chunk)` until EOF.
+    /// Downloads `path`, streaming each chunk to `sink(dataChunk)` until EOF.
     pub fn download(
         self: *Client,
         path: []const u8,
@@ -741,7 +738,7 @@ test "reply parser rejects an out-of-range cursor" {
 test "ftp command line validation rejects injection and oversized input" {
     try std.testing.expect(validCommandLine("USER anonymous"));
     try std.testing.expect(!validCommandLine("USER guest\r\nQUIT"));
-    const oversized = [_]u8{'x'} ** (max_command_bytes + 1);
+    const oversized = [_]u8{'x'} ** (maxCommandBytes + 1);
     try std.testing.expect(!validCommandLine(&oversized));
 }
 
@@ -772,8 +769,8 @@ test "epsv port extraction" {
     try std.testing.expect(parseEpsv("229 bad (||||)") == null);
 }
 
-const ftps_test_cert_pem = @embedFile("../tls/testdata/localhost_cert.pem");
-const ftps_test_key_pem = @embedFile("../tls/testdata/localhost_key.pem");
+const ftpsTestCertPem = @embedFile("../tls/testdata/localhostCert.pem");
+const ftpsTestKeyPem = @embedFile("../tls/testdata/localhostKey.pem");
 
 const FtpsTestState = struct {
     stored: [1024]u8 = undefined,
@@ -829,8 +826,8 @@ test "ftps loopback login/list/upload/download over AUTH TLS and PROT P" {
     var state = FtpsTestState{};
     var srv = try ftpServerMod.Server.init(a, ctx.io, .{
         .port = 0,
-        .certChainPem = ftps_test_cert_pem,
-        .privateKeyPem = ftps_test_key_pem,
+        .certChainPem = ftpsTestCertPem,
+        .privateKeyPem = ftpsTestKeyPem,
         .callbacks = .{
             .context = &state,
             .authenticate = FtpsTestState.authenticate,
@@ -854,7 +851,7 @@ test "ftps loopback login/list/upload/download over AUTH TLS and PROT P" {
         .host = "127.0.0.1",
         .port = port,
         .secure = true,
-        .tlsCaPem = ftps_test_cert_pem,
+        .tlsCaPem = ftpsTestCertPem,
     });
     defer client.deinit();
     try std.testing.expect(client.ctrlTls != null);

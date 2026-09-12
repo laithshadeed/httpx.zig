@@ -1,6 +1,6 @@
 # Example: Full Integration
 
-Demonstrates full_integration.zig using the canonical HTTPX API.
+Demonstrates fullIntegration.zig using the canonical HTTPX API.
 
 ## Complete Example
 

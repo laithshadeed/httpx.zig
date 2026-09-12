@@ -1,7 +1,7 @@
 # HTTP/2 Advanced Example
 
 Production HTTP/2 behavior: SETTINGS enforcement, GOAWAY/RST_STREAM,
-HPACK security, and trailers. See `examples/http2_multiplex.zig`.
+HPACK security, and trailers. See `examples/http2Multiplex.zig`.
 
 ```zig
 var clientSess = try httpx.http2.Session.init(allocator, .client, .{});

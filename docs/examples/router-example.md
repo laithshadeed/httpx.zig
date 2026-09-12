@@ -31,7 +31,7 @@ pub fn main() !void {
 ```
 
 Routes support static segments, `{param}` parameters (via `ctx.param`),
-and wildcards. See [Router](/api/router) and `examples/custom_server.zig`.
+and wildcards. See [Router](/api/router) and `examples/customServer.zig`.
 
 ## Run
 

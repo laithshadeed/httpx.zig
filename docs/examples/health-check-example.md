@@ -1,7 +1,7 @@
 # Health Check Example
 
 Liveness/readiness probe routes for Kubernetes-style checks. Register plain
-routes (see `examples/health_check.zig`).
+routes (see `examples/healthCheck.zig`).
 
 ```zig
 var server = try httpx.Server.init(allocator, io, .{ .port = 0 });

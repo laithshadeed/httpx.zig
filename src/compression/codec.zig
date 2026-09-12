@@ -17,8 +17,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const flate = std.compress.flate;
 
-const zstd_mod = @import("zstd");
-const brotli_mod = @import("brotli");
+const zstdMod = @import("zstd");
+const brotliMod = @import("brotli");
 
 pub const Error = error{
     UnsupportedEncoding,
@@ -79,12 +79,12 @@ pub fn parseAcceptEncoding(allocator: Allocator, headerValue: []const u8) ![]Par
         const part = std.mem.trim(u8, raw, " \t");
         if (part.len == 0) continue;
 
-        var seg_it = std.mem.splitScalar(u8, part, ';');
-        const tok = std.mem.trim(u8, seg_it.next() orelse continue, " \t");
+        var segIt = std.mem.splitScalar(u8, part, ';');
+        const tok = std.mem.trim(u8, segIt.next() orelse continue, " \t");
         var q: f32 = 1.0;
 
-        if (seg_it.next()) |qpart_raw| {
-            const qpart = std.mem.trim(u8, qpart_raw, " \t");
+        if (segIt.next()) |qpartRaw| {
+            const qpart = std.mem.trim(u8, qpartRaw, " \t");
             if (std.ascii.startsWithIgnoreCase(qpart, "q=")) {
                 q = parseQuality(qpart[2..]);
             }
@@ -111,19 +111,19 @@ pub fn parseAcceptEncoding(allocator: Allocator, headerValue: []const u8) ![]Par
 pub fn negotiate(headerValue: []const u8) Encoding {
     var explicit: [5]?f32 = .{ null, null, null, null, null };
     var wildcard: ?f32 = null;
-    var has_entry = false;
+    var hasEntry = false;
 
     var it = std.mem.splitScalar(u8, headerValue, ',');
     while (it.next()) |raw| {
         const part = std.mem.trim(u8, raw, " \t");
         if (part.len == 0) continue;
 
-        var seg_it = std.mem.splitScalar(u8, part, ';');
-        has_entry = true;
-        const tok = std.mem.trim(u8, seg_it.next() orelse continue, " \t");
+        var segIt = std.mem.splitScalar(u8, part, ';');
+        hasEntry = true;
+        const tok = std.mem.trim(u8, segIt.next() orelse continue, " \t");
         var q: f32 = 1.0;
-        if (seg_it.next()) |qp_raw| {
-            const qp = std.mem.trim(u8, qp_raw, " \t");
+        if (segIt.next()) |qpRaw| {
+            const qp = std.mem.trim(u8, qpRaw, " \t");
             if (std.ascii.startsWithIgnoreCase(qp, "q=")) {
                 q = parseQuality(qp[2..]);
             }
@@ -136,15 +136,15 @@ pub fn negotiate(headerValue: []const u8) Encoding {
     }
 
     var best: Encoding = .identity;
-    var best_q: f32 = 0.0;
+    var bestQ: f32 = 0.0;
     var found = false;
     inline for (@typeInfo(Encoding).@"enum".fields) |field| {
         const enc: Encoding = @enumFromInt(field.value);
         const q = explicit[@intFromEnum(enc)] orelse wildcard orelse
-            if (enc == .identity and !has_entry) @as(f32, 1.0) else @as(f32, 0.0);
-        if (q > 0 and (!found or q > best_q or (q == best_q and preference(enc) > preference(best)))) {
+            if (enc == .identity and !hasEntry) @as(f32, 1.0) else @as(f32, 0.0);
+        if (q > 0 and (!found or q > bestQ or (q == bestQ and preference(enc) > preference(best)))) {
             best = enc;
-            best_q = q;
+            bestQ = q;
             found = true;
         }
     }
@@ -169,29 +169,29 @@ pub fn compress(allocator: Allocator, encoding: Encoding, data: []const u8) ![]u
         .zstd => {
             // If data is very large (like Swagger/Scalar bundles > 500KB), use gzip/identity
             if (data.len > 256 * 1024) return flateCompress(allocator, true, data);
-            return zstd_mod.compress(allocator, data) catch Error.CorruptData;
+            return zstdMod.compress(allocator, data) catch Error.CorruptData;
         },
-        .br => return brotli_mod.compress(allocator, data) catch Error.CorruptData,
+        .br => return brotliMod.compress(allocator, data) catch Error.CorruptData,
         .identity => return allocator.dupe(u8, data),
         .gzip, .deflate => return flateCompress(allocator, encoding == .gzip, data),
     }
 }
 
 fn flateDecompressImpl(allocator: Allocator, container: flate.Container, data: []const u8) ![]u8 {
-    var in_reader = std.Io.Reader.fixed(data);
+    var inReader = std.Io.Reader.fixed(data);
     const window = try allocator.alloc(u8, flate.max_window_len);
     defer allocator.free(window);
 
-    var decomp = flate.Decompress.init(&in_reader, container, window);
+    var decomp = flate.Decompress.init(&inReader, container, window);
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     decomp.reader.appendRemainingUnlimited(allocator, &out) catch return Error.CorruptData;
     return out.toOwnedSlice(allocator);
 }
 
-fn flateCompress(allocator: Allocator, gzip_container: bool, data: []const u8) ![]u8 {
-    const initial_capacity = std.math.add(usize, data.len, 64) catch return Error.OutOfMemory;
-    var output = std.Io.Writer.Allocating.initCapacity(allocator, initial_capacity) catch
+fn flateCompress(allocator: Allocator, gzipContainer: bool, data: []const u8) ![]u8 {
+    const initialCapacity = std.math.add(usize, data.len, 64) catch return Error.OutOfMemory;
+    var output = std.Io.Writer.Allocating.initCapacity(allocator, initialCapacity) catch
         return Error.OutOfMemory;
     defer output.deinit();
     const history = allocator.alloc(u8, flate.max_window_len * 2) catch return Error.OutOfMemory;
@@ -200,7 +200,7 @@ fn flateCompress(allocator: Allocator, gzip_container: bool, data: []const u8) !
     var compressor = flate.Compress.init(
         &output.writer,
         history,
-        if (gzip_container) .gzip else .zlib,
+        if (gzipContainer) .gzip else .zlib,
         .default,
     ) catch return Error.CorruptData;
     compressor.writer.writeAll(data) catch return Error.CorruptData;
@@ -208,8 +208,8 @@ fn flateCompress(allocator: Allocator, gzip_container: bool, data: []const u8) !
     return output.toOwnedSlice() catch return Error.OutOfMemory;
 }
 
-fn flateDecompress(allocator: Allocator, is_gzip: bool, data: []const u8) ![]u8 {
-    return flateDecompressImpl(allocator, if (is_gzip) .gzip else .zlib, data);
+fn flateDecompress(allocator: Allocator, isGzip: bool, data: []const u8) ![]u8 {
+    return flateDecompressImpl(allocator, if (isGzip) .gzip else .zlib, data);
 }
 
 /// Decompresses with the given encoding (bounded by MAX_DECOMPRESSED_SIZE).
@@ -224,9 +224,9 @@ pub fn decompressLimited(allocator: Allocator, encoding: Encoding, data: []const
     return switch (encoding) {
         .identity => if (data.len > maxSize) Error.DecompressedTooLarge else allocator.dupe(u8, data),
         .zstd => {
-            const bound = zstd_mod.decompressBound(data) catch return Error.CorruptData;
+            const bound = zstdMod.decompressBound(data) catch return Error.CorruptData;
             if (bound > maxSize) return Error.DecompressedTooLarge;
-            return zstd_mod.decompress(allocator, data) catch Error.CorruptData;
+            return zstdMod.decompress(allocator, data) catch Error.CorruptData;
         },
         .br => brotliDecompressLimited(allocator, data, maxSize),
         .gzip, .deflate => flateDecompressLimited(allocator, encoding == .gzip, data, maxSize),
@@ -236,7 +236,7 @@ pub fn decompressLimited(allocator: Allocator, encoding: Encoding, data: []const
 fn brotliDecompressLimited(allocator: Allocator, data: []const u8, maxSize: usize) ![]u8 {
     var capacity: usize = @min(maxSize, @max(@as(usize, 4096), data.len *| 4));
     while (true) {
-        var decoder = brotli_mod.Decoder.init(allocator, .{});
+        var decoder = brotliMod.Decoder.init(allocator, .{});
         defer decoder.deinit();
         var input: []const u8 = data;
         var output = try allocator.alloc(u8, capacity);
@@ -268,11 +268,11 @@ fn brotliDecompressLimited(allocator: Allocator, data: []const u8, maxSize: usiz
     }
 }
 
-fn flateDecompressLimited(allocator: Allocator, is_gzip: bool, data: []const u8, maxSize: usize) ![]u8 {
-    var in_reader = std.Io.Reader.fixed(data);
+fn flateDecompressLimited(allocator: Allocator, isGzip: bool, data: []const u8, maxSize: usize) ![]u8 {
+    var inReader = std.Io.Reader.fixed(data);
     const window = try allocator.alloc(u8, flate.max_window_len);
     defer allocator.free(window);
-    var decomp = flate.Decompress.init(&in_reader, if (is_gzip) .gzip else .zlib, window);
+    var decomp = flate.Decompress.init(&inReader, if (isGzip) .gzip else .zlib, window);
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     var buf: [8192]u8 = undefined;

@@ -28,7 +28,7 @@ pub fn main() !void {
     const io = std.Io.Threaded.global_single_threaded.io();
 
     // Start a local TLS listener with a self-signed identity.
-    // (See examples/tls_server.zig for the runnable version.)
+    // (See examples/tlsServer.zig for the runnable version.)
     var listener = try httpx.tls.Listener.init(allocator, io, .{
         .host = "127.0.0.1",
         .port = 0,

@@ -1,8 +1,8 @@
 # HTTPS Client
 
 TLS client requests through the high-level client, plus local TLS listener
-setup. See `examples/https_client.zig` (listener init + config verification)
-and `examples/tls_get.zig`.
+setup. See `examples/httpsClient.zig` (listener init + config verification)
+and `examples/tlsGet.zig`.
 
 ```zig
 // External HTTPS through the client (zero config).

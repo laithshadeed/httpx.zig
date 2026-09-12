@@ -1,6 +1,6 @@
 # Session Example
 
-Cookie-backed sessions in handlers. See `examples/session_server.zig` for a
+Cookie-backed sessions in handlers. See `examples/sessionServer.zig` for a
 runnable `/login`, `/dashboard`, `/logout` flow.
 
 ```zig

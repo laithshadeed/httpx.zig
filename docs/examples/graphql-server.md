@@ -1,6 +1,6 @@
 # Example: Graphql Server
 
-Demonstrates graphql_server.zig using the canonical HTTPX API.
+Demonstrates graphqlServer.zig using the canonical HTTPX API.
 
 ## Complete Example
 

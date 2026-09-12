@@ -1,7 +1,7 @@
 # Readiness Probe Example
 
 Liveness/readiness probe routes for Kubernetes checks. Register plain
-routes (see `examples/health_check.zig`).
+routes (see `examples/healthCheck.zig`).
 
 ```zig
 fn healthHandler(ctx: *httpx.Context) anyerror!httpx.Response {

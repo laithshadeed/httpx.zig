@@ -1,6 +1,6 @@
 # Example: Parse Html
 
-Demonstrates parse_html.zig using the canonical HTTPX API.
+Demonstrates parseHtml.zig using the canonical HTTPX API.
 
 ## Complete Example
 

@@ -77,8 +77,8 @@ pub const Gauge = struct {
     pub fn sub(self: *Gauge, n: u64) void {
         while (true) {
             const current = self.val.load(.monotonic);
-            const dec_by: usize = @intCast(n);
-            const next = if (current >= dec_by) current - dec_by else 0;
+            const decBy: usize = @intCast(n);
+            const next = if (current >= decBy) current - decBy else 0;
             if (self.val.cmpxchgWeak(current, next, .monotonic, .monotonic) == null) break;
         }
     }
@@ -107,8 +107,8 @@ pub const Gauge = struct {
         _ = ordering;
         while (true) {
             const current = self.val.load(.monotonic);
-            const dec_by: usize = @intCast(val);
-            const next = if (current >= dec_by) current - dec_by else 0;
+            const decBy: usize = @intCast(val);
+            const next = if (current >= decBy) current - decBy else 0;
             if (self.val.cmpxchgWeak(current, next, .monotonic, .monotonic) == null) return @intCast(current);
         }
     }

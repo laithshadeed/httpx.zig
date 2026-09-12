@@ -5,7 +5,7 @@
 //! here; anything unknown degrades gracefully to `error.Unknown` — never
 //! unreachable, never a crash.
 //!
-//! Windows: ws2_32 directly. POSIX: libc when linked or std.posix.
+//! Windows: ws232 directly. POSIX: libc when linked or std.posix.
 //!
 //! References:
 //!   - RFC 1122 — Requirements for Internet Hosts (TCP/UDP layer)
@@ -46,13 +46,13 @@ pub var unknownCount: std.atomic.Value(usize) = .init(0);
 
 // Windows
 
-const is_windows = builtin.os.tag == .windows;
+const isWindows = builtin.os.tag == .windows;
 
-pub const ws = if (is_windows) struct {
+pub const ws = if (isWindows) struct {
     pub const SOCKET: usize = ~@as(usize, 0); // INVALID_SOCKET
     pub const SOCKET_ERROR: i32 = -1;
 
-    // select() nfds is ignored on Windows; fd_set uses SOCKET.
+    // select() nfds is ignored on Windows; fdSet uses SOCKET.
     pub const FD_SETSIZE = 64;
     pub const FdSet = extern struct {
         count: u32,
@@ -109,7 +109,7 @@ pub const ws = if (is_windows) struct {
     pub const SD_SEND: i32 = 1;
     pub const SD_BOTH: i32 = 2;
 
-    var wsa_once: sync.Once = .{};
+    var wsaOnce: sync.Once = .{};
 
     fn doWsaStartup() void {
         var data: WSAData = undefined;
@@ -117,10 +117,10 @@ pub const ws = if (is_windows) struct {
     }
 
     pub fn startup() void {
-        if (!is_windows) return;
+        if (!isWindows) return;
         // Once-gated: racing threads block until WSAStartup completes,
         // so nobody observes WSANOTINITIALISED on socket().
-        wsa_once.call(doWsaStartup);
+        wsaOnce.call(doWsaStartup);
     }
 
     /// Map every documented winsock error code. Exhaustive by construction:
@@ -224,7 +224,7 @@ pub const ws = if (is_windows) struct {
 
 // POSIX (libc)
 
-pub const posixC = if (!is_windows and builtin.link_libc) struct {
+pub const posixC = if (!isWindows and builtin.linkLibc) struct {
     pub const Fd = i32;
     pub const INVALID: Fd = -1;
 
@@ -382,8 +382,8 @@ pub const posixC = if (!is_windows and builtin.link_libc) struct {
     pub fn setNonBlocking(fd: Fd, nonBlocking: bool) void {
         const flags = fcntl(fd, F_GETFL, @as(c_int, 0));
         if (flags < 0) return;
-        const new_flags = if (nonBlocking) (flags | O_NONBLOCK) else (flags & ~O_NONBLOCK);
-        _ = fcntl(fd, F_SETFL, new_flags);
+        const newFlags = if (nonBlocking) (flags | O_NONBLOCK) else (flags & ~O_NONBLOCK);
+        _ = fcntl(fd, F_SETFL, newFlags);
     }
 } else struct {};
 
@@ -391,31 +391,31 @@ pub const posixC = if (!is_windows and builtin.link_libc) struct {
 
 /// One-shot global init (WSAStartup on Windows; no-op elsewhere).
 pub fn init() void {
-    if (is_windows) ws.startup();
+    if (isWindows) ws.startup();
 }
 
-pub const Handle = if (is_windows) usize else if (builtin.link_libc) posixC.Fd else posix.fd_t;
+pub const Handle = if (isWindows) usize else if (builtin.linkLibc) posixC.Fd else posix.fdT;
 
 /// Blocking receive with full error mapping. n==0 means orderly peer close.
 pub fn read(h: Handle, buf: []u8) Error!usize {
-    if (is_windows) return ws.recvRaw(h, buf);
-    if (builtin.link_libc) return posixC.recvRaw(h, buf);
+    if (isWindows) return ws.recvRaw(h, buf);
+    if (builtin.linkLibc) return posixC.recvRaw(h, buf);
     const n = posix.read(h, buf) catch |err| return mapPosixError(err);
     return n;
 }
 
 /// Blocking send with full error mapping. Partial sends are normal.
 pub fn write(h: Handle, bytes: []const u8) Error!usize {
-    if (is_windows) return ws.sendRaw(h, bytes);
-    if (builtin.link_libc) return posixC.sendRaw(h, bytes);
+    if (isWindows) return ws.sendRaw(h, bytes);
+    if (builtin.linkLibc) return posixC.sendRaw(h, bytes);
     const n = posix.write(h, bytes) catch |err| return mapPosixError(err);
     return n;
 }
 
 /// Poll for readability. Returns false on timeout.
 pub fn waitReadable(h: Handle, timeoutMs: u31) Error!bool {
-    if (is_windows) return ws.waitReadable(h, timeoutMs);
-    if (builtin.link_libc) return posixC.waitReadable(h, timeoutMs);
+    if (isWindows) return ws.waitReadable(h, timeoutMs);
+    if (builtin.linkLibc) return posixC.waitReadable(h, timeoutMs);
     var pfd = [_]posix.pollfd{.{
         .fd = h,
         .events = posix.POLL.IN,
@@ -426,9 +426,9 @@ pub fn waitReadable(h: Handle, timeoutMs: u31) Error!bool {
 }
 
 pub fn setTimeouts(h: Handle, timeoutMs: u31) void {
-    if (is_windows) {
+    if (isWindows) {
         ws.setTimeouts(h, timeoutMs);
-    } else if (builtin.link_libc) {
+    } else if (builtin.linkLibc) {
         posixC.setTimeouts(h, timeoutMs);
     } else {
         const tv = posix.timeval{
@@ -441,9 +441,9 @@ pub fn setTimeouts(h: Handle, timeoutMs: u31) void {
 }
 
 pub fn setNoDelay(h: Handle, noDelay: bool) void {
-    if (is_windows) {
+    if (isWindows) {
         ws.setNoDelay(h, noDelay);
-    } else if (builtin.link_libc) {
+    } else if (builtin.linkLibc) {
         posixC.setNoDelay(h, noDelay);
     } else {
         const opt: c_int = if (noDelay) 1 else 0;
@@ -452,9 +452,9 @@ pub fn setNoDelay(h: Handle, noDelay: bool) void {
 }
 
 pub fn setKeepAlive(h: Handle, idleSecs: u32) void {
-    if (is_windows) {
+    if (isWindows) {
         ws.setKeepAlive(h, idleSecs);
-    } else if (builtin.link_libc) {
+    } else if (builtin.linkLibc) {
         posixC.setKeepAlive(h, idleSecs);
     } else {
         const one: c_int = 1;
@@ -469,9 +469,9 @@ pub fn setKeepAlive(h: Handle, idleSecs: u32) void {
 }
 
 pub fn setReuseAddress(h: Handle, reuse: bool) void {
-    if (is_windows) {
+    if (isWindows) {
         ws.setReuseAddress(h, reuse);
-    } else if (builtin.link_libc) {
+    } else if (builtin.linkLibc) {
         posixC.setReuseAddress(h, reuse);
     } else {
         const opt: c_int = if (reuse) 1 else 0;
@@ -480,9 +480,9 @@ pub fn setReuseAddress(h: Handle, reuse: bool) void {
 }
 
 pub fn setNonBlocking(h: Handle, nonBlocking: bool) void {
-    if (is_windows) {
+    if (isWindows) {
         ws.setNonBlocking(h, nonBlocking);
-    } else if (builtin.link_libc) {
+    } else if (builtin.linkLibc) {
         posixC.setNonBlocking(h, nonBlocking);
     } else {
         // std.posix fallback
@@ -490,9 +490,9 @@ pub fn setNonBlocking(h: Handle, nonBlocking: bool) void {
 }
 
 pub fn shutdownSend(h: Handle) void {
-    if (is_windows) {
+    if (isWindows) {
         _ = ws.shutdown(h, ws.SD_SEND);
-    } else if (builtin.link_libc) {
+    } else if (builtin.linkLibc) {
         _ = posixC.shutdown(h, 1); // SHUT_WR
     } else {
         posix.shutdown(h, .send) catch {};
@@ -500,9 +500,9 @@ pub fn shutdownSend(h: Handle) void {
 }
 
 pub fn close(h: Handle) void {
-    if (is_windows) {
+    if (isWindows) {
         _ = ws.closesocket(h);
-    } else if (builtin.link_libc) {
+    } else if (builtin.linkLibc) {
         _ = posixC.close(h);
     } else {
         posix.close(h);
@@ -528,7 +528,7 @@ fn mapPosixError(err: anyerror) Error {
 }
 
 test "error taxonomy: every known winsock code maps to a named error" {
-    if (is_windows) {
+    if (isWindows) {
         try std.testing.expectEqual(Error.WouldBlock, ws.map(10035));
         try std.testing.expectEqual(Error.ConnectionReset, ws.map(10054));
         try std.testing.expectEqual(Error.TimedOut, ws.map(10060));
@@ -540,7 +540,7 @@ test "error taxonomy: every known winsock code maps to a named error" {
 }
 
 test "error taxonomy: posix errno mapping" {
-    if (!is_windows and builtin.link_libc) {
+    if (!isWindows and builtin.linkLibc) {
         try std.testing.expectEqual(Error.WouldBlock, posixC.mapErrno(11));
         try std.testing.expectEqual(Error.ConnectionReset, posixC.mapErrno(104));
         try std.testing.expectEqual(Error.TimedOut, posixC.mapErrno(110));
@@ -552,7 +552,7 @@ test "error taxonomy: posix errno mapping" {
 }
 
 test "unknown codes never panic" {
-    if (is_windows) {
+    if (isWindows) {
         const E = ws.map(-42);
         try std.testing.expect(E == error.Unknown);
         try std.testing.expect(unknownCount.load(.monotonic) >= 1);
@@ -562,14 +562,14 @@ test "unknown codes never panic" {
 test "socket option setters execute without panicking" {
     init();
     // Verify sys exports option helpers cleanly
-    const t_fn = &setTimeouts;
-    _ = t_fn;
-    const nd_fn = &setNoDelay;
-    _ = nd_fn;
-    const ka_fn = &setKeepAlive;
-    _ = ka_fn;
-    const ra_fn = &setReuseAddress;
-    _ = ra_fn;
-    const nb_fn = &setNonBlocking;
-    _ = nb_fn;
+    const tFn = &setTimeouts;
+    _ = tFn;
+    const ndFn = &setNoDelay;
+    _ = ndFn;
+    const kaFn = &setKeepAlive;
+    _ = kaFn;
+    const raFn = &setReuseAddress;
+    _ = raFn;
+    const nbFn = &setNonBlocking;
+    _ = nbFn;
 }

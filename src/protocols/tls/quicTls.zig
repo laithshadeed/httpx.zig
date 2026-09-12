@@ -50,9 +50,9 @@ pub fn handshakeKeys(sharedSecret: [32]u8, chShHash: [32]u8) struct { hsSecret: 
     const eh = emptyHash();
     const derived = qcrypto.deriveSecretWithContext(early, "derived", &eh);
     const hs = HkdfSha256.extract(&derived, &sharedSecret);
-    const c_hs = qcrypto.deriveSecretWithContext(hs, "c hs traffic", &chShHash);
-    const s_hs = qcrypto.deriveSecretWithContext(hs, "s hs traffic", &chShHash);
-    return .{ .hsSecret = hs, .keys = level(c_hs, s_hs) };
+    const cHs = qcrypto.deriveSecretWithContext(hs, "c hs traffic", &chShHash);
+    const sHs = qcrypto.deriveSecretWithContext(hs, "s hs traffic", &chShHash);
+    return .{ .hsSecret = hs, .keys = level(cHs, sHs) };
 }
 
 /// Derives Application (1-RTT) keys from the handshake secret and the
@@ -63,9 +63,9 @@ pub fn applicationKeys(hsSecret: [32]u8, chSfHash: [32]u8) struct { apSecret: [3
     const derived = qcrypto.deriveSecretWithContext(hsSecret, "derived", &eh);
     const zero: [32]u8 = .{0} ** 32;
     const master = HkdfSha256.extract(&derived, &zero);
-    const c_ap = qcrypto.deriveSecretWithContext(master, "c ap traffic", &chSfHash);
-    const s_ap = qcrypto.deriveSecretWithContext(master, "s ap traffic", &chSfHash);
-    return .{ .apSecret = master, .keys = level(c_ap, s_ap) };
+    const cAp = qcrypto.deriveSecretWithContext(master, "c ap traffic", &chSfHash);
+    const sAp = qcrypto.deriveSecretWithContext(master, "s ap traffic", &chSfHash);
+    return .{ .apSecret = master, .keys = level(cAp, sAp) };
 }
 
 /// RFC 9114/9001 key update ("quic ku") for one direction's secret.

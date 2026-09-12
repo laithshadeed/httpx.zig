@@ -55,15 +55,15 @@ pub const Protocol = enum {
     /// `.auto` has no wire form and maps to null; every concrete version
     /// maps through the single `HttpVersion.wireName` table, so the two
     /// enums cannot drift apart (see round-trip test below).
-    pub fn fromHttpVersion(v: @import("../../common/http_version.zig").HttpVersion) ?Protocol {
+    pub fn fromHttpVersion(v: @import("../../common/httpVersion.zig").HttpVersion) ?Protocol {
         const wire = v.wireName() orelse return null;
         return fromWire(wire);
     }
 
     /// Bridges an ALPN identifier back to the client-facing selector.
     /// Total over `Protocol`: every variant maps to a concrete version.
-    pub fn toHttpVersion(self: Protocol) @import("../../common/http_version.zig").HttpVersion {
-        return @import("../../common/http_version.zig").HttpVersion.fromWire(self.wireName()).?;
+    pub fn toHttpVersion(self: Protocol) @import("../../common/httpVersion.zig").HttpVersion {
+        return @import("../../common/httpVersion.zig").HttpVersion.fromWire(self.wireName()).?;
     }
 };
 
@@ -146,7 +146,7 @@ test "protocol wire names roundtrip" {
 }
 
 test "http version and ALPN identifiers stay in sync" {
-    const HttpVersion = @import("../../common/http_version.zig").HttpVersion;
+    const HttpVersion = @import("../../common/httpVersion.zig").HttpVersion;
     const pairs = [_]struct { v: HttpVersion, p: Protocol }{
         .{ .v = .http10, .p = .@"http/1.0" },
         .{ .v = .http11, .p = .@"http/1.1" },

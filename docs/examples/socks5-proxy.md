@@ -1,7 +1,7 @@
 # SOCKS5h Proxy Example
 
 Route HTTP client requests through a SOCKS5h proxy with remote DNS
-resolution. See `examples/proxy_demo.zig`.
+resolution. See `examples/proxyDemo.zig`.
 
 ```zig
 // Client-level proxy (URL form).

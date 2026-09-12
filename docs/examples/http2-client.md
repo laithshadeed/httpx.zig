@@ -1,6 +1,6 @@
 # Example: Http2 Client
 
-Demonstrates http2_client.zig using the canonical HTTPX API.
+Demonstrates http2Client.zig using the canonical HTTPX API.
 
 ## Complete Example
 

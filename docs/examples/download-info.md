@@ -1,6 +1,6 @@
 # Example: Download Info
 
-Demonstrates download_info.zig using the canonical HTTPX API.
+Demonstrates downloadInfo.zig using the canonical HTTPX API.
 
 ## Complete Example
 

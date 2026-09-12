@@ -1,7 +1,7 @@
 # Proxy and Reverse Proxy
 
 Client-side forward proxying. There is no server-side reverse proxy in
-HTTPX. See `examples/proxy_demo.zig`.
+HTTPX. See `examples/proxyDemo.zig`.
 
 ## Forward Proxy (Client)
 

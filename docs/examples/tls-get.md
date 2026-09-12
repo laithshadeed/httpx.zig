@@ -1,6 +1,6 @@
 # Example: Tls Get
 
-Demonstrates tls_get.zig using the canonical HTTPX API.
+Demonstrates tlsGet.zig using the canonical HTTPX API.
 
 ## Complete Example
 

@@ -29,7 +29,7 @@ const PoolConfig = @import("pool.zig").PoolConfig;
 const tlsSessionCache = @import("../protocols/tls/session.zig");
 const dnsCache = @import("../net/dns/cache.zig");
 const clock = @import("../common/clock.zig");
-const HttpVersion = @import("../common/http_version.zig").HttpVersion;
+const HttpVersion = @import("../common/httpVersion.zig").HttpVersion;
 const DownloadCore = @import("download.zig");
 const connectivity = @import("../net/connectivity.zig");
 pub const ConnectivityOptions = connectivity.ConnectivityOptions;
@@ -157,7 +157,7 @@ pub const RequestOptions = struct {
     maxRedirects: ?u8 = null,
     /// Allow bare LF line endings for response parsing (issue #37).
     allowLfLineEndings: bool = false,
-    /// HTTP version selection (auto or explicit). Reuses http_version.zig.
+    /// HTTP version selection (auto or explicit). Reuses httpVersion.zig.
     httpVersion: ?HttpVersion = null,
     /// Fast boolean toggle to use HTTP/1.0 for this request
     http10: ?bool = null,
@@ -385,9 +385,9 @@ pub const Client = struct {
                     if (idx >= ctx.reqs.len) break;
                     {
                         ctx.errMutex.lock();
-                        const has_err = ctx.firstErr != null;
+                        const hasErr = ctx.firstErr != null;
                         ctx.errMutex.unlock();
-                        if (has_err) break;
+                        if (hasErr) break;
                     }
 
                     const current = ctx.reqs[idx];
@@ -411,7 +411,7 @@ pub const Client = struct {
         @memset(success, false);
 
         var nextIdx = std.atomic.Value(usize).init(0);
-        var task_ctx = TaskCtx{
+        var taskCtx = TaskCtx{
             .client = self,
             .reqs = slice,
             .out = out,
@@ -427,17 +427,17 @@ pub const Client = struct {
         defer self.allocator.free(threads);
 
         for (0..maxWorkers) |w| {
-            threads[w] = std.Thread.spawn(.{}, TaskCtx.worker, .{&task_ctx}) catch null;
+            threads[w] = std.Thread.spawn(.{}, TaskCtx.worker, .{&taskCtx}) catch null;
             if (threads[w] == null) {
-                TaskCtx.worker(&task_ctx);
+                TaskCtx.worker(&taskCtx);
             }
         }
 
-        for (threads) |m_th| {
-            if (m_th) |th| th.join();
+        for (threads) |mTh| {
+            if (mTh) |th| th.join();
         }
 
-        if (task_ctx.firstErr) |e| {
+        if (taskCtx.firstErr) |e| {
             for (0..slice.len) |i| {
                 if (success[i]) out[i].deinit();
             }
@@ -500,9 +500,9 @@ pub const Client = struct {
     pub fn downloadBatch(self: *Client, tasks: []const struct { url: []const u8, dest: []const u8 }, opts: anytype) DownloadError!void {
         const downloadOptions = coerceDownloadOptions(opts);
         for (tasks) |t| {
-            var per_task = downloadOptions;
-            per_task.path = t.dest;
-            _ = try self.download(t.url, per_task);
+            var perTask = downloadOptions;
+            perTask.path = t.dest;
+            _ = try self.download(t.url, perTask);
         }
     }
 
@@ -575,14 +575,20 @@ pub const Client = struct {
             .{ .name = "content-type", .value = "application/json" },
             .{ .name = "accept", .value = "application/json" },
         };
+        // Caller headers, when present, are the complete set (same replace
+        // semantics as every other operation); otherwise the JSON defaults
+        // apply. Transport and auth options pass through.
         const timeout: ?u64 = if (@hasField(@TypeOf(opts), "timeoutMs")) opts.timeoutMs else null;
         const bearer: ?[]const u8 = if (@hasField(@TypeOf(opts), "bearerAuth")) opts.bearerAuth else null;
 
         return self.doRequestWithOverride(.POST, url, .{
             .body = payloadJson,
-            .headers = @as([]const req.Header, &gqlHeaders),
+            .headers = if (@hasField(@TypeOf(opts), "headers")) opts.headers else @as([]const req.Header, &gqlHeaders),
             .timeoutMs = timeout,
             .bearerAuth = bearer,
+            .tls = if (@hasField(@TypeOf(opts), "tls")) opts.tls else null,
+            .proxy = if (@hasField(@TypeOf(opts), "proxy")) opts.proxy else null,
+            .httpVersion = if (@hasField(@TypeOf(opts), "httpVersion")) opts.httpVersion else null,
         });
     }
 
@@ -673,12 +679,12 @@ pub const Client = struct {
         if (probe.parseIp(host)) |parsed| {
             var addr = parsed;
             addr.port = resolveOpts.port;
-            const matches_family = switch (resolveOpts.family) {
+            const matchesFamily = switch (resolveOpts.family) {
                 .any => true,
                 .ipv4 => addr.family == .ip4,
                 .ipv6 => addr.family == .ip6,
             };
-            if (matches_family) {
+            if (matchesFamily) {
                 outList.append(self.allocator, addr) catch return Error.OutOfMemory;
                 return .{
                     .allocator = self.allocator,
@@ -691,12 +697,12 @@ pub const Client = struct {
 
         // 2. Cached lookup when enabled
         if (resolveOpts.useCache and self.dnsCache != null) {
-            if (self.dnsCache.?.resolve(host)) |cached_strs| {
+            if (self.dnsCache.?.resolve(host)) |cachedStrs| {
                 defer {
-                    for (cached_strs) |s| self.allocator.free(s);
-                    self.allocator.free(cached_strs);
+                    for (cachedStrs) |s| self.allocator.free(s);
+                    self.allocator.free(cachedStrs);
                 }
-                for (cached_strs) |s| {
+                for (cachedStrs) |s| {
                     if (req.parseAddrString(s, resolveOpts.port)) |parsed| {
                         outList.append(self.allocator, parsed) catch return Error.OutOfMemory;
                     }
@@ -829,10 +835,10 @@ pub const Client = struct {
 
     fn doRequestInner(self: *Client, method: Method, urlOverride: []const u8, opts: anytype) Error!Response {
         // Track allocations for header/query string conversions that need freeing.
-        var allocated_strings: std.ArrayList([]u8) = .empty;
+        var allocatedStrings: std.ArrayList([]u8) = .empty;
         defer {
-            for (allocated_strings.items) |s| self.allocator.free(s);
-            allocated_strings.deinit(self.allocator);
+            for (allocatedStrings.items) |s| self.allocator.free(s);
+            allocatedStrings.deinit(self.allocator);
         }
 
         var hdrs: std.ArrayList(req.Header) = .empty;
@@ -850,22 +856,22 @@ pub const Client = struct {
                 }
             } else if (comptime @typeInfo(H) == .@"struct") {
                 inline for (@typeInfo(H).@"struct".fields) |field| {
-                    const norm_name = comptime blk: {
+                    const normName = comptime blk: {
                         if (std.mem.eql(u8, field.name, "contentType")) break :blk "Content-Type";
                         if (std.mem.eql(u8, field.name, "userAgent")) break :blk "User-Agent";
                         if (std.mem.eql(u8, field.name, "authorization")) break :blk "Authorization";
                         if (std.mem.eql(u8, field.name, "acceptEncoding")) break :blk "Accept-Encoding";
                         break :blk field.name;
                     };
-                    if (std.ascii.eqlIgnoreCase(norm_name, "content-type")) userHasContentType = true;
+                    if (std.ascii.eqlIgnoreCase(normName, "content-type")) userHasContentType = true;
                     const v = @field(opts.headers, field.name);
-                    const val_str: []const u8 = blk: {
+                    const valStr: []const u8 = blk: {
                         const T = @TypeOf(v);
                         const info = @typeInfo(T);
                         switch (info) {
                             .int, .comptime_int => {
                                 const s = std.fmt.allocPrint(self.allocator, "{d}", .{v}) catch return Error.OutOfMemory;
-                                allocated_strings.append(self.allocator, s) catch {
+                                allocatedStrings.append(self.allocator, s) catch {
                                     self.allocator.free(s);
                                     return Error.OutOfMemory;
                                 };
@@ -873,7 +879,7 @@ pub const Client = struct {
                             },
                             .float, .comptime_float => {
                                 const s = std.fmt.allocPrint(self.allocator, "{d}", .{v}) catch return Error.OutOfMemory;
-                                allocated_strings.append(self.allocator, s) catch {
+                                allocatedStrings.append(self.allocator, s) catch {
                                     self.allocator.free(s);
                                     return Error.OutOfMemory;
                                 };
@@ -886,7 +892,7 @@ pub const Client = struct {
                                 // not slices — slice them instead of {any}-formatting bytes.
                                 if (ptr.size == .one and @typeInfo(ptr.child) == .array and @typeInfo(ptr.child).array.child == u8) break :blk v[0..];
                                 const s = std.fmt.allocPrint(self.allocator, "{any}", .{v}) catch return Error.OutOfMemory;
-                                allocated_strings.append(self.allocator, s) catch {
+                                allocatedStrings.append(self.allocator, s) catch {
                                     self.allocator.free(s);
                                     return Error.OutOfMemory;
                                 };
@@ -894,7 +900,7 @@ pub const Client = struct {
                             },
                             else => {
                                 const s = std.fmt.allocPrint(self.allocator, "{any}", .{v}) catch return Error.OutOfMemory;
-                                allocated_strings.append(self.allocator, s) catch {
+                                allocatedStrings.append(self.allocator, s) catch {
                                     self.allocator.free(s);
                                     return Error.OutOfMemory;
                                 };
@@ -902,7 +908,7 @@ pub const Client = struct {
                             },
                         }
                     };
-                    hdrs.append(self.allocator, .{ .name = norm_name, .value = val_str }) catch return Error.OutOfMemory;
+                    hdrs.append(self.allocator, .{ .name = normName, .value = valStr }) catch return Error.OutOfMemory;
                 }
             }
         }
@@ -918,34 +924,34 @@ pub const Client = struct {
                 }
                 break :blk null;
             };
-            const has_json = blk: {
+            const hasJson = blk: {
                 if (!@hasField(@TypeOf(opts), "json")) break :blk false;
                 const v = opts.json;
                 const T = @TypeOf(v);
                 if (comptime @typeInfo(T) == .optional) break :blk v != null;
                 break :blk true;
             };
-            const has_json_typed = @hasField(@TypeOf(opts), "jsonTyped") and opts.jsonTyped != null;
-            const has_form = blk: {
+            const hasJsonTyped = @hasField(@TypeOf(opts), "jsonTyped") and opts.jsonTyped != null;
+            const hasForm = blk: {
                 if (!@hasField(@TypeOf(opts), "form")) break :blk false;
                 const v = opts.form;
                 const T = @TypeOf(v);
                 if (comptime @typeInfo(T) == .optional) break :blk v != null else break :blk true;
             };
-            if (ct == null and (has_json or has_json_typed)) ct = "application/json";
-            if (ct == null and has_form) ct = "application/x-www-form-urlencoded";
+            if (ct == null and (hasJson or hasJsonTyped)) ct = "application/json";
+            if (ct == null and hasForm) ct = "application/x-www-form-urlencoded";
             if (ct) |c| {
                 hdrs.append(self.allocator, .{ .name = "Content-Type", .value = c }) catch return Error.OutOfMemory;
             }
         }
 
         // Query: support both []const Header and struct literal
-        var query_list: std.ArrayList(req.Header) = .empty;
-        defer query_list.deinit(self.allocator);
+        var queryList: std.ArrayList(req.Header) = .empty;
+        defer queryList.deinit(self.allocator);
         if (@hasField(@TypeOf(opts), "query")) {
             const Q = @TypeOf(opts.query);
             if (comptime @typeInfo(Q) == .pointer and @typeInfo(Q).pointer.size == .slice) {
-                for (opts.query) |q| query_list.append(self.allocator, q) catch return Error.OutOfMemory;
+                for (opts.query) |q| queryList.append(self.allocator, q) catch return Error.OutOfMemory;
             } else if (comptime @typeInfo(Q) == .@"struct") {
                 inline for (@typeInfo(Q).@"struct".fields) |field| {
                     const v = @field(opts.query, field.name);
@@ -955,7 +961,7 @@ pub const Client = struct {
                         switch (info) {
                             .int, .comptime_int => {
                                 const s = std.fmt.allocPrint(self.allocator, "{d}", .{v}) catch return Error.OutOfMemory;
-                                allocated_strings.append(self.allocator, s) catch {
+                                allocatedStrings.append(self.allocator, s) catch {
                                     self.allocator.free(s);
                                     return Error.OutOfMemory;
                                 };
@@ -963,7 +969,7 @@ pub const Client = struct {
                             },
                             .float, .comptime_float => {
                                 const s = std.fmt.allocPrint(self.allocator, "{d}", .{v}) catch return Error.OutOfMemory;
-                                allocated_strings.append(self.allocator, s) catch {
+                                allocatedStrings.append(self.allocator, s) catch {
                                     self.allocator.free(s);
                                     return Error.OutOfMemory;
                                 };
@@ -976,7 +982,7 @@ pub const Client = struct {
                                 // not slices — slice them instead of {any}-formatting bytes.
                                 if (ptr.size == .one and @typeInfo(ptr.child) == .array and @typeInfo(ptr.child).array.child == u8) break :blk v[0..];
                                 const s = std.fmt.allocPrint(self.allocator, "{any}", .{v}) catch return Error.OutOfMemory;
-                                allocated_strings.append(self.allocator, s) catch {
+                                allocatedStrings.append(self.allocator, s) catch {
                                     self.allocator.free(s);
                                     return Error.OutOfMemory;
                                 };
@@ -984,7 +990,7 @@ pub const Client = struct {
                             },
                             else => {
                                 const s = std.fmt.allocPrint(self.allocator, "{any}", .{v}) catch return Error.OutOfMemory;
-                                allocated_strings.append(self.allocator, s) catch {
+                                allocatedStrings.append(self.allocator, s) catch {
                                     self.allocator.free(s);
                                     return Error.OutOfMemory;
                                 };
@@ -992,32 +998,32 @@ pub const Client = struct {
                             },
                         }
                     };
-                    query_list.append(self.allocator, .{ .name = field.name, .value = vs }) catch return Error.OutOfMemory;
+                    queryList.append(self.allocator, .{ .name = field.name, .value = vs }) catch return Error.OutOfMemory;
                 }
             }
         }
 
         // Body handling: support typed json via struct
-        var json_buf: ?[]u8 = null;
-        defer if (json_buf) |b| self.allocator.free(b);
-        var body_val: []const u8 = "";
+        var jsonBuf: ?[]u8 = null;
+        defer if (jsonBuf) |b| self.allocator.free(b);
+        var bodyVal: []const u8 = "";
         var bodyKind: req.BodyKind = .none;
-        const has_json_field = @hasField(@TypeOf(opts), "json");
-        if (has_json_field) {
+        const hasJsonField = @hasField(@TypeOf(opts), "json");
+        if (hasJsonField) {
             const v = opts.json;
             const T = @TypeOf(v);
-            const is_opt = comptime @typeInfo(T) == .optional;
-            const is_present = if (is_opt) v != null else true;
-            if (is_present) {
-                const payload = if (is_opt) v.? else v;
+            const isOpt = comptime @typeInfo(T) == .optional;
+            const isPresent = if (isOpt) v != null else true;
+            if (isPresent) {
+                const payload = if (isOpt) v.? else v;
                 const J = @TypeOf(payload);
                 if (J == []const u8 or J == []u8) {
-                    body_val = payload;
+                    bodyVal = payload;
                     bodyKind = .json;
                 } else {
-                    json_buf = std.json.Stringify.valueAlloc(self.allocator, payload, .{}) catch return Error.OutOfMemory;
-                    if (json_buf) |b| {
-                        body_val = b;
+                    jsonBuf = std.json.Stringify.valueAlloc(self.allocator, payload, .{}) catch return Error.OutOfMemory;
+                    if (jsonBuf) |b| {
+                        bodyVal = b;
                         bodyKind = .json;
                     }
                 }
@@ -1028,11 +1034,11 @@ pub const Client = struct {
             const T = @TypeOf(v);
             if (comptime @typeInfo(T) == .optional) {
                 if (v) |val| {
-                    body_val = val;
+                    bodyVal = val;
                     bodyKind = .form;
                 }
             } else {
-                body_val = v;
+                bodyVal = v;
                 bodyKind = .form;
             }
         }
@@ -1041,11 +1047,11 @@ pub const Client = struct {
             const T = @TypeOf(v);
             if (comptime @typeInfo(T) == .optional) {
                 if (v) |val| {
-                    body_val = val;
+                    bodyVal = val;
                     bodyKind = .raw;
                 }
             } else {
-                body_val = v;
+                bodyVal = v;
                 bodyKind = .raw;
             }
         }
@@ -1054,28 +1060,28 @@ pub const Client = struct {
             const T = @TypeOf(v);
             if (comptime @typeInfo(T) == .optional) {
                 if (v) |val| {
-                    body_val = val;
+                    bodyVal = val;
                     bodyKind = .raw;
                 }
             } else {
-                body_val = v;
+                bodyVal = v;
                 bodyKind = .raw;
             }
         }
 
         // Multipart file upload support
-        var multipart_buf: ?[]u8 = null;
-        defer if (multipart_buf) |b| self.allocator.free(b);
+        var multipartBuf: ?[]u8 = null;
+        defer if (multipartBuf) |b| self.allocator.free(b);
         if (bodyKind == .none and @hasField(@TypeOf(opts), "multipart")) {
             const mp = opts.multipart;
-            const mp_encoder = @import("../web/multipart/encoder.zig");
-            var boundary_buf: [32]u8 = undefined;
-            const boundary = mp_encoder.generateBoundary(&boundary_buf);
-            var ct_buf: [128]u8 = undefined;
-            const ct_val = mp_encoder.contentType(&ct_buf, boundary);
+            const mpEncoder = @import("../web/multipart/encoder.zig");
+            var boundaryBuf: [32]u8 = undefined;
+            const boundary = mpEncoder.generateBoundary(&boundaryBuf);
+            var ctBuf: [128]u8 = undefined;
+            const ctVal = mpEncoder.contentType(&ctBuf, boundary);
 
-            const field_name_val: []const u8 = mp.name;
-            const filename_val: ?[]const u8 = blk: {
+            const fieldNameVal: []const u8 = mp.name;
+            const filenameVal: ?[]const u8 = blk: {
                 if (!@hasField(@TypeOf(mp), "filename")) break :blk null;
                 const v = mp.filename;
                 const T = @TypeOf(v);
@@ -1093,17 +1099,17 @@ pub const Client = struct {
                     break :blk v;
                 }
             };
-            const part: mp_encoder.Part = .{
-                .name = field_name_val,
-                .filename = filename_val,
+            const part: mpEncoder.Part = .{
+                .name = fieldNameVal,
+                .filename = filenameVal,
                 .contentType = contentTypeVal,
                 .data = mp.data,
             };
-            multipart_buf = mp_encoder.encodeAllocParts(self.allocator, boundary, &.{part}) catch return Error.OutOfMemory;
-            if (multipart_buf) |b| {
-                body_val = b;
+            multipartBuf = mpEncoder.encodeAllocParts(self.allocator, boundary, &.{part}) catch return Error.OutOfMemory;
+            if (multipartBuf) |b| {
+                bodyVal = b;
                 bodyKind = .raw;
-                hdrs.append(self.allocator, .{ .name = "Content-Type", .value = ct_val }) catch return Error.OutOfMemory;
+                hdrs.append(self.allocator, .{ .name = "Content-Type", .value = ctVal }) catch return Error.OutOfMemory;
             }
         }
 
@@ -1111,11 +1117,15 @@ pub const Client = struct {
         const reqHttpVersion: HttpVersion = blk: {
             if (@hasField(@TypeOf(opts), "httpVersion")) {
                 const raw = opts.httpVersion;
-                const HVType = @TypeOf(raw);
-                if (comptime @typeInfo(HVType) == .optional) {
-                    if (raw) |v| break :blk normalizeHttpVersion(v);
+                if (@TypeOf(raw) == @TypeOf(null)) {
+                    // Forwarded absence: fall through to client defaults below.
                 } else {
-                    break :blk normalizeHttpVersion(raw);
+                    const HVType = @TypeOf(raw);
+                    if (comptime @typeInfo(HVType) == .optional) {
+                        if (raw) |v| break :blk normalizeHttpVersion(v);
+                    } else {
+                        break :blk normalizeHttpVersion(raw);
+                    }
                 }
             }
             if (@hasField(@TypeOf(opts), "http10")) {
@@ -1148,30 +1158,59 @@ pub const Client = struct {
         const reqTls: ?req.TlsOptions = blk: {
             if (!@hasField(@TypeOf(opts), "tls")) {
                 // No per-request TLS: use client default, or auto-enable for HTTPS.
-                if (self.config.tls) |c_tls| break :blk c_tls;
+                if (self.config.tls) |cTls| break :blk cTls;
                 break :blk req.TlsOptions{ .verify = .none, .allowTruncation = true };
             }
             const v = opts.tls;
             const T = @TypeOf(v);
+            // Untyped null (forwarded absence) inherits the client default.
+            if (T == @TypeOf(null)) {
+                if (self.config.tls) |cTls| break :blk cTls;
+                break :blk req.TlsOptions{ .verify = .none, .allowTruncation = true };
+            }
             if (@typeInfo(T) == .optional) {
-                break :blk v orelse req.TlsOptions{ .verify = .none, .allowTruncation = true };
+                // Explicit null inherits the client default (null = no override).
+                break :blk v orelse if (self.config.tls) |cTls| cTls else req.TlsOptions{ .verify = .none, .allowTruncation = true };
             } else {
+                // Anonymous struct: merge per field over the client default so
+                // specifying one sub-option keeps the rest.
+                const base = if (self.config.tls) |cTls| cTls else req.TlsOptions{ .verify = .none, .allowTruncation = true };
                 break :blk req.TlsOptions{
-                    .verify = v.verify,
-                    .caBundle = if (@hasField(@TypeOf(v), "caBundle")) v.caBundle else null,
-                    .caPem = if (@hasField(@TypeOf(v), "caPem")) v.caPem else null,
-                    .clientCertPem = if (@hasField(@TypeOf(v), "clientCertPem")) v.clientCertPem else null,
-                    .clientKeyPem = if (@hasField(@TypeOf(v), "clientKeyPem")) v.clientKeyPem else null,
-                    .allowTruncation = if (@hasField(@TypeOf(v), "allowTruncation")) v.allowTruncation else true,
+                    .verify = if (@hasField(@TypeOf(v), "verify")) v.verify else base.verify,
+                    .caBundle = if (@hasField(@TypeOf(v), "caBundle")) v.caBundle else base.caBundle,
+                    .caPem = if (@hasField(@TypeOf(v), "caPem")) v.caPem else base.caPem,
+                    .clientCertPem = if (@hasField(@TypeOf(v), "clientCertPem")) v.clientCertPem else base.clientCertPem,
+                    .clientKeyPem = if (@hasField(@TypeOf(v), "clientKeyPem")) v.clientKeyPem else base.clientKeyPem,
+                    .allowTruncation = if (@hasField(@TypeOf(v), "allowTruncation")) v.allowTruncation else base.allowTruncation,
                 };
             }
         };
         const reqCookie: ?[]const u8 = if (@hasField(@TypeOf(opts), "cookie")) opts.cookie else null;
         const reqBasicAuth: ?[]const u8 = if (@hasField(@TypeOf(opts), "basicAuth")) opts.basicAuth else null;
         const reqBearerAuth: ?[]const u8 = if (@hasField(@TypeOf(opts), "bearerAuth")) opts.bearerAuth else null;
-        const reqTimeout: ?u64 = if (@hasField(@TypeOf(opts), "timeoutMs")) opts.timeoutMs else self.config.timeoutMs;
-        const reqMaxSize: ?usize = if (@hasField(@TypeOf(opts), "maxResponseSize")) opts.maxResponseSize else self.config.maxResponseSize;
-        const reqProxy: ?[]const u8 = if (@hasField(@TypeOf(opts), "proxy")) opts.proxy else self.config.proxy;
+        // Null means "inherit the client default" (uniform orelse semantics:
+        // only a non-null value overrides).
+        const reqTimeout: ?u64 = blk: {
+            if (@hasField(@TypeOf(opts), "timeoutMs")) {
+                const v = opts.timeoutMs;
+                break :blk if (@typeInfo(@TypeOf(v)) == .optional) v orelse self.config.timeoutMs else v;
+            }
+            break :blk self.config.timeoutMs;
+        };
+        const reqMaxSize: ?usize = blk: {
+            if (@hasField(@TypeOf(opts), "maxResponseSize")) {
+                const v = opts.maxResponseSize;
+                break :blk if (@typeInfo(@TypeOf(v)) == .optional) v orelse self.config.maxResponseSize else v;
+            }
+            break :blk self.config.maxResponseSize;
+        };
+        const reqProxy: ?[]const u8 = blk: {
+            if (@hasField(@TypeOf(opts), "proxy")) {
+                const v = opts.proxy;
+                break :blk if (@typeInfo(@TypeOf(v)) == .optional) v orelse self.config.proxy else v;
+            }
+            break :blk self.config.proxy;
+        };
 
         const targetUrl: []const u8 = urlOverride;
 
@@ -1179,9 +1218,9 @@ pub const Client = struct {
             .method = method,
             .url = targetUrl,
             .headers = hdrs.items,
-            .query = query_list.items,
+            .query = queryList.items,
             .bodyKind = bodyKind,
-            .body = body_val,
+            .body = bodyVal,
             .followRedirects = blk: {
                 if (@hasField(@TypeOf(opts), "followRedirects")) {
                     const v = opts.followRedirects;
@@ -1207,12 +1246,7 @@ pub const Client = struct {
             .dnsCache = if (self.dnsCache) |*cache| cache else null,
             .pool = &self.pool,
             .sessionCache = &self.sessionCache,
-            .allowLfLineEndings = blk: {
-                if (@hasField(@TypeOf(opts), "allowLfLineEndings")) {
-                    break :blk opts.allowLfLineEndings or self.config.allowLfLineEndings;
-                }
-                break :blk self.config.allowLfLineEndings;
-            },
+            .allowLfLineEndings = if (@hasField(@TypeOf(opts), "allowLfLineEndings")) opts.allowLfLineEndings else self.config.allowLfLineEndings,
             .httpVersion = reqHttpVersion,
             .tls = reqTls,
             .cookie = reqCookie,
@@ -1247,21 +1281,21 @@ pub const Client = struct {
 // Default global client (zero-config). Lazily created; never deinit'd
 // (process-lifetime resource, like the standard library's own globals).
 
-var g_client: ?Client = null;
-var g_ready = std.atomic.Value(bool).init(false);
-var g_mu = sync.Spinlock{};
+var gClient: ?Client = null;
+var gReady = std.atomic.Value(bool).init(false);
+var gMu = sync.Spinlock{};
 
 fn defaultClient() ?*Client {
-    if (g_ready.load(.acquire)) return &g_client.?;
+    if (gReady.load(.acquire)) return &gClient.?;
 
-    g_mu.lock();
-    defer g_mu.unlock();
-    if (g_ready.load(.monotonic)) return &g_client.?;
+    gMu.lock();
+    defer gMu.unlock();
+    if (gReady.load(.monotonic)) return &gClient.?;
 
     const gpa = std.heap.page_allocator;
-    g_client = Client.init(gpa, std.Io.Threaded.global_single_threaded.io(), .{});
-    g_ready.store(true, .release);
-    return &g_client.?;
+    gClient = Client.init(gpa, std.Io.Threaded.global_single_threaded.io(), .{});
+    gReady.store(true, .release);
+    return &gClient.?;
 }
 
 fn forwardMethod(method: Method, url: []const u8, opts: anytype) Error!Response {
@@ -1489,8 +1523,8 @@ test "struct headers/query string literals serialize as strings on the wire" {
         buf: [4096]u8 = [_]u8{0} ** 4096,
         len: usize = 0,
         done: std.atomic.Value(bool) = .init(false),
-        fn run(self: *@This(), l: *tcp.Listener, io_in: std.Io) void {
-            var conn = l.accept(io_in) catch return;
+        fn run(self: *@This(), l: *tcp.Listener, ioIn: std.Io) void {
+            var conn = l.accept(ioIn) catch return;
             defer conn.close();
             var total: usize = 0;
             while (total < self.buf.len) {
@@ -1508,10 +1542,10 @@ test "struct headers/query string literals serialize as strings on the wire" {
     const t = try std.Thread.spawn(.{}, Capture.run, .{ &cap, &listener, io });
     defer t.join();
 
-    var url_buf: [64]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/", .{port});
+    var urlBuf: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&urlBuf, "http://127.0.0.1:{d}/", .{port});
     var res = try client.get(url, .{
-        .headers = .{ .authorization = "Bearer my-token", .x_count = 42, .x_flag = true },
+        .headers = .{ .authorization = "Bearer my-token", .xCount = 42, .xFlag = true },
         .query = .{ .page = 2, .tag = "hi" },
     });
     defer res.deinit();
@@ -1520,8 +1554,8 @@ test "struct headers/query string literals serialize as strings on the wire" {
     while (!cap.done.load(.acquire)) std.Thread.yield() catch {};
     const raw = cap.buf[0..cap.len];
     try std.testing.expect(std.mem.indexOf(u8, raw, "Authorization: Bearer my-token") != null);
-    try std.testing.expect(std.mem.indexOf(u8, raw, "x_count: 42") != null);
-    try std.testing.expect(std.mem.indexOf(u8, raw, "x_flag: true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "xCount: 42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "xFlag: true") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "page=2") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "tag=hi") != null);
     // No {any}-formatted byte dumps anywhere on the wire.
@@ -1558,19 +1592,19 @@ test "response bytes and jsonAlloc" {
         .name = try a.dupe(u8, "Content-Type"),
         .value = try a.dupe(u8, "application/json"),
     };
-    const body_str = "{\"id\":101,\"name\":\"Fiaz\"}";
-    const body_bytes = try a.dupe(u8, body_str);
+    const bodyStr = "{\"id\":101,\"name\":\"Fiaz\"}";
+    const bodyBytes = try a.dupe(u8, bodyStr);
 
     var resp = Response{
         .allocator = a,
         .status = 200,
         .headers = headers,
-        .body = body_bytes,
+        .body = bodyBytes,
     };
     defer resp.deinit();
 
-    try std.testing.expectEqualStrings(body_str, resp.bytes());
-    try std.testing.expectEqualStrings(body_str, resp.text());
+    try std.testing.expectEqualStrings(bodyStr, resp.bytes());
+    try std.testing.expectEqualStrings(bodyStr, resp.text());
 
     const User = struct { id: u64, name: []const u8 };
     const parsed = try resp.jsonAlloc(User, a);
@@ -1578,9 +1612,9 @@ test "response bytes and jsonAlloc" {
     try std.testing.expectEqual(@as(u64, 101), parsed.value.id);
     try std.testing.expectEqualStrings("Fiaz", parsed.value.name);
 
-    const user_leaky = try resp.json(User);
-    try std.testing.expectEqual(@as(u64, 101), user_leaky.id);
-    try std.testing.expectEqualStrings("Fiaz", user_leaky.name);
+    const userLeaky = try resp.json(User);
+    try std.testing.expectEqual(@as(u64, 101), userLeaky.id);
+    try std.testing.expectEqualStrings("Fiaz", userLeaky.name);
 }
 
 test "client fetch with socks5 proxy connects through mock server" {
@@ -1593,10 +1627,10 @@ test "client fetch with socks5 proxy connects through mock server" {
     var mock = try socks5mod.MockSocksServer.start(ctx.io, false, 0x00);
     defer mock.deinit();
 
-    var proxy_url_buf: [64]u8 = undefined;
-    const proxy_url = try std.fmt.bufPrint(&proxy_url_buf, "socks5://127.0.0.1:{d}", .{mock.port});
+    var proxyUrlBuf: [64]u8 = undefined;
+    const proxyUrl = try std.fmt.bufPrint(&proxyUrlBuf, "socks5://127.0.0.1:{d}", .{mock.port});
 
-    var client = Client.init(a, ctx.io, .{ .proxy = proxy_url });
+    var client = Client.init(a, ctx.io, .{ .proxy = proxyUrl });
     defer client.deinit();
 
     // Fetch through the mock proxy - verifies handshake was routed through SOCKS
@@ -1614,10 +1648,10 @@ test "client fetch with socks4 proxy connects through mock server" {
     var mock = try socks4mod.MockSocks4Server.start(ctx.io, 0x5A);
     defer mock.deinit();
 
-    var proxy_url_buf: [64]u8 = undefined;
-    const proxy_url = try std.fmt.bufPrint(&proxy_url_buf, "socks4://127.0.0.1:{d}", .{mock.port});
+    var proxyUrlBuf: [64]u8 = undefined;
+    const proxyUrl = try std.fmt.bufPrint(&proxyUrlBuf, "socks4://127.0.0.1:{d}", .{mock.port});
 
-    var client = Client.init(a, ctx.io, .{ .proxy = proxy_url });
+    var client = Client.init(a, ctx.io, .{ .proxy = proxyUrl });
     defer client.deinit();
 
     _ = client.fetch("http://127.0.0.1:8080/test", .{ .timeoutMs = 500 }) catch {};
@@ -1632,13 +1666,13 @@ test "http CONNECT proxy tunnels with origin-form request target" {
 
     var listener = try tcp.Listener.bind(ctx.io, 0);
     defer listener.close(ctx.io);
-    const proxy_port = listener.localPort();
+    const proxyPort = listener.localPort();
 
     const Mock = struct {
-        var connect_line: [128]u8 = undefined;
-        var connect_len: usize = 0;
-        var tunneled_line: [128]u8 = undefined;
-        var tunneled_len: usize = 0;
+        var connectLine: [128]u8 = undefined;
+        var connectLen: usize = 0;
+        var tunneledLine: [128]u8 = undefined;
+        var tunneledLen: usize = 0;
 
         fn readLine(sock: *tcp.Socket, buf: []u8) !usize {
             var n: usize = 0;
@@ -1655,43 +1689,43 @@ test "http CONNECT proxy tunnels with origin-form request target" {
             var sock = lst.accept(io2) catch return;
             defer sock.close();
             // 1. CONNECT request line.
-            var line_buf: [256]u8 = undefined;
-            const n = readLine(&sock, &line_buf) catch return;
-            const take = @min(n, connect_line.len);
-            @memcpy(connect_line[0..take], line_buf[0..take]);
-            connect_len = take;
+            var lineBuf: [256]u8 = undefined;
+            const n = readLine(&sock, &lineBuf) catch return;
+            const take = @min(n, connectLine.len);
+            @memcpy(connectLine[0..take], lineBuf[0..take]);
+            connectLen = take;
             // Drain remaining CONNECT headers.
             while (true) {
-                const m = readLine(&sock, &line_buf) catch return;
+                const m = readLine(&sock, &lineBuf) catch return;
                 if (m <= 2) break;
             }
             sock.writeAll("HTTP/1.1 200 Connection Established\r\n\r\n") catch return;
             // 2. First tunneled request line (must be origin-form).
-            const t = readLine(&sock, &tunneled_line) catch return;
-            tunneled_len = t;
+            const t = readLine(&sock, &tunneledLine) catch return;
+            tunneledLen = t;
             sock.writeAll("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok") catch {};
         }
     };
-    Mock.connect_len = 0;
-    Mock.tunneled_len = 0;
+    Mock.connectLen = 0;
+    Mock.tunneledLen = 0;
     const th = try std.Thread.spawn(.{}, Mock.run, .{ &listener, ctx.io });
     defer th.join();
 
-    var proxy_url_buf: [64]u8 = undefined;
-    const proxy_url = try std.fmt.bufPrint(&proxy_url_buf, "http://127.0.0.1:{d}", .{proxy_port});
+    var proxyUrlBuf: [64]u8 = undefined;
+    const proxyUrl = try std.fmt.bufPrint(&proxyUrlBuf, "http://127.0.0.1:{d}", .{proxyPort});
     var client = Client.init(a, ctx.io, .{});
     defer client.deinit();
 
-    var res = try client.get("http://127.0.0.1:9/proxied/path", .{ .proxy = proxy_url, .timeoutMs = 10_000 });
+    var res = try client.get("http://127.0.0.1:9/proxied/path", .{ .proxy = proxyUrl, .timeoutMs = 10_000 });
     defer res.deinit();
     try std.testing.expectEqual(@as(u16, 200), res.status);
     try std.testing.expectEqualStrings("ok", res.body);
 
     // CONNECT carried host:port of the TARGET…
-    try std.testing.expect(std.mem.startsWith(u8, Mock.connect_line[0..Mock.connect_len], "CONNECT 127.0.0.1:9 "));
+    try std.testing.expect(std.mem.startsWith(u8, Mock.connectLine[0..Mock.connectLen], "CONNECT 127.0.0.1:9 "));
     // …while the tunneled request uses the relative origin-form target.
-    try std.testing.expect(std.mem.startsWith(u8, Mock.tunneled_line[0..Mock.tunneled_len], "GET /proxied/path "));
-    try std.testing.expect(std.mem.indexOf(u8, Mock.tunneled_line[0..Mock.tunneled_len], "https://") == null);
+    try std.testing.expect(std.mem.startsWith(u8, Mock.tunneledLine[0..Mock.tunneledLen], "GET /proxied/path "));
+    try std.testing.expect(std.mem.indexOf(u8, Mock.tunneledLine[0..Mock.tunneledLen], "https://") == null);
 }
 
 test "http CONNECT proxy with credentials sends Proxy-Authorization" {
@@ -1702,11 +1736,11 @@ test "http CONNECT proxy with credentials sends Proxy-Authorization" {
 
     var listener = try tcp.Listener.bind(ctx.io, 0);
     defer listener.close(ctx.io);
-    const proxy_port = listener.localPort();
+    const proxyPort = listener.localPort();
 
     const Mock = struct {
         var head: [512]u8 = undefined;
-        var head_len: usize = 0;
+        var headLen: usize = 0;
 
         fn readLine(sock: *tcp.Socket, buf: []u8) !usize {
             var n: usize = 0;
@@ -1723,38 +1757,38 @@ test "http CONNECT proxy with credentials sends Proxy-Authorization" {
             var sock = lst.accept(io2) catch return;
             defer sock.close();
             // Capture the whole CONNECT head (request line + headers).
-            var line_buf: [256]u8 = undefined;
+            var lineBuf: [256]u8 = undefined;
             while (true) {
-                const m = readLine(&sock, &line_buf) catch return;
-                const take = @min(m, head.len - head_len);
-                @memcpy(head[head_len..][0..take], line_buf[0..take]);
-                head_len += take;
+                const m = readLine(&sock, &lineBuf) catch return;
+                const take = @min(m, head.len - headLen);
+                @memcpy(head[headLen..][0..take], lineBuf[0..take]);
+                headLen += take;
                 if (m <= 2) break;
             }
             sock.writeAll("HTTP/1.1 200 Connection Established\r\n\r\n") catch return;
             // Drain the tunneled request head, then answer.
             while (true) {
-                const m = readLine(&sock, &line_buf) catch return;
+                const m = readLine(&sock, &lineBuf) catch return;
                 if (m <= 2) break;
             }
             sock.writeAll("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok") catch {};
         }
     };
-    Mock.head_len = 0;
+    Mock.headLen = 0;
     const th = try std.Thread.spawn(.{}, Mock.run, .{ &listener, ctx.io });
     defer th.join();
 
-    var proxy_url_buf: [96]u8 = undefined;
-    const proxy_url = try std.fmt.bufPrint(&proxy_url_buf, "http://user:pass@127.0.0.1:{d}", .{proxy_port});
+    var proxyUrlBuf: [96]u8 = undefined;
+    const proxyUrl = try std.fmt.bufPrint(&proxyUrlBuf, "http://user:pass@127.0.0.1:{d}", .{proxyPort});
     var client = Client.init(a, ctx.io, .{});
     defer client.deinit();
 
-    var res = try client.get("http://127.0.0.1:9/authed/path", .{ .proxy = proxy_url, .timeoutMs = 10_000 });
+    var res = try client.get("http://127.0.0.1:9/authed/path", .{ .proxy = proxyUrl, .timeoutMs = 10_000 });
     defer res.deinit();
     try std.testing.expectEqual(@as(u16, 200), res.status);
 
     // "user:pass" base64s to dXNlcjpwYXNz (RFC 7617).
-    const head = Mock.head[0..Mock.head_len];
+    const head = Mock.head[0..Mock.headLen];
     try std.testing.expect(std.mem.indexOf(u8, head, "Proxy-Authorization: Basic dXNlcjpwYXNz\r\n") != null);
     // Credentials stay on the CONNECT hop, never leak into the tunnel.
     try std.testing.expect(std.mem.indexOf(u8, head, "CONNECT 127.0.0.1:9 ") != null);
@@ -1768,7 +1802,7 @@ test "http CONNECT proxy 407 maps to ProxyAuthRequired" {
 
     var listener = try tcp.Listener.bind(ctx.io, 0);
     defer listener.close(ctx.io);
-    const proxy_port = listener.localPort();
+    const proxyPort = listener.localPort();
 
     const Mock = struct {
         fn readLine(sock: *tcp.Socket, buf: []u8) !usize {
@@ -1785,9 +1819,9 @@ test "http CONNECT proxy 407 maps to ProxyAuthRequired" {
         fn run(lst: *tcp.Listener, io2: std.Io) void {
             var sock = lst.accept(io2) catch return;
             defer sock.close();
-            var line_buf: [256]u8 = undefined;
+            var lineBuf: [256]u8 = undefined;
             while (true) {
-                const m = readLine(&sock, &line_buf) catch return;
+                const m = readLine(&sock, &lineBuf) catch return;
                 if (m <= 2) break;
             }
             sock.writeAll("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\n\r\n") catch return;
@@ -1796,12 +1830,12 @@ test "http CONNECT proxy 407 maps to ProxyAuthRequired" {
     const th = try std.Thread.spawn(.{}, Mock.run, .{ &listener, ctx.io });
     defer th.join();
 
-    var proxy_url_buf: [64]u8 = undefined;
-    const proxy_url = try std.fmt.bufPrint(&proxy_url_buf, "http://127.0.0.1:{d}", .{proxy_port});
+    var proxyUrlBuf: [64]u8 = undefined;
+    const proxyUrl = try std.fmt.bufPrint(&proxyUrlBuf, "http://127.0.0.1:{d}", .{proxyPort});
     var client = Client.init(a, ctx.io, .{});
     defer client.deinit();
 
-    const err = client.get("http://127.0.0.1:9/needs-auth", .{ .proxy = proxy_url, .timeoutMs = 10_000 });
+    const err = client.get("http://127.0.0.1:9/needs-auth", .{ .proxy = proxyUrl, .timeoutMs = 10_000 });
     try std.testing.expectError(error.ProxyAuthRequired, err);
 }
 
@@ -1813,8 +1847,8 @@ test "client get over https negotiates h2 end to end" {
 
     const h2t = @import("../protocols/http2/transport.zig");
     const tlsServerMod = @import("../protocols/tls/tcpTls.zig");
-    const cert_pem = @embedFile("../protocols/tls/testdata/localhost_cert.pem");
-    const key_pem = @embedFile("../protocols/tls/testdata/localhost_key.pem");
+    const certPem = @embedFile("../protocols/tls/testdata/localhostCert.pem");
+    const keyPem = @embedFile("../protocols/tls/testdata/localhostKey.pem");
 
     var listener = try tcp.Listener.bind(ctx.io, 0);
     defer listener.close(ctx.io);
@@ -1837,14 +1871,14 @@ test "client get over https negotiates h2 end to end" {
             defer conn.close();
             var srv = tlsServerMod.TlsServer.init(.{
                 .allocator = std.heap.page_allocator,
-                .defaultIdentity = .{ .certChainPem = cert_pem, .privateKeyPem = key_pem },
+                .defaultIdentity = .{ .certChainPem = certPem, .privateKeyPem = keyPem },
             });
-            var tls_conn = srv.handshake(io2, &conn) catch |e| {
+            var tlsConn = srv.handshake(io2, &conn) catch |e| {
                 out.* = e;
                 return;
             };
-            defer tls_conn.deinit();
-            h2t.serveTlsConnection(std.heap.page_allocator, &tls_conn, H.handle, null) catch |e| {
+            defer tlsConn.deinit();
+            h2t.serveTlsConnection(std.heap.page_allocator, &tlsConn, H.handle, null) catch |e| {
                 out.* = e;
                 return;
             };
@@ -1858,11 +1892,11 @@ test "client get over https negotiates h2 end to end" {
     var client = Client.init(a, ctx.io, .{});
     defer client.deinit();
 
-    var url_buf: [64]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buf, "https://127.0.0.1:{d}/secure", .{port});
+    var urlBuf: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&urlBuf, "https://127.0.0.1:{d}/secure", .{port});
     var res = try client.get(url, .{
         .httpVersion = .http2,
-        .tls = .{ .verify = .caBundle, .caPem = cert_pem },
+        .tls = .{ .verify = .caBundle, .caPem = certPem },
         .timeoutMs = 15_000,
     });
     defer res.deinit();
@@ -1908,15 +1942,15 @@ test "client pools h2c sessions across sequential requests" {
     var client = Client.init(a, ctx.io, .{});
     defer client.deinit();
 
-    var url_buf: [64]u8 = undefined;
-    const url_a = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/a", .{port});
-    var r1 = try client.get(url_a, .{ .httpVersion = .http2, .timeoutMs = 15_000 });
+    var urlBuf: [64]u8 = undefined;
+    const urlA = try std.fmt.bufPrint(&urlBuf, "http://127.0.0.1:{d}/a", .{port});
+    var r1 = try client.get(urlA, .{ .httpVersion = .http2, .timeoutMs = 15_000 });
     defer r1.deinit();
     try std.testing.expectEqual(@as(u16, 200), r1.status);
     try std.testing.expectEqualStrings("first", r1.body);
 
-    const url_b = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/b", .{port});
-    var r2 = try client.get(url_b, .{ .httpVersion = .http2, .timeoutMs = 15_000 });
+    const urlB = try std.fmt.bufPrint(&urlBuf, "http://127.0.0.1:{d}/b", .{port});
+    var r2 = try client.get(urlB, .{ .httpVersion = .http2, .timeoutMs = 15_000 });
     defer r2.deinit();
     try std.testing.expectEqual(@as(u16, 200), r2.status);
     try std.testing.expectEqualStrings("second", r2.body);
@@ -1976,8 +2010,8 @@ test "client reaps h2 streams past maxConcurrentStreams" {
     var client = Client.init(a, ctx.io, .{});
     errdefer client.deinit();
 
-    var url_buf: [64]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/p", .{port});
+    var urlBuf: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&urlBuf, "http://127.0.0.1:{d}/p", .{port});
     // 250 sequential requests on one pooled session: completed streams
     // must be reaped (both sides), or the server falsely hits its
     // maxConcurrentStreams=100 admission cap and kills the connection.
@@ -2007,8 +2041,8 @@ test "client pools h2-tls sessions across sequential requests" {
 
     const h2t = @import("../protocols/http2/transport.zig");
     const tlsServerMod = @import("../protocols/tls/tcpTls.zig");
-    const cert_pem = @embedFile("../protocols/tls/testdata/localhost_cert.pem");
-    const key_pem = @embedFile("../protocols/tls/testdata/localhost_key.pem");
+    const certPem = @embedFile("../protocols/tls/testdata/localhostCert.pem");
+    const keyPem = @embedFile("../protocols/tls/testdata/localhostKey.pem");
 
     var listener = try tcp.Listener.bind(ctx.io, 0);
     defer listener.close(ctx.io);
@@ -2031,14 +2065,14 @@ test "client pools h2-tls sessions across sequential requests" {
             defer conn.close();
             var srv = tlsServerMod.TlsServer.init(.{
                 .allocator = std.heap.page_allocator,
-                .defaultIdentity = .{ .certChainPem = cert_pem, .privateKeyPem = key_pem },
+                .defaultIdentity = .{ .certChainPem = certPem, .privateKeyPem = keyPem },
             });
-            var tls_conn = srv.handshake(io2, &conn) catch |e| {
+            var tlsConn = srv.handshake(io2, &conn) catch |e| {
                 out.* = e;
                 return;
             };
-            defer tls_conn.deinit();
-            h2t.serveTlsConnection(std.heap.page_allocator, &tls_conn, H.handle, null) catch |e| {
+            defer tlsConn.deinit();
+            h2t.serveTlsConnection(std.heap.page_allocator, &tlsConn, H.handle, null) catch |e| {
                 out.* = e;
                 return;
             };
@@ -2053,11 +2087,11 @@ test "client pools h2-tls sessions across sequential requests" {
     // observes EOF and exits BEFORE the join (errdefer covers failures).
     errdefer client.deinit();
 
-    var url_buf: [64]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buf, "https://127.0.0.1:{d}/s", .{port});
+    var urlBuf: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&urlBuf, "https://127.0.0.1:{d}/s", .{port});
     var r1 = try client.get(url, .{
         .httpVersion = .http2,
-        .tls = .{ .verify = .caBundle, .caPem = cert_pem },
+        .tls = .{ .verify = .caBundle, .caPem = certPem },
         .timeoutMs = 15_000,
     });
     defer r1.deinit();
@@ -2066,7 +2100,7 @@ test "client pools h2-tls sessions across sequential requests" {
     // A second request over the SAME TLS+H2 session: no new handshake.
     var r2 = try client.get(url, .{
         .httpVersion = .http2,
-        .tls = .{ .verify = .caBundle, .caPem = cert_pem },
+        .tls = .{ .verify = .caBundle, .caPem = certPem },
         .timeoutMs = 15_000,
     });
     defer r2.deinit();
@@ -2089,8 +2123,8 @@ test "client resumes h2-tls across fresh handshakes via session cache" {
 
     const h2t = @import("../protocols/http2/transport.zig");
     const tlsServerMod = @import("../protocols/tls/tcpTls.zig");
-    const cert_pem = @embedFile("../protocols/tls/testdata/localhost_cert.pem");
-    const key_pem = @embedFile("../protocols/tls/testdata/localhost_key.pem");
+    const certPem = @embedFile("../protocols/tls/testdata/localhostCert.pem");
+    const keyPem = @embedFile("../protocols/tls/testdata/localhostKey.pem");
 
     var listener = try tcp.Listener.bind(ctx.io, 0);
     defer listener.close(ctx.io);
@@ -2115,16 +2149,16 @@ test "client resumes h2-tls across fresh handshakes via session cache" {
                 defer conn.close();
                 var srv = tlsServerMod.TlsServer.init(.{
                     .allocator = std.heap.page_allocator,
-                    .defaultIdentity = .{ .certChainPem = cert_pem, .privateKeyPem = key_pem },
+                    .defaultIdentity = .{ .certChainPem = certPem, .privateKeyPem = keyPem },
                     .ticketKeys = .{ .current = [_]u8{0x5E} ** 32 },
                 });
-                var tls_conn = srv.handshake(io2, &conn) catch |e| {
+                var tlsConn = srv.handshake(io2, &conn) catch |e| {
                     out.* = e;
                     return;
                 };
-                defer tls_conn.deinit();
-                resumed[i] = tls_conn.resumed;
-                h2t.serveTlsConnection(std.heap.page_allocator, &tls_conn, H.handle, null) catch |e| {
+                defer tlsConn.deinit();
+                resumed[i] = tlsConn.resumed;
+                h2t.serveTlsConnection(std.heap.page_allocator, &tlsConn, H.handle, null) catch |e| {
                     out.* = e;
                     return;
                 };
@@ -2144,11 +2178,11 @@ test "client resumes h2-tls across fresh handshakes via session cache" {
     var client = Client.init(a, ctx.io, .{ .pool = .{ .maxConnections = 0 } });
     errdefer client.deinit();
 
-    var url_buf: [64]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buf, "https://127.0.0.1:{d}/r", .{port});
+    var urlBuf: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&urlBuf, "https://127.0.0.1:{d}/r", .{port});
     var r1 = try client.get(url, .{
         .httpVersion = .http2,
-        .tls = .{ .verify = .caBundle, .caPem = cert_pem },
+        .tls = .{ .verify = .caBundle, .caPem = certPem },
         .timeoutMs = 15_000,
     });
     defer r1.deinit();
@@ -2156,7 +2190,7 @@ test "client resumes h2-tls across fresh handshakes via session cache" {
 
     var r2 = try client.get(url, .{
         .httpVersion = .http2,
-        .tls = .{ .verify = .caBundle, .caPem = cert_pem },
+        .tls = .{ .verify = .caBundle, .caPem = certPem },
         .timeoutMs = 15_000,
     });
     defer r2.deinit();
@@ -2180,8 +2214,8 @@ test "client get over http3 serves loopback over real udp" {
     const h3conn = @import("../protocols/http3/connection.zig");
     const h3frame = @import("../protocols/http3/frame.zig");
     const h3qpack = @import("../protocols/http3/qpack.zig");
-    const cert_pem = @embedFile("../protocols/tls/testdata/localhost_cert.pem");
-    const key_pem = @embedFile("../protocols/tls/testdata/localhost_key.pem");
+    const certPem = @embedFile("../protocols/tls/testdata/localhostCert.pem");
+    const keyPem = @embedFile("../protocols/tls/testdata/localhostKey.pem");
 
     // In-process H3/QUIC server: two sequential connections on one UDP
     // socket, one GET each. Pumps itself on its own thread; the client
@@ -2209,31 +2243,31 @@ test "client get over http3 serves loopback over real udp" {
 
         fn sendStream(conn: *quicConn.Connection, sid: u64, bytes: []const u8, fin: bool) !void {
             const B = struct {
-                var s_id: u64 = 0;
-                var s_fin: bool = false;
-                var s_data: []const u8 = "";
+                var sId: u64 = 0;
+                var sFin: bool = false;
+                var sData: []const u8 = "";
                 pub fn build(gpa: std.mem.Allocator, payload: *std.ArrayList(u8)) quicConn.Error!void {
-                    quicFrames.encode(payload, gpa, .{ .stream = .{ .id = s_id, .offset = 0, .data = s_data, .fin = s_fin } }) catch
+                    quicFrames.encode(payload, gpa, .{ .stream = .{ .id = sId, .offset = 0, .data = sData, .fin = sFin } }) catch
                         return quicConn.Error.OutOfMemory;
                 }
             };
-            B.s_id = sid;
-            B.s_fin = fin;
-            B.s_data = bytes;
+            B.sId = sid;
+            B.sFin = fin;
+            B.sData = bytes;
             try conn.sendFrames(.application, B.build, 0);
         }
 
-        fn serveOne(srv: *@This(), seed: u64, deadline_ms: u64) !void {
+        fn serveOne(srv: *@This(), seed: u64, deadlineMs: u64) !void {
             const alloc = std.testing.allocator;
             var qconn = try quicConn.Connection.init(alloc, .server, .{}, seed);
             defer qconn.deinit();
             // The endpoint's conn pointer follows each fresh connection;
             // the previous one is already deinited by its own scope.
             srv.ep.conn = qconn;
-            var drv = quicHs.Driver.initServer(alloc, .{ .certChainPem = cert_pem, .privateKeyPem = key_pem });
+            var drv = quicHs.Driver.initServer(alloc, .{ .certChainPem = certPem, .privateKeyPem = keyPem });
             defer drv.deinit();
             qconn.tls = .{ .ctx = &drv, .start = quicHs.Driver.clientStart, .onData = quicHs.Driver.onData };
-            try quicHs.serveHandshake(&srv.ep, &srv.pump, &drv, deadline_ms);
+            try quicHs.serveHandshake(&srv.ep, &srv.pump, &drv, deadlineMs);
 
             var h3 = h3conn.Connection.init(alloc, .server);
             defer h3.deinit();
@@ -2243,25 +2277,25 @@ test "client get over http3 serves loopback over real udp" {
             const start: u64 = @intCast(clock.millisNow());
             while (true) {
                 const now: u64 = @intCast(clock.millisNow());
-                if (now -| start > deadline_ms) return error.Timeout;
+                if (now -| start > deadlineMs) return error.Timeout;
                 try quicHs.feedPumped(&srv.ep, &srv.pump, null, 500, now);
                 if (!acc.fin) continue;
                 // Decode request HEADERS, route by :path, respond.
                 var off: usize = 0;
                 const fr = try h3frame.parseFrame(acc.buf.items, &off);
-                const fields = try h3.qdec.decodeSectionWithPrefix(fr.payload);
+                const fields = try h3.qdec.decodeSectionCounted(fr.payload, 0, null);
                 defer h3.qdec.freeFields(fields);
                 var path: []const u8 = "";
                 for (fields) |f| {
                     if (std.mem.eql(u8, f.name, ":path")) path = f.value;
                 }
-                const is_hello = std.mem.eql(u8, path, "/hello");
+                const isHello = std.mem.eql(u8, path, "/hello");
                 var qenc = h3qpack.Encoder.init(alloc);
                 defer qenc.deinit();
                 var rs = h3conn.RequestStream{ .id = acc.sid, .allocator = alloc, .qpack = &qenc };
-                const rhead = try rs.buildResponseHeaders(if (is_hello) 200 else 404, &.{});
+                const rhead = try rs.buildResponseHeaders(if (isHello) 200 else 404, &.{});
                 defer alloc.free(rhead);
-                const rdata = try rs.buildData(if (is_hello) "hello-h3" else "not-found");
+                const rdata = try rs.buildData(if (isHello) "hello-h3" else "not-found");
                 defer alloc.free(rdata);
                 var wire = std.ArrayList(u8).empty;
                 defer wire.deinit(alloc);
@@ -2313,11 +2347,11 @@ test "client get over http3 serves loopback over real udp" {
     var client = Client.init(a, ctx.io, .{});
     errdefer client.deinit();
 
-    var url_buf: [64]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buf, "https://127.0.0.1:{d}/hello", .{port});
+    var urlBuf: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&urlBuf, "https://127.0.0.1:{d}/hello", .{port});
     var res = try client.get(url, .{
         .httpVersion = .http3,
-        .tls = .{ .verify = .caBundle, .caPem = cert_pem },
+        .tls = .{ .verify = .caBundle, .caPem = certPem },
         .timeoutMs = 15_000,
     });
     defer res.deinit();
@@ -2325,10 +2359,10 @@ test "client get over http3 serves loopback over real udp" {
     try std.testing.expectEqualStrings("hello-h3", res.body);
     try std.testing.expect(res.version == .http3);
 
-    const url404 = try std.fmt.bufPrint(&url_buf, "https://127.0.0.1:{d}/missing", .{port});
+    const url404 = try std.fmt.bufPrint(&urlBuf, "https://127.0.0.1:{d}/missing", .{port});
     var res404 = try client.get(url404, .{
         .httpVersion = .http3,
-        .tls = .{ .verify = .caBundle, .caPem = cert_pem },
+        .tls = .{ .verify = .caBundle, .caPem = certPem },
         .timeoutMs = 15_000,
     });
     defer res404.deinit();
@@ -2355,8 +2389,8 @@ test "client get over mtls presents certificate through high-level api" {
     var ctx = try IoContext.init(a);
     defer ctx.deinit();
 
-    const cert_pem = @embedFile("../protocols/tls/testdata/localhost_cert.pem");
-    const key_pem = @embedFile("../protocols/tls/testdata/localhost_key.pem");
+    const certPem = @embedFile("../protocols/tls/testdata/localhostCert.pem");
+    const keyPem = @embedFile("../protocols/tls/testdata/localhostKey.pem");
 
     var listener = try tcp.Listener.bind(ctx.io, 0);
     defer listener.close(ctx.io);
@@ -2373,19 +2407,19 @@ test "client get over mtls presents certificate through high-level api" {
             const tlsServerMod = @import("../protocols/tls/tcpTls.zig");
             var srv = tlsServerMod.TlsServer.init(.{
                 .allocator = std.heap.page_allocator,
-                .defaultIdentity = .{ .certChainPem = cert_pem, .privateKeyPem = key_pem },
+                .defaultIdentity = .{ .certChainPem = certPem, .privateKeyPem = keyPem },
                 .clientAuth = .required,
-                .clientCaPem = cert_pem,
+                .clientCaPem = certPem,
             });
-            var tls_conn = srv.handshake(io2, &conn) catch |e| {
+            var tlsConn = srv.handshake(io2, &conn) catch |e| {
                 out.* = e;
                 return;
             };
-            defer tls_conn.deinit();
+            defer tlsConn.deinit();
             var buf: [256]u8 = undefined;
-            var head_len: usize = 0;
-            while (head_len < buf.len) {
-                const n = tls_conn.read(buf[head_len..]) catch |e| {
+            var headLen: usize = 0;
+            while (headLen < buf.len) {
+                const n = tlsConn.read(buf[headLen..]) catch |e| {
                     out.* = e;
                     return;
                 };
@@ -2393,16 +2427,16 @@ test "client get over mtls presents certificate through high-level api" {
                     out.* = error.EarlyClose;
                     return;
                 }
-                head_len += n;
-                if (std.mem.indexOf(u8, buf[0..head_len], "\r\n\r\n") != null) break;
+                headLen += n;
+                if (std.mem.indexOf(u8, buf[0..headLen], "\r\n\r\n") != null) break;
             }
             const body = "mutual-high-level";
-            var resp_buf: [256]u8 = undefined;
-            const resp = std.fmt.bufPrint(&resp_buf, "HTTP/1.1 200 OK\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ body.len, body }) catch {
+            var respBuf: [256]u8 = undefined;
+            const resp = std.fmt.bufPrint(&respBuf, "HTTP/1.1 200 OK\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ body.len, body }) catch {
                 out.* = error.NoSpace;
                 return;
             };
-            tls_conn.writeAll(resp) catch |e| {
+            tlsConn.writeAll(resp) catch |e| {
                 out.* = e;
                 return;
             };
@@ -2416,14 +2450,14 @@ test "client get over mtls presents certificate through high-level api" {
     var client = Client.init(a, ctx.io, .{});
     defer client.deinit();
 
-    var url_buf: [64]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buf, "https://127.0.0.1:{d}/", .{port});
+    var urlBuf: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&urlBuf, "https://127.0.0.1:{d}/", .{port});
     var res = try client.get(url, .{
         .tls = .{
             .verify = .caBundle,
-            .caPem = cert_pem,
-            .clientCertPem = cert_pem,
-            .clientKeyPem = key_pem,
+            .caPem = certPem,
+            .clientCertPem = certPem,
+            .clientKeyPem = keyPem,
         },
         .timeoutMs = 15_000,
     });
@@ -2446,18 +2480,18 @@ test "client resolve literal IP and hostname" {
     try std.testing.expectEqual(@as(u16, 80), addrs.first().?.port);
 
     // 2. Family filter for IP
-    var v4_only = try client.resolve("127.0.0.1", .{ .port = 8080, .family = .ipv4 });
-    defer v4_only.deinit();
-    try std.testing.expectEqual(@as(usize, 1), v4_only.len());
+    var v4Only = try client.resolve("127.0.0.1", .{ .port = 8080, .family = .ipv4 });
+    defer v4Only.deinit();
+    try std.testing.expectEqual(@as(usize, 1), v4Only.len());
 
     // 3. URL resolution
-    var url_addrs = try client.resolveUrl("http://127.0.0.1:9000/test", .{});
-    defer url_addrs.deinit();
-    try std.testing.expectEqual(@as(u16, 9000), url_addrs.first().?.port);
+    var urlAddrs = try client.resolveUrl("http://127.0.0.1:9000/test", .{});
+    defer urlAddrs.deinit();
+    try std.testing.expectEqual(@as(u16, 9000), urlAddrs.first().?.port);
 
     // 4. Test format method on ResolvedAddresses
-    var fmt_buf: [128]u8 = undefined;
-    var w: std.Io.Writer = .fixed(&fmt_buf);
+    var fmtBuf: [128]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&fmtBuf);
     try addrs.format(&w);
     try std.testing.expect(w.buffered().len > 0);
 }

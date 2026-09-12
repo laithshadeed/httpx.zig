@@ -1,6 +1,6 @@
 # Example: Custom Server
 
-Demonstrates custom_server.zig using the canonical HTTPX API.
+Demonstrates customServer.zig using the canonical HTTPX API.
 
 ## Complete Example
 

@@ -1,6 +1,6 @@
 # Example: Session Server
 
-Demonstrates session_server.zig using the canonical HTTPX API.
+Demonstrates sessionServer.zig using the canonical HTTPX API.
 
 ## Complete Example
 

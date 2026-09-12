@@ -1,6 +1,6 @@
 # Example: Helmet Server
 
-Demonstrates helmet_server.zig using the canonical HTTPX API.
+Demonstrates helmetServer.zig using the canonical HTTPX API.
 
 ## Complete Example
 

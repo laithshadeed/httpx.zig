@@ -43,7 +43,7 @@ const netResolve = @import("../net/resolve.zig");
 const addressMod = @import("../net/address.zig");
 const compression = @import("../compression/codec.zig");
 const dnsCacheNs = @import("../net/dns/cache.zig");
-pub const HttpVersion = @import("../common/http_version.zig").HttpVersion;
+pub const HttpVersion = @import("../common/httpVersion.zig").HttpVersion;
 const versionInfo = @import("../common/version.zig");
 const proxyMod = @import("../net/proxy.zig");
 const socks5 = @import("../net/socks5.zig");
@@ -276,16 +276,16 @@ pub fn headersFromStruct(allocator: Allocator, value: anytype) ![]Header {
         const name = try allocator.dupe(u8, field.name);
         errdefer allocator.free(name);
         var buf: [64]u8 = undefined;
-        const val_str = switch (@typeInfo(field.type)) {
+        const valStr = switch (@typeInfo(field.type)) {
             .int, .comptime_int => std.fmt.bufPrint(&buf, "{d}", .{v}) catch try std.fmt.allocPrint(allocator, "{d}", .{v}),
-            .float, .comptime_float => std.fmt.bufPrint(&buf, "{d}", .{v}) catch try std.fmt.allocPrint(allocator, "{d}", .{v}),
+            .float, .comptimeFloat => std.fmt.bufPrint(&buf, "{d}", .{v}) catch try std.fmt.allocPrint(allocator, "{d}", .{v}),
             .bool => if (v) "true" else "false",
             .pointer => |ptr| if (ptr.size == .slice and ptr.child == u8) v else if (ptr.size == .one and @typeInfo(ptr.child) == .array and @typeInfo(ptr.child).array.child == u8) v[0..] else try std.fmt.allocPrint(allocator, "{any}", .{v}),
             else => try std.fmt.allocPrint(allocator, "{any}", .{v}),
         };
-        const owned_val = if (val_str.ptr == buf[0..].ptr) try allocator.dupe(u8, val_str) else val_str;
-        // If we used stack buf, val_str is already duped; if heap, it's already allocated
-        try list.append(allocator, .{ .name = name, .value = owned_val });
+        const ownedVal = if (valStr.ptr == buf[0..].ptr) try allocator.dupe(u8, valStr) else valStr;
+        // If we used stack buf, valStr is already duped; if heap, it's already allocated
+        try list.append(allocator, .{ .name = name, .value = ownedVal });
     }
     return list.toOwnedSlice(allocator);
 }
@@ -384,14 +384,14 @@ pub fn encodeQueryValue(a: Allocator, s: []const u8) ![]u8 {
 /// present in the URL and appending structured `.query` options after it
 /// (`?a=1&b=2`). URL-embedded pairs are sent verbatim; option values are
 /// percent-encoded.
-fn buildTarget(a: Allocator, req_path: []const u8, url_query: []const u8, query: []const Header) ![]u8 {
+fn buildTarget(a: Allocator, reqPath: []const u8, urlQuery: []const u8, query: []const Header) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(a);
-    try out.appendSlice(a, req_path);
+    try out.appendSlice(a, reqPath);
     var first = true;
-    if (url_query.len > 0) {
+    if (urlQuery.len > 0) {
         try out.append(a, '?');
-        try out.appendSlice(a, url_query);
+        try out.appendSlice(a, urlQuery);
         first = false;
     }
     for (query) |kv| {
@@ -410,24 +410,24 @@ fn headerLines(a: Allocator, hdrs: []const Header, contentType: ?[]const u8) ![]
     return headerLinesWithAuth(a, hdrs, contentType, null, null, null);
 }
 
-fn headerLinesWithAuth(a: Allocator, hdrs: []const Header, contentType: ?[]const u8, cookie: ?[]const u8, basic_auth: ?[]const u8, bearer_auth: ?[]const u8) ![][]const u8 {
+fn headerLinesWithAuth(a: Allocator, hdrs: []const Header, contentType: ?[]const u8, cookie: ?[]const u8, basicAuth: ?[]const u8, bearerAuth: ?[]const u8) ![][]const u8 {
     var lines: std.ArrayList([]const u8) = .empty;
     errdefer lines.deinit(a);
-    var has_accept_encoding = false;
-    var has_authorization = false;
-    var has_cookie = false;
-    var has_user_agent = false;
+    var hasAcceptEncoding = false;
+    var hasAuthorization = false;
+    var hasCookie = false;
+    var hasUserAgent = false;
     var hasContentType = false;
     for (hdrs) |h| {
-        if (std.ascii.eqlIgnoreCase(h.name, "accept-encoding")) has_accept_encoding = true;
-        if (std.ascii.eqlIgnoreCase(h.name, "authorization")) has_authorization = true;
-        if (std.ascii.eqlIgnoreCase(h.name, "cookie")) has_cookie = true;
-        if (std.ascii.eqlIgnoreCase(h.name, "user-agent")) has_user_agent = true;
+        if (std.ascii.eqlIgnoreCase(h.name, "accept-encoding")) hasAcceptEncoding = true;
+        if (std.ascii.eqlIgnoreCase(h.name, "authorization")) hasAuthorization = true;
+        if (std.ascii.eqlIgnoreCase(h.name, "cookie")) hasCookie = true;
+        if (std.ascii.eqlIgnoreCase(h.name, "user-agent")) hasUserAgent = true;
         if (std.ascii.eqlIgnoreCase(h.name, "content-type")) hasContentType = true;
         const l = try std.fmt.allocPrint(a, "{s}: {s}", .{ h.name, h.value });
         try lines.append(a, l);
     }
-    if (!has_user_agent) {
+    if (!hasUserAgent) {
         const l = try std.fmt.allocPrint(a, "User-Agent: {s}", .{versionInfo.userAgent});
         try lines.append(a, l);
     }
@@ -435,15 +435,15 @@ fn headerLinesWithAuth(a: Allocator, hdrs: []const Header, contentType: ?[]const
         const l = try std.fmt.allocPrint(a, "Content-Type: {s}", .{ct});
         try lines.append(a, l);
     };
-    if (cookie) |c| if (!has_cookie) {
+    if (cookie) |c| if (!hasCookie) {
         const l = try std.fmt.allocPrint(a, "Cookie: {s}", .{c});
         try lines.append(a, l);
     };
-    if (!has_authorization) {
-        if (bearer_auth) |tok| {
+    if (!hasAuthorization) {
+        if (bearerAuth) |tok| {
             const l = try std.fmt.allocPrint(a, "Authorization: Bearer {s}", .{tok});
             try lines.append(a, l);
-        } else if (basic_auth) |up| {
+        } else if (basicAuth) |up| {
             const encLen = std.base64.standard.Encoder.calcSize(up.len);
             const b64 = try a.alloc(u8, encLen);
             defer a.free(b64);
@@ -452,7 +452,7 @@ fn headerLinesWithAuth(a: Allocator, hdrs: []const Header, contentType: ?[]const
             try lines.append(a, l);
         }
     }
-    if (!has_accept_encoding) {
+    if (!hasAcceptEncoding) {
         const l = try a.dupe(u8, "Accept-Encoding: gzip, br, zstd");
         try lines.append(a, l);
     }
@@ -482,41 +482,41 @@ fn h3DoRequest(
     a: Allocator,
     io: std.Io,
     req: Request,
-    tls_opts: ?TlsOptions,
+    tlsOpts: ?TlsOptions,
     host: []const u8,
     port: u16,
     authority: []const u8,
     target: []const u8,
 ) Error!Response {
     if (host.len == 0) return Error.InvalidUrl;
-    const deadline_ms = req.timeoutMs orelse 30_000;
+    const deadlineMs = req.timeoutMs orelse 30_000;
 
     // Resolve: literal first, then single-flight cache, then OS resolver
     // (IPv4 preferred, mirroring the TCP happy-eyeballs-lite order).
     var probe = addressMod.Address{ .family = .ip4, .port = 0 };
-    var dest_addr: addressMod.Address = undefined;
-    var have_dest = false;
+    var destAddr: addressMod.Address = undefined;
+    var haveDest = false;
     if (probe.parseIp(host)) |direct| {
-        dest_addr = direct;
-        dest_addr.port = port;
-        have_dest = true;
+        destAddr = direct;
+        destAddr.port = port;
+        haveDest = true;
     } else |_| {
         if (req.dnsCache) |cache| {
-            if (cache.resolve(host)) |cached_strs| {
+            if (cache.resolve(host)) |cachedStrs| {
                 defer {
-                    for (cached_strs) |s| a.free(s);
-                    a.free(cached_strs);
+                    for (cachedStrs) |s| a.free(s);
+                    a.free(cachedStrs);
                 }
-                for (cached_strs) |s| {
+                for (cachedStrs) |s| {
                     if (parseAddrString(s, port)) |parsed| {
-                        dest_addr = parsed;
-                        have_dest = true;
+                        destAddr = parsed;
+                        haveDest = true;
                         break;
                     }
                 }
             } else |_| {}
         }
-        if (!have_dest) {
+        if (!haveDest) {
             const addrs = (netResolve.Resolver.init(a, io)).lookup(host, .{ .port = port }) catch return Error.DnsFailed;
             defer a.free(addrs);
             if (addrs.len == 0) return Error.DnsFailed;
@@ -531,14 +531,14 @@ fn h3DoRequest(
                     vi += 1;
                 }
             }
-            dest_addr = addrs[0];
-            have_dest = true;
+            destAddr = addrs[0];
+            haveDest = true;
         }
     }
-    if (!have_dest) return Error.DnsFailed;
-    const dest = dest_addr.toStd(null);
+    if (!haveDest) return Error.DnsFailed;
+    const dest = destAddr.toStd(null);
 
-    const t = tls_opts orelse TlsOptions{ .verify = .caBundle, .allowTruncation = true };
+    const t = tlsOpts orelse TlsOptions{ .verify = .caBundle, .allowTruncation = true };
     var conn = quicConn.Connection.init(a, .client, .{}, @intCast(clockMod.millisNow())) catch return Error.OutOfMemory;
     defer conn.deinit();
     var ep = quicEp.Endpoint.init(a, io, conn) catch return Error.ConnectFailed;
@@ -552,23 +552,23 @@ fn h3DoRequest(
     pump.start(&ep, a) catch return Error.OutOfMemory;
     defer pump.stop();
 
-    quicHs.performHandshake(&ep, &pump, &driver, null, null, null, dest, deadline_ms) catch |e| {
+    quicHs.performHandshake(&ep, &pump, &driver, null, null, null, dest, deadlineMs) catch |e| {
         return mapQuicHandshakeError(e, driver.detail);
     };
 
     var h3c = h3Transport.Client.init(a, &ep);
     defer h3c.deinit();
-    var has_accept_encoding = false;
+    var hasAcceptEncoding = false;
     for (req.headers) |h| {
-        if (std.ascii.eqlIgnoreCase(h.name, "accept-encoding")) has_accept_encoding = true;
+        if (std.ascii.eqlIgnoreCase(h.name, "accept-encoding")) hasAcceptEncoding = true;
     }
     var conv = std.ArrayList(h3Transport.Header).empty;
     defer conv.deinit(a);
     for (req.headers) |h| conv.append(a, .{ .name = h.name, .value = h.value }) catch return Error.OutOfMemory;
-    if (!has_accept_encoding) {
+    if (!hasAcceptEncoding) {
         conv.append(a, .{ .name = "accept-encoding", .value = "gzip, br, zstd" }) catch return Error.OutOfMemory;
     }
-    const h3resp_raw = h3c.request(
+    const h3respRaw = h3c.request(
         req.method.toString(),
         "https",
         authority,
@@ -576,25 +576,25 @@ fn h3DoRequest(
         conv.items,
         &pump,
         dest,
-        deadline_ms,
+        deadlineMs,
     ) catch |e| switch (e) {
         error.OutOfMemory => return Error.OutOfMemory,
         error.Timeout => return Error.Timeout,
         error.ResponseTooLarge => return Error.ResponseTooLarge,
         else => return Error.ProtocolViolation,
     };
-    const h3resp = h3resp_raw;
+    const h3resp = h3respRaw;
     // Convert header type (same shape, different namespace); the
     // transport allocator IS `a`, so ownership transfers cleanly, and
     // decodeResponseBody consumes the body exactly like h2DoRequest.
-    var out_hdrs = try a.alloc(Header, h3resp.headers.len);
-    for (h3resp.headers, 0..) |h, i| out_hdrs[i] = .{ .name = h.name, .value = h.value };
-    const decoded_body = decodeResponseBody(a, out_hdrs, h3resp.body) catch |e| {
-        for (out_hdrs) |h| {
+    var outHdrs = try a.alloc(Header, h3resp.headers.len);
+    for (h3resp.headers, 0..) |h, i| outHdrs[i] = .{ .name = h.name, .value = h.value };
+    const decodedBody = decodeResponseBody(a, outHdrs, h3resp.body) catch |e| {
+        for (outHdrs) |h| {
             a.free(h.name);
             a.free(h.value);
         }
-        a.free(out_hdrs);
+        a.free(outHdrs);
         a.free(h3resp.body);
         return e;
     };
@@ -603,8 +603,8 @@ fn h3DoRequest(
         .allocator = a,
         .status = h3resp.status,
         .version = .http3,
-        .headers = out_hdrs,
-        .body = decoded_body,
+        .headers = outHdrs,
+        .body = decodedBody,
     };
 }
 
@@ -615,8 +615,8 @@ fn mapQuicHandshakeError(err: anyerror, detail: quicHs.Detail) Error {
         error.OutOfMemory => Error.OutOfMemory,
         error.HandshakeTimeout => Error.Timeout,
         else => switch (detail) {
-            .alpn_mismatch => Error.AlpnNegotiationFailed,
-            .cert_failed => Error.TlsCertificateNotVerified,
+            .alpnMismatch => Error.AlpnNegotiationFailed,
+            .certFailed => Error.TlsCertificateNotVerified,
             else => Error.TlsHandshakeFailed,
         },
     };
@@ -631,32 +631,32 @@ fn h2DoRequest(
     pc: *http2Transport.PooledConn,
     method: []const u8,
     target: []const u8,
-    req_headers: []const Header,
+    reqHeaders: []const Header,
     scheme: []const u8,
     authority: []const u8,
 ) Error!Response {
-    var has_accept_encoding = false;
-    for (req_headers) |h| {
-        if (std.ascii.eqlIgnoreCase(h.name, "accept-encoding")) has_accept_encoding = true;
+    var hasAcceptEncoding = false;
+    for (reqHeaders) |h| {
+        if (std.ascii.eqlIgnoreCase(h.name, "accept-encoding")) hasAcceptEncoding = true;
     }
-    var conv: []http2Transport.Header = try a.alloc(http2Transport.Header, req_headers.len + @as(usize, if (has_accept_encoding) 0 else 1));
+    var conv: []http2Transport.Header = try a.alloc(http2Transport.Header, reqHeaders.len + @as(usize, if (hasAcceptEncoding) 0 else 1));
     defer a.free(conv);
-    for (req_headers, 0..) |h, i| conv[i] = .{ .name = h.name, .value = h.value };
-    if (!has_accept_encoding) conv[req_headers.len] = .{ .name = "accept-encoding", .value = "gzip, br, zstd" };
+    for (reqHeaders, 0..) |h, i| conv[i] = .{ .name = h.name, .value = h.value };
+    if (!hasAcceptEncoding) conv[reqHeaders.len] = .{ .name = "accept-encoding", .value = "gzip, br, zstd" };
     const r = pc.request(method, target, conv, scheme, authority) catch |e| switch (e) {
         error.OutOfMemory => return Error.OutOfMemory,
         else => return Error.ProtocolViolation,
     };
     // Convert header type (same shape, different namespace); the
     // transport allocator IS `a`, so ownership transfers cleanly.
-    var out_hdrs = try a.alloc(Header, r.headers.len);
-    for (r.headers, 0..) |h, i| out_hdrs[i] = .{ .name = h.name, .value = h.value };
-    const decoded_body = decodeResponseBody(a, out_hdrs, r.body) catch |e| {
-        for (out_hdrs) |h| {
+    var outHdrs = try a.alloc(Header, r.headers.len);
+    for (r.headers, 0..) |h, i| outHdrs[i] = .{ .name = h.name, .value = h.value };
+    const decodedBody = decodeResponseBody(a, outHdrs, r.body) catch |e| {
+        for (outHdrs) |h| {
             a.free(h.name);
             a.free(h.value);
         }
-        a.free(out_hdrs);
+        a.free(outHdrs);
         a.free(r.body);
         return e;
     };
@@ -665,30 +665,30 @@ fn h2DoRequest(
         .allocator = a,
         .status = r.status,
         .version = .http2,
-        .headers = out_hdrs,
-        .body = decoded_body,
+        .headers = outHdrs,
+        .body = decodedBody,
     };
 }
 
 pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
-    var current_url: []u8 = try a.dupe(u8, req.url);
-    defer a.free(current_url);
+    var currentUrl: []u8 = try a.dupe(u8, req.url);
+    defer a.free(currentUrl);
 
     var redirects: u8 = 0;
     var method = req.method;
 
     while (true) {
-        const u = uriMod.parse(current_url) catch return Error.InvalidUrl;
+        const u = uriMod.parse(currentUrl) catch return Error.InvalidUrl;
         const isTls = std.mem.eql(u8, u.scheme, "https");
         if (!isTls and !std.mem.eql(u8, u.scheme, "http")) return Error.InvalidUrl;
         // Auto-enable TLS for HTTPS with safe default verification (.caBundle).
-        const tls_opts = if (isTls) req.tls orelse TlsOptions{ .verify = .caBundle, .allowTruncation = true } else null;
+        const tlsOpts = if (isTls) req.tls orelse TlsOptions{ .verify = .caBundle, .allowTruncation = true } else null;
 
         var port = u.effectivePort();
         if (port == 0) return Error.InvalidUrl;
 
-        var auth_buf: [256]u8 = undefined;
-        const authority_str = u.authority(&auth_buf);
+        var authBuf: [256]u8 = undefined;
+        const authorityStr = u.authority(&authBuf);
 
         const target = try buildTarget(a, u.path, u.query, req.query);
         defer a.free(target);
@@ -698,11 +698,11 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
             .form => "application/x-www-form-urlencoded",
             else => null,
         };
-        const has_body = req.body.len > 0 or switch (req.bodyKind) {
+        const hasBody = req.body.len > 0 or switch (req.bodyKind) {
             .json, .form => true,
             else => false,
         };
-        const body_out: ?[]const u8 = if (has_body) req.body else null;
+        const bodyOut: ?[]const u8 = if (hasBody) req.body else null;
 
         const extra = try headerLinesWithAuth(a, req.headers, ct, req.cookie, req.basicAuth, req.bearerAuth);
         defer {
@@ -710,11 +710,11 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
             a.free(extra);
         }
 
-        var hdr_pairs = try a.alloc(writerMod.Header, extra.len);
-        defer a.free(hdr_pairs);
+        var hdrPairs = try a.alloc(writerMod.Header, extra.len);
+        defer a.free(hdrPairs);
         for (extra, 0..) |line, i| {
             const colon = std.mem.indexOfScalar(u8, line, ':') orelse return Error.OutOfMemory;
-            hdr_pairs[i] = .{
+            hdrPairs[i] = .{
                 .name = std.mem.trim(u8, line[0..colon], " "),
                 .value = std.mem.trim(u8, line[colon + 1 ..], " "),
             };
@@ -723,40 +723,40 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
             a,
             method.toString(),
             target,
-            body_out,
+            bodyOut,
             .{
                 .minorVersion = if (req.httpVersion == .http10) 0 else 1,
-                .host = authority_str,
-                .headers = hdr_pairs,
+                .host = authorityStr,
+                .headers = hdrPairs,
                 .connection = if (req.httpVersion == .http10) "close" else "",
             },
         ) catch return Error.OutOfMemory;
         defer a.free(raw);
 
-        var host_copy: [256]u8 = undefined;
-        const hostLen = @min(authority_str.len, 256);
-        @memcpy(host_copy[0..hostLen], authority_str[0..hostLen]);
+        var hostCopy: [256]u8 = undefined;
+        const hostLen = @min(authorityStr.len, 256);
+        @memcpy(hostCopy[0..hostLen], authorityStr[0..hostLen]);
 
         // Strip :port from authority for DNS/connect when present.
-        var host_only = authority_str;
-        if (std.mem.lastIndexOfScalar(u8, host_only, ':')) |ci| {
-            if (std.mem.indexOfScalar(u8, host_only, ']') == null or ci > std.mem.indexOfScalar(u8, host_only, ']').?)
-                host_only = host_only[0..ci];
-            port = std.fmt.parseInt(u16, authority_str[ci + 1 ..], 10) catch port;
+        var hostOnly = authorityStr;
+        if (std.mem.lastIndexOfScalar(u8, hostOnly, ':')) |ci| {
+            if (std.mem.indexOfScalar(u8, hostOnly, ']') == null or ci > std.mem.indexOfScalar(u8, hostOnly, ']').?)
+                hostOnly = hostOnly[0..ci];
+            port = std.fmt.parseInt(u16, authorityStr[ci + 1 ..], 10) catch port;
         }
-        const hl = @min(host_only.len, 256);
-        @memcpy(host_copy[0..hl], host_only[0..hl]);
+        const hl = @min(hostOnly.len, 256);
+        @memcpy(hostCopy[0..hl], hostOnly[0..hl]);
 
         // HTTP/3 leaves TCP entirely: branch to the QUIC path before any
         // TCP dial (dialing just to close the socket would be a visible
         // side effect on the origin). `auto` never resolves to H3.
-        const resolved_ver: HttpVersion = if (req.httpVersion == .auto) .http11 else req.httpVersion;
-        if (resolved_ver == .http3) {
+        const resolvedVer: HttpVersion = if (req.httpVersion == .auto) .http11 else req.httpVersion;
+        if (resolvedVer == .http3) {
             // RFC 9114 runs exclusively over QUIC+TLS: cleartext H3
             // cannot exist, so this is an invalid URL+version pairing.
             if (!isTls) return Error.InvalidUrl;
             if (req.proxy != null) return Error.Http3ProxyUnsupported;
-            return h3DoRequest(a, io, req, tls_opts, host_copy[0..hl], port, authority_str, target);
+            return h3DoRequest(a, io, req, tlsOpts, hostCopy[0..hl], port, authorityStr, target);
         }
 
         // HTTP/2 pooled fast path BEFORE any dial: a parked session
@@ -765,15 +765,15 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
         // every hit (FD leak) and SYN-flood the origin for nothing.
         // `auto` never resolves to H2, so the version test is exact;
         // proxy routes never mix into pooled lanes.
-        if (resolved_ver == .http2 and req.proxy == null) {
+        if (resolvedVer == .http2 and req.proxy == null) {
             if (req.pool) |p| {
-                if (p.acquireH2(host_copy[0..hl], port, isTls)) |pc| {
+                if (p.acquireH2(hostCopy[0..hl], port, isTls)) |pc| {
                     const scheme: []const u8 = if (isTls) "https" else "http";
-                    const resp = h2DoRequest(a, pc, method.toString(), target, req.headers, scheme, host_copy[0..hl]) catch |e| {
+                    const resp = h2DoRequest(a, pc, method.toString(), target, req.headers, scheme, hostCopy[0..hl]) catch |e| {
                         pc.deinit();
                         return e;
                     };
-                    p.releaseH2(host_copy[0..hl], port, isTls, pc);
+                    p.releaseH2(hostCopy[0..hl], port, isTls, pc);
                     return resp;
                 }
             }
@@ -783,137 +783,137 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
         // (getaddrinfo) and each returned address is tried in order.
         var resolved: ?[]addressMod.Address = null;
         defer if (resolved) |list| a.free(list);
-        const tcp_sock = blk: {
-            if (req.proxy) |p_url| {
-                const p_info = proxyMod.parseProxyUrl(p_url) orelse return Error.InvalidUrl;
-                switch (p_info.kind) {
+        const tcpSock = blk: {
+            if (req.proxy) |pUrl| {
+                const pInfo = proxyMod.parseProxyUrl(pUrl) orelse return Error.InvalidUrl;
+                switch (pInfo.kind) {
                     .socks4 => {
-                        var targetHost = host_only;
-                        var local_resolved_buf: [64]u8 = undefined;
-                        if (!p_info.remoteDns) {
+                        var targetHost = hostOnly;
+                        var localResolvedBuf: [64]u8 = undefined;
+                        if (!pInfo.remoteDns) {
                             var probe = addressMod.Address{ .family = .ip4, .port = 0 };
-                            if (probe.parseIp(host_only)) |_| {
-                                targetHost = host_only;
+                            if (probe.parseIp(hostOnly)) |_| {
+                                targetHost = hostOnly;
                             } else |_| {
-                                const addrs = (netResolve.Resolver.init(a, io)).lookup(host_only, .{ .port = port }) catch return Error.ConnectFailed;
+                                const addrs = (netResolve.Resolver.init(a, io)).lookup(hostOnly, .{ .port = port }) catch return Error.ConnectFailed;
                                 defer a.free(addrs);
                                 if (addrs.len == 0) return Error.ConnectFailed;
-                                targetHost = addrs[0].formatBuf(&local_resolved_buf);
+                                targetHost = addrs[0].formatBuf(&localResolvedBuf);
                             }
                         }
                         if (isTls) {
                             break :blk socks4.connectStream(
                                 io,
-                                p_info.host,
-                                p_info.port,
+                                pInfo.host,
+                                pInfo.port,
                                 targetHost,
                                 port,
-                                p_info.username,
+                                pInfo.username,
                             ) catch return Error.ConnectFailed;
                         } else {
                             break :blk socks4.connect(
                                 io,
-                                p_info.host,
-                                p_info.port,
+                                pInfo.host,
+                                pInfo.port,
                                 targetHost,
                                 port,
-                                p_info.username,
+                                pInfo.username,
                             ) catch return Error.ConnectFailed;
                         }
                     },
                     .socks5 => {
-                        var targetHost = host_only;
-                        var local_resolved_buf: [64]u8 = undefined;
-                        if (!p_info.remoteDns) {
+                        var targetHost = hostOnly;
+                        var localResolvedBuf: [64]u8 = undefined;
+                        if (!pInfo.remoteDns) {
                             var probe = addressMod.Address{ .family = .ip4, .port = 0 };
-                            if (probe.parseIp(host_only)) |_| {
-                                targetHost = host_only;
+                            if (probe.parseIp(hostOnly)) |_| {
+                                targetHost = hostOnly;
                             } else |_| {
-                                const addrs = (netResolve.Resolver.init(a, io)).lookup(host_only, .{ .port = port }) catch return Error.ConnectFailed;
+                                const addrs = (netResolve.Resolver.init(a, io)).lookup(hostOnly, .{ .port = port }) catch return Error.ConnectFailed;
                                 defer a.free(addrs);
                                 if (addrs.len == 0) return Error.ConnectFailed;
-                                targetHost = addrs[0].formatBuf(&local_resolved_buf);
+                                targetHost = addrs[0].formatBuf(&localResolvedBuf);
                             }
                         }
                         if (isTls) {
                             break :blk socks5.connectStream(
                                 io,
-                                p_info.host,
-                                p_info.port,
+                                pInfo.host,
+                                pInfo.port,
                                 targetHost,
                                 port,
-                                p_info.username,
-                                p_info.password,
+                                pInfo.username,
+                                pInfo.password,
                             ) catch return Error.ConnectFailed;
                         } else {
                             break :blk socks5.connect(
                                 io,
-                                p_info.host,
-                                p_info.port,
+                                pInfo.host,
+                                pInfo.port,
                                 targetHost,
                                 port,
-                                p_info.username,
-                                p_info.password,
+                                pInfo.username,
+                                pInfo.password,
                             ) catch return Error.ConnectFailed;
                         }
                     },
                     .httpConnect => {
-                        var s = if (isTls) blk_s: {
+                        var s = if (isTls) blkS: {
                             var probe = addressMod.Address{ .family = .ip4, .port = 0 };
-                            if (probe.parseIp(p_info.host)) |parsed| {
+                            if (probe.parseIp(pInfo.host)) |parsed| {
                                 var addr = parsed;
-                                addr.port = p_info.port;
-                                break :blk_s tcp.connectAddressStream(io, &addr) catch return Error.ConnectFailed;
+                                addr.port = pInfo.port;
+                                break :blkS tcp.connectAddressStream(io, &addr) catch return Error.ConnectFailed;
                             } else |_| {}
-                            const addrs = (netResolve.Resolver.init(a, io)).lookup(p_info.host, .{ .port = p_info.port }) catch return Error.ConnectFailed;
+                            const addrs = (netResolve.Resolver.init(a, io)).lookup(pInfo.host, .{ .port = pInfo.port }) catch return Error.ConnectFailed;
                             defer a.free(addrs);
                             if (addrs.len == 0) return Error.ConnectFailed;
-                            break :blk_s tcp.connectAddressStream(io, &addrs[0]) catch return Error.ConnectFailed;
-                        } else blk_s: {
+                            break :blkS tcp.connectAddressStream(io, &addrs[0]) catch return Error.ConnectFailed;
+                        } else blkS: {
                             var probe = addressMod.Address{ .family = .ip4, .port = 0 };
-                            if (probe.parseIp(p_info.host)) |parsed| {
+                            if (probe.parseIp(pInfo.host)) |parsed| {
                                 var addr = parsed;
-                                addr.port = p_info.port;
-                                break :blk_s tcp.connectAddress(io, &addr) catch return Error.ConnectFailed;
+                                addr.port = pInfo.port;
+                                break :blkS tcp.connectAddress(io, &addr) catch return Error.ConnectFailed;
                             } else |_| {}
-                            const addrs = (netResolve.Resolver.init(a, io)).lookup(p_info.host, .{ .port = p_info.port }) catch return Error.ConnectFailed;
+                            const addrs = (netResolve.Resolver.init(a, io)).lookup(pInfo.host, .{ .port = pInfo.port }) catch return Error.ConnectFailed;
                             defer a.free(addrs);
                             if (addrs.len == 0) return Error.ConnectFailed;
-                            break :blk_s tcp.connectAddress(io, &addrs[0]) catch return Error.ConnectFailed;
+                            break :blkS tcp.connectAddress(io, &addrs[0]) catch return Error.ConnectFailed;
                         };
                         errdefer s.close();
                         // RFC 7235 proxy credentials: userinfo from the proxy URL
                         // becomes Proxy-Authorization on the CONNECT request only
                         // (never forwarded to the origin server).
-                        var auth_header: ?[]u8 = null;
-                        defer if (auth_header) |h| a.free(h);
-                        if (p_info.username) |user| {
-                            const pass = p_info.password orelse "";
+                        var authHeader: ?[]u8 = null;
+                        defer if (authHeader) |h| a.free(h);
+                        if (pInfo.username) |user| {
+                            const pass = pInfo.password orelse "";
                             const creds = try std.fmt.allocPrint(a, "{s}:{s}", .{ user, pass });
                             defer a.free(creds);
-                            const enc_len = std.base64.standard.Encoder.calcSize(creds.len);
-                            const enc = try a.alloc(u8, enc_len);
+                            const encLen = std.base64.standard.Encoder.calcSize(creds.len);
+                            const enc = try a.alloc(u8, encLen);
                             errdefer a.free(enc);
                             _ = std.base64.standard.Encoder.encode(enc, creds);
-                            auth_header = try std.fmt.allocPrint(a, "Proxy-Authorization: Basic {s}\r\n", .{enc});
+                            authHeader = try std.fmt.allocPrint(a, "Proxy-Authorization: Basic {s}\r\n", .{enc});
                             a.free(enc);
                         }
-                        const connect_req = if (auth_header) |ah|
-                            try std.fmt.allocPrint(a, "CONNECT {s}:{d} HTTP/1.1\r\nHost: {s}:{d}\r\n{s}\r\n", .{ host_only, port, host_only, port, ah })
+                        const connectReq = if (authHeader) |ah|
+                            try std.fmt.allocPrint(a, "CONNECT {s}:{d} HTTP/1.1\r\nHost: {s}:{d}\r\n{s}\r\n", .{ hostOnly, port, hostOnly, port, ah })
                         else
-                            try std.fmt.allocPrint(a, "CONNECT {s}:{d} HTTP/1.1\r\nHost: {s}:{d}\r\n\r\n", .{ host_only, port, host_only, port });
-                        defer a.free(connect_req);
-                        s.writeAll(connect_req) catch return Error.WriteFailed;
-                        var connect_resp: [512]u8 = undefined;
+                            try std.fmt.allocPrint(a, "CONNECT {s}:{d} HTTP/1.1\r\nHost: {s}:{d}\r\n\r\n", .{ hostOnly, port, hostOnly, port });
+                        defer a.free(connectReq);
+                        s.writeAll(connectReq) catch return Error.WriteFailed;
+                        var connectResp: [512]u8 = undefined;
                         var readLen: usize = 0;
-                        while (readLen < connect_resp.len) {
-                            const n = s.read(connect_resp[readLen..]) catch return Error.ReadFailed;
+                        while (readLen < connectResp.len) {
+                            const n = s.read(connectResp[readLen..]) catch return Error.ReadFailed;
                             if (n == 0) return Error.ConnectFailed;
                             readLen += n;
-                            if (std.mem.indexOf(u8, connect_resp[0..readLen], "\r\n\r\n")) |_| break;
+                            if (std.mem.indexOf(u8, connectResp[0..readLen], "\r\n\r\n")) |_| break;
                         }
-                        if (readLen < 12 or !std.mem.startsWith(u8, connect_resp[0..readLen], "HTTP/1.") or !std.mem.eql(u8, connect_resp[9..12], "200")) {
-                            if (readLen >= 12 and std.mem.startsWith(u8, connect_resp[0..readLen], "HTTP/1.") and std.mem.eql(u8, connect_resp[9..12], "407")) {
+                        if (readLen < 12 or !std.mem.startsWith(u8, connectResp[0..readLen], "HTTP/1.") or !std.mem.eql(u8, connectResp[9..12], "200")) {
+                            if (readLen >= 12 and std.mem.startsWith(u8, connectResp[0..readLen], "HTTP/1.") and std.mem.eql(u8, connectResp[9..12], "407")) {
                                 return Error.ProxyAuthRequired;
                             }
                             return Error.ConnectFailed;
@@ -927,15 +927,15 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
             // Keep-alive reuse first (plain HTTP/1 only, no proxy).
             // H2 has its own pooled lane (acquireH2 below); probing the
             // plain lane here would only pollute stats and sweep work.
-            // Note: `auto` never resolves to H2 (see resolved_ver), so
+            // Note: `auto` never resolves to H2 (see resolvedVer), so
             // testing the requested version is exact.
             if (!isTls and req.proxy == null and req.httpVersion != .http2) {
                 if (req.pool) |p| {
-                    if (p.acquire(host_copy[0..hl], port)) |s| break :blk s;
+                    if (p.acquire(hostCopy[0..hl], port)) |s| break :blk s;
                 }
             }
             var probe = addressMod.Address{ .family = .ip4, .port = 0 };
-            if (probe.parseIp(host_only)) |direct| {
+            if (probe.parseIp(hostOnly)) |direct| {
                 var da = direct;
                 da.port = port;
                 // For TLS, use the AFD-backed stream path (required for
@@ -952,14 +952,14 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
 
             resolved = rblk: {
                 if (req.dnsCache) |cache| {
-                    if (cache.resolve(host_only)) |cached_strs| {
+                    if (cache.resolve(hostOnly)) |cachedStrs| {
                         defer {
-                            for (cached_strs) |s| a.free(s);
-                            a.free(cached_strs);
+                            for (cachedStrs) |s| a.free(s);
+                            a.free(cachedStrs);
                         }
                         var list = std.ArrayList(addressMod.Address).empty;
                         errdefer list.deinit(a);
-                        for (cached_strs) |s| {
+                        for (cachedStrs) |s| {
                             if (parseAddrString(s, port)) |parsed| {
                                 list.append(a, parsed) catch return Error.OutOfMemory;
                             }
@@ -969,7 +969,7 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
                         }
                     } else |_| {}
                 }
-                break :rblk (netResolve.Resolver.init(a, io)).lookup(host_only, .{ .port = port }) catch return Error.ConnectFailed;
+                break :rblk (netResolve.Resolver.init(a, io)).lookup(hostOnly, .{ .port = port }) catch return Error.ConnectFailed;
             };
             // Happy-eyeballs-lite: prefer IPv4 results first (v6 endpoints
             // are frequently unreachable on dev machines).
@@ -994,20 +994,20 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
             return Error.ConnectFailed;
         };
 
-        if (req.timeoutMs) |t_ms| {
-            if (t_ms > 0) {
-                if (tcp_sock.inner == .stream) {
-                    tcp.setTimeouts(tcp_sock.netSocketHandle(), @intCast(@min(t_ms, 2147483647)));
+        if (req.timeoutMs) |tMs| {
+            if (tMs > 0) {
+                if (tcpSock.inner == .stream) {
+                    tcp.setTimeouts(tcpSock.netSocketHandle(), @intCast(@min(tMs, 2147483647)));
                 }
             }
         }
 
-        if (isTls and resolved_ver == .http2) {
+        if (isTls and resolvedVer == .http2) {
             // Native TLS + ALPN h2 (RFC 9113 Section 3.3): the std TLS
             // wrapper has no ALPN hook, so explicit h2 uses the native
             // client transport. A server that does not select h2 fails
             // loudly instead of being silently downgraded.
-            const tls_opts_h2 = tls_opts orelse TlsOptions{ .verify = .caBundle, .allowTruncation = true };
+            const tlsOptsH2 = tlsOpts orelse TlsOptions{ .verify = .caBundle, .allowTruncation = true };
             // No second acquire here: the pre-dial fast path above already
             // tried. A concurrent park racing our dial simply becomes an
             // extra (correct, capped-at-park) connection — never a leak,
@@ -1016,30 +1016,30 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
             // its socket, and both must outlive this frame whenever the
             // session is parked in the pool below.
             const box = a.create(http2Transport.TlsBox) catch {
-                tcp_sock.close();
+                tcpSock.close();
                 return Error.OutOfMemory;
             };
-            box.sock = tcp_sock;
+            box.sock = tcpSock;
             // Resumption offer from the client's session cache (origin
             // lane). The cache hands out an owned duplicate; it is freed
             // once the handshake consumed it.
-            const now_ms: u64 = @intCast(clockMod.millisNow());
+            const nowMs: u64 = @intCast(clockMod.millisNow());
             var offered: ?tlsSession.ClientSession = if (req.sessionCache) |sc|
-                sc.get(host_copy[0..hl], port, now_ms)
+                sc.get(hostCopy[0..hl], port, nowMs)
             else
                 null;
             defer if (offered) |*s| s.deinit(a);
-            var native_cli = nativeTlsClient.TlsClient.init(.{
+            var nativeCli = nativeTlsClient.TlsClient.init(.{
                 .allocator = a,
-                .verify = tls_opts_h2.verify,
-                .caPem = tls_opts_h2.caPem,
-                .clientCertPem = tls_opts_h2.clientCertPem,
-                .clientKeyPem = tls_opts_h2.clientKeyPem,
+                .verify = tlsOptsH2.verify,
+                .caPem = tlsOptsH2.caPem,
+                .clientCertPem = tlsOptsH2.clientCertPem,
+                .clientKeyPem = tlsOptsH2.clientKeyPem,
                 .alpnProtocols = &.{"h2"},
                 .session = if (offered) |*s| s else null,
                 .captureSession = true,
             });
-            box.conn = nativeTlsClient.TlsClient.handshake(&native_cli, io, &box.sock, host_copy[0..hl]) catch |err| {
+            box.conn = nativeTlsClient.TlsClient.handshake(&nativeCli, io, &box.sock, hostCopy[0..hl]) catch |err| {
                 box.sock.close();
                 a.destroy(box);
                 return mapNativeTlsError(err);
@@ -1054,7 +1054,7 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
                 // wrapTls already closed the socket and freed the box.
                 return Error.ProtocolViolation;
             };
-            const resp = h2DoRequest(a, pc, method.toString(), target, req.headers, "https", host_copy[0..hl]) catch |e| {
+            const resp = h2DoRequest(a, pc, method.toString(), target, req.headers, "https", hostCopy[0..hl]) catch |e| {
                 pc.deinit();
                 return e;
             };
@@ -1064,32 +1064,32 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
                 if (pc.takeSession()) |taken| {
                     var owned = taken;
                     defer owned.deinit(a);
-                    sc.put(host_copy[0..hl], port, &owned);
+                    sc.put(hostCopy[0..hl], port, &owned);
                 }
             }
             if (req.proxy == null) {
                 if (req.pool) |p| {
-                    p.releaseH2(host_copy[0..hl], port, true, pc);
+                    p.releaseH2(hostCopy[0..hl], port, true, pc);
                     return resp;
                 }
             }
             pc.deinit();
             return resp;
         }
-        if (!isTls and resolved_ver == .http2) {
+        if (!isTls and resolvedVer == .http2) {
             // RFC 7540 Section 3.5 prior knowledge over cleartext TCP.
             // (Single pre-dial acquire above; see the h2-TLS note.)
-            var pc = http2Transport.PooledConn.wrapPlain(a, tcp_sock) catch {
-                tcp_sock.close();
+            var pc = http2Transport.PooledConn.wrapPlain(a, tcpSock) catch {
+                tcpSock.close();
                 return Error.ProtocolViolation;
             };
-            const resp = h2DoRequest(a, pc, method.toString(), target, req.headers, "http", host_copy[0..hl]) catch |e| {
+            const resp = h2DoRequest(a, pc, method.toString(), target, req.headers, "http", hostCopy[0..hl]) catch |e| {
                 pc.deinit();
                 return e;
             };
             if (req.proxy == null) {
                 if (req.pool) |p| {
-                    p.releaseH2(host_copy[0..hl], port, false, pc);
+                    p.releaseH2(hostCopy[0..hl], port, false, pc);
                     return resp;
                 }
             }
@@ -1101,7 +1101,7 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
         // initialization succeeds and replaces this union arm. Initializing
         // it before the defer is essential: TLS setup may fail before the
         // encrypted transport exists.
-        var transport: Transport = .{ .plain = tcp_sock };
+        var transport: Transport = .{ .plain = tcpSock };
         var tlsConn: ?*tlsTransport.Connection = null;
         // Native-TLS state (client certificates): the session borrows the
         // moved socket below; both are released together in the defer.
@@ -1121,15 +1121,15 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
         }
 
         if (isTls) {
-            const opts = tls_opts.?;
-            if (opts.clientCertPem != null and resolved_ver != .http2) {
+            const opts = tlsOpts.?;
+            if (opts.clientCertPem != null and resolvedVer != .http2) {
                 // Mutual TLS over HTTP/1.x needs certificate presentation,
                 // which only the native client implements: handshake here
                 // offering http/1.1, then join the shared HTTP/1.1 flow
                 // below. Never silently downgraded: anything but http/1.1
                 // (or no ALPN, treated as http/1.1 like the std path)
                 // fails loudly.
-                var native_cli = nativeTlsClient.TlsClient.init(.{
+                var nativeCli = nativeTlsClient.TlsClient.init(.{
                     .allocator = a,
                     .verify = opts.verify,
                     .caPem = opts.caPem,
@@ -1137,8 +1137,8 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
                     .clientKeyPem = opts.clientKeyPem,
                     .alpnProtocols = &.{"http/1.1"},
                 });
-                nativeSock = tcp_sock;
-                native = nativeTlsClient.TlsClient.handshake(&native_cli, io, &nativeSock, host_copy[0..hl]) catch |err| {
+                nativeSock = tcpSock;
+                native = nativeTlsClient.TlsClient.handshake(&nativeCli, io, &nativeSock, hostCopy[0..hl]) catch |err| {
                     nativeSock.close();
                     return mapNativeTlsError(err);
                 };
@@ -1151,8 +1151,8 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
                 transport = .{ .nativeTls = &native };
             } else {
                 tlsConn = tlsTransport.Connection.init(a, .{
-                    .socketHandle = tcp_sock.netSocketHandle(),
-                    .host = host_copy[0..hl],
+                    .socketHandle = tcpSock.netSocketHandle(),
+                    .host = hostCopy[0..hl],
                     .verify = opts.verify,
                     .caBundle = opts.caBundle,
                     .allowTruncation = opts.allowTruncation,
@@ -1172,7 +1172,7 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
                 transport = .{ .encrypted = tlsConn.? };
             }
         } else {
-            transport = .{ .plain = tcp_sock };
+            transport = .{ .plain = tcpSock };
         }
 
         transport.writeAll(raw) catch return Error.WriteFailed;
@@ -1188,20 +1188,20 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
                 return Error.TooManyRedirects;
             }
             redirects += 1;
-            const was_same_origin = sameOrigin(&u, loc);
+            const wasSameOrigin = sameOrigin(&u, loc);
 
-            const next = resolveLocation(a, current_url, loc) catch return resp;
-            a.free(current_url);
-            current_url = next;
+            const next = resolveLocation(a, currentUrl, loc) catch return resp;
+            a.free(currentUrl);
+            currentUrl = next;
 
-            if (!was_same_origin) stripAuth(@constCast(req.headers));
+            if (!wasSameOrigin) stripAuth(@constCast(req.headers));
 
             if (resp.status == 301 or resp.status == 302 or resp.status == 303) method = .GET;
             resp.deinit();
             continue;
         }
 
-        return finishPlain(req.pool, isTls, req.proxy != null, host_copy[0..hl], port, full, &pooledOut, transport, resp);
+        return finishPlain(req.pool, isTls, req.proxy != null, hostCopy[0..hl], port, full, &pooledOut, transport, resp);
     }
 }
 
@@ -1287,11 +1287,11 @@ test "client compression advertisement respects explicit override" {
 
 /// `reusable` is true ONLY when the body was framed and fully consumed —
 /// the precondition for parking a connection back into the keep-alive pool.
-fn readFullResponse(a: Allocator, conn: anytype, is_head: bool) Error!FullResponse {
-    return readFullResponseWithOptions(a, conn, is_head, .{});
+fn readFullResponse(a: Allocator, conn: anytype, isHead: bool) Error!FullResponse {
+    return readFullResponseWithOptions(a, conn, isHead, .{});
 }
 
-fn readFullResponseWithOptions(a: Allocator, conn: anytype, is_head: bool, opts: parserMod.Options) Error!FullResponse {
+fn readFullResponseWithOptions(a: Allocator, conn: anytype, isHead: bool, opts: parserMod.Options) Error!FullResponse {
     var acc: std.ArrayList(u8) = .empty;
     defer acc.deinit(a);
     var buf: [8192]u8 = undefined;
@@ -1317,17 +1317,17 @@ fn readFullResponseWithOptions(a: Allocator, conn: anytype, is_head: bool, opts:
         if (acc.items.len > 128 * 1024) return Error.MalformedResponse;
     }
 
-    const opts_parser: parserMod.Options = .{ .allowLfLineEndings = opts.allowLfLineEndings };
-    const resp_head = parserMod.parseResponseHeadWithOptions(acc.items, opts_parser) catch return Error.MalformedResponse;
+    const optsParser: parserMod.Options = .{ .allowLfLineEndings = opts.allowLfLineEndings };
+    const respHead = parserMod.parseResponseHead(acc.items, optsParser) catch return Error.MalformedResponse;
 
     var fields: [parserMod.DEFAULT_MAX_HEADERS]parserMod.Field = undefined;
-    const blk = parserMod.parseHeaderBlockWithOptions(acc.items[0..headEnd], resp_head.headEnd, fields[0..], opts_parser) catch
+    const blk = parserMod.parseHeaderBlock(acc.items[0..headEnd], respHead.headEnd, fields[0..], optsParser) catch
         return Error.MalformedResponse;
 
     const framing = parserMod.framingFull(fields[0..blk.count], .{
         .isResponse = true,
-        .status = resp_head.statusCode,
-        .methodLen = if (is_head) 4 else 0,
+        .status = respHead.statusCode,
+        .methodLen = if (isHead) 4 else 0,
     }) catch return Error.MalformedResponse;
 
     const headers = a.alloc(Header, blk.count) catch return Error.OutOfMemory;
@@ -1349,12 +1349,12 @@ fn readFullResponseWithOptions(a: Allocator, conn: anytype, is_head: bool, opts:
         headerCount += 1;
     }
 
-    if (is_head or resp_head.statusCode < 200 or resp_head.statusCode == 204 or resp_head.statusCode == 304 or
+    if (isHead or respHead.statusCode < 200 or respHead.statusCode == 204 or respHead.statusCode == 304 or
         (framing.framing == .contentLength and framing.length == 0))
     {
         return .{ .resp = .{
             .allocator = a,
-            .status = resp_head.statusCode,
+            .status = respHead.statusCode,
             .headers = headers,
             .body = try a.alloc(u8, 0),
         }, .reusable = true };
@@ -1386,8 +1386,8 @@ fn readFullResponseWithOptions(a: Allocator, conn: anytype, is_head: bool, opts:
         const decoded = decodeChunked(a, body.items) catch return Error.MalformedResponse;
         return .{ .resp = .{
             .allocator = a,
-            .status = resp_head.statusCode,
-            .version = if (resp_head.minorVersion == 0) .http10 else .http11,
+            .status = respHead.statusCode,
+            .version = if (respHead.minorVersion == 0) .http10 else .http11,
             .headers = headers,
             .body = try decodeResponseBody(a, headers, decoded),
         }, .reusable = true };
@@ -1412,18 +1412,18 @@ fn readFullResponseWithOptions(a: Allocator, conn: anytype, is_head: bool, opts:
         }
     }
 
-    const owned_body = try body.toOwnedSlice(a);
+    const ownedBody = try body.toOwnedSlice(a);
     return .{ .resp = .{
         .allocator = a,
-        .status = resp_head.statusCode,
-        .version = if (resp_head.minorVersion == 0) .http10 else .http11,
+        .status = respHead.statusCode,
+        .version = if (respHead.minorVersion == 0) .http10 else .http11,
         .headers = headers,
-        .body = try decodeResponseBody(a, headers, owned_body),
+        .body = try decodeResponseBody(a, headers, ownedBody),
     }, .reusable = complete };
 }
 
-fn decodeChunked(a: Allocator, wire_in: []const u8) ![]u8 {
-    const wire = try a.dupe(u8, wire_in);
+fn decodeChunked(a: Allocator, wireIn: []const u8) ![]u8 {
+    const wire = try a.dupe(u8, wireIn);
     defer a.free(wire);
 
     var dec = parserMod.ChunkedDecoder{};
@@ -1475,19 +1475,19 @@ fn resolveLocation(a: Allocator, baseUrl: []const u8, loc: []const u8) ![]u8 {
         query = loc[qi..pathEnd];
         pathEnd = qi;
     }
-    const loc_path = loc[0..pathEnd];
+    const locPath = loc[0..pathEnd];
 
     var merged: std.ArrayList(u8) = .empty;
     defer merged.deinit(a);
-    if (loc_path.len > 0 and loc_path[0] == '/') {
-        try merged.appendSlice(a, loc_path);
+    if (locPath.len > 0 and locPath[0] == '/') {
+        try merged.appendSlice(a, locPath);
     } else {
-        const base_path = base.path;
-        const last_slash = std.mem.lastIndexOfScalar(u8, base_path, '/');
-        const dir = if (last_slash) |idx| base_path[0..idx] else "";
+        const basePath = base.path;
+        const lastSlash = std.mem.lastIndexOfScalar(u8, basePath, '/');
+        const dir = if (lastSlash) |idx| basePath[0..idx] else "";
         try merged.appendSlice(a, dir);
         if (dir.len == 0 or dir[dir.len - 1] != '/') try merged.append(a, '/');
-        try merged.appendSlice(a, loc_path);
+        try merged.appendSlice(a, locPath);
     }
     const clean = try removeDotSegments(a, merged.items);
     defer a.free(clean);
@@ -1584,9 +1584,9 @@ fn readFileDirect(a: Allocator, path: []const u8) ![]u8 {
 
 fn readFileWindows(a: Allocator, path: []const u8) ![]u8 {
     const win = std.os.windows;
-    var wide_buf: [win.PATH_MAX_WIDE]u16 = undefined;
-    const wide_len = try std.unicode.utf8ToUtf16Le(&wide_buf, path);
-    const wide = wide_buf[0..wide_len];
+    var wideBuf: [win.PATH_MAX_WIDE]u16 = undefined;
+    const wideLen = try std.unicode.utf8ToUtf16Le(&wideBuf, path);
+    const wide = wideBuf[0..wideLen];
 
     const handle = win.CreateFileW(
         wide.ptr,
@@ -1602,9 +1602,9 @@ fn readFileWindows(a: Allocator, path: []const u8) ![]u8 {
     };
     defer win.CloseHandle(handle);
 
-    var size_lg: win.LARGE_INTEGER = undefined;
-    if (win.kernel32.GetFileSizeEx(handle, &size_lg) == 0) return error.ReadFailed;
-    const fsize: usize = @intCast(size_lg.Value);
+    var sizeLg: win.LARGE_INTEGER = undefined;
+    if (win.kernel32.GetFileSizeEx(handle, &sizeLg) == 0) return error.ReadFailed;
+    const fsize: usize = @intCast(sizeLg.Value);
     if (fsize > maxBufferedUpload) return error.FileTooLarge;
 
     const buf = try a.alloc(u8, fsize);
@@ -1612,31 +1612,31 @@ fn readFileWindows(a: Allocator, path: []const u8) ![]u8 {
 
     var total: usize = 0;
     while (total < fsize) {
-        var bytes_read: win.DWORD = 0;
-        const ok = win.ReadFile(handle, buf[total..].ptr, @intCast(@min(fsize - total, 0xFFFF_FFFF)), &bytes_read, null);
+        var bytesRead: win.DWORD = 0;
+        const ok = win.ReadFile(handle, buf[total..].ptr, @intCast(@min(fsize - total, 0xFFFF_FFFF)), &bytesRead, null);
         if (ok == 0) return error.ReadFailed;
-        if (bytes_read == 0) break;
-        total += bytes_read;
+        if (bytesRead == 0) break;
+        total += bytesRead;
     }
     if (total != fsize) return error.ReadFailed;
     return buf;
 }
 
 fn readFilePosix(a: Allocator, path: []const u8) ![]u8 {
-    const posix_sys = std.posix;
-    const fd = posix_sys.open(path, .{ .ACCMODE = .RDONLY }, 0) catch |e| switch (e) {
+    const posixSys = std.posix;
+    const fd = posixSys.open(path, .{ .ACCMODE = .RDONLY }, 0) catch |e| switch (e) {
         error.FileNotFound => return error.FileNotFound,
         else => return error.ReadFailed,
     };
-    defer posix_sys.close(fd);
-    const st = posix_sys.fstat(fd) catch return error.ReadFailed;
+    defer posixSys.close(fd);
+    const st = posixSys.fstat(fd) catch return error.ReadFailed;
     const fsize: usize = @intCast(st.size);
     if (fsize > maxBufferedUpload) return error.FileTooLarge;
     const buf = try a.alloc(u8, fsize);
     errdefer a.free(buf);
     var total: usize = 0;
     while (total < fsize) {
-        const n = posix_sys.read(fd, buf[total..]) catch return error.ReadFailed;
+        const n = posixSys.read(fd, buf[total..]) catch return error.ReadFailed;
         if (n == 0) break;
         total += n;
     }
@@ -1663,8 +1663,8 @@ pub fn postMultipartFile(
     const mpEncoder = @import("../web/multipart/encoder.zig");
 
     // Content-Type header value.
-    var ct_buf: [128]u8 = undefined;
-    const ct = mpEncoder.contentType(&ct_buf, boundary);
+    var ctBuf: [128]u8 = undefined;
+    const ct = mpEncoder.contentType(&ctBuf, boundary);
 
     // Filename from path tail.
     const fname = if (std.mem.lastIndexOfScalar(u8, filePath, '/')) |ix|
@@ -1674,9 +1674,9 @@ pub fn postMultipartFile(
     else
         filePath;
 
-    var body_buf: std.Io.Writer.Allocating = .init(a);
-    defer body_buf.deinit();
-    mpEncoder.encode(&body_buf.writer, boundary, &.{
+    var bodyBuf: std.Io.Writer.Allocating = .init(a);
+    defer bodyBuf.deinit();
+    mpEncoder.encode(&bodyBuf.writer, boundary, &.{
         .{ .name = fieldName, .filename = fname, .contentType = "application/octet-stream", .data = fileData },
     }) catch return Error.OutOfMemory;
 
@@ -1684,23 +1684,23 @@ pub fn postMultipartFile(
         .method = .POST,
         .url = url,
         .bodyKind = .raw,
-        .body = body_buf.written(),
+        .body = bodyBuf.written(),
         .headers = &.{.{ .name = "Content-Type", .value = ct }},
     });
 }
 // Tests
 
-const t_tcp = tcp;
+const tTcp = tcp;
 
 fn startTestServer(
     a: Allocator,
     keepAlive: bool,
     comptime route: []const u8,
     comptime body: []const u8,
-) !struct { srv: @import("../server/lifecycle.zig").Server, ctx: t_tcp.IoContext } {
+) !struct { srv: @import("../server/lifecycle.zig").Server, ctx: tTcp.IoContext } {
     const lifecycle = @import("../server/lifecycle.zig");
     const routerNs = @import("../web/router/router.zig");
-    var ctx = try t_tcp.IoContext.init(a);
+    var ctx = try tTcp.IoContext.init(a);
     errdefer ctx.deinit();
     var srv = try lifecycle.Server.init(a, ctx.io, .{
         .port = 0,
@@ -1771,7 +1771,7 @@ test "connection close response is not pooled" {
     const a = std.testing.allocator;
     const lifecycle = @import("../server/lifecycle.zig");
     const routerNs = @import("../web/router/router.zig");
-    var ctx = try t_tcp.IoContext.init(a);
+    var ctx = try tTcp.IoContext.init(a);
     defer ctx.deinit();
     // keepAlive=false server => always responds Connection: close
     var srv = try lifecycle.Server.init(a, ctx.io, .{ .port = 0, .enableDocs = false, .maxConnections = 2 });
@@ -1815,15 +1815,15 @@ test "connection close response is not pooled" {
 // fix this failed with ReadFailed.
 test "connection-close body without Content-Length is read to EOF" {
     const a = std.testing.allocator;
-    var ctx = try t_tcp.IoContext.init(a);
+    var ctx = try tTcp.IoContext.init(a);
     defer ctx.deinit();
 
-    var lst = try t_tcp.Listener.bind(ctx.io, 0);
+    var lst = try tTcp.Listener.bind(ctx.io, 0);
     defer lst.close(ctx.io);
     const port = lst.localPort();
 
     const RawServer = struct {
-        fn run(l: *t_tcp.Listener, io: std.Io) void {
+        fn run(l: *tTcp.Listener, io: std.Io) void {
             var sock = l.accept(io) catch return;
             defer sock.close();
             var buf: [1024]u8 = undefined;
@@ -1863,20 +1863,20 @@ test "resolveLocation handles relative paths and dot segments" {
 
 test "https auto-enables tls with secure caBundle verification when no explicit options provided" {
     const isTls = true;
-    const req_tls: ?TlsOptions = null;
-    const tls_opts: ?TlsOptions = if (isTls) req_tls orelse TlsOptions{ .verify = .caBundle, .allowTruncation = true } else null;
-    try std.testing.expectEqual(.caBundle, tls_opts.?.verify);
+    const reqTls: ?TlsOptions = null;
+    const tlsOpts: ?TlsOptions = if (isTls) reqTls orelse TlsOptions{ .verify = .caBundle, .allowTruncation = true } else null;
+    try std.testing.expectEqual(.caBundle, tlsOpts.?.verify);
 }
 
 // Live TLS interop (environment-gated).
 //
 // Requires an external TLS endpoint because std.Io.Threaded's
 // processSpawnWindows hangs when spawning the harness from inside the test
-// (reproduced standalone; see tools/run_tls_interop.ps1 for one-command run):
+// (reproduced standalone; see tools/runTlsInterop.ps1 for one-command run):
 //
-//   powershell -File tools/run_tls_interop.ps1
+//   powershell -File tools/runTlsInterop.ps1
 //
-// That runner starts src/assets/tls_harness.ps1 (SChannel, self-signed) and
+// That runner starts src/assets/tlsHarness.ps1 (SChannel, self-signed) and
 // runs this suite against it. Without the env vars this test skips — an
 // honest environment gate, not a code path we cannot verify.
 
@@ -1885,13 +1885,13 @@ test "live https interop against external TLS server" {
     defer env.deinit();
     try env.loadOsEnv();
     const host = env.get("HTTPX_TLS_HOST") orelse return;
-    const port_str = env.get("HTTPX_TLS_PORT") orelse return;
+    const portStr = env.get("HTTPX_TLS_PORT") orelse return;
     const gate = env.get("HTTPX_TLS_INTEROP") orelse return;
     if (gate.len == 0) return;
-    if (host.len == 0 or host.len > 63 or port_str.len == 0 or port_str.len > 15) return;
-    const port = std.fmt.parseInt(u16, port_str, 10) catch return;
+    if (host.len == 0 or host.len > 63 or portStr.len == 0 or portStr.len > 15) return;
+    const port = std.fmt.parseInt(u16, portStr, 10) catch return;
 
-    var ctx = try t_tcp.IoContext.init(std.testing.allocator);
+    var ctx = try tTcp.IoContext.init(std.testing.allocator);
     defer ctx.deinit();
 
     var ub2: [128]u8 = undefined;
@@ -1912,11 +1912,11 @@ test "live https interop against external TLS server" {
         } else |_| {
             if (attempt >= 2) {
                 // Re-check readiness once, then give up honestly.
-                var still_ready = false;
+                var stillReady = false;
                 for (0..50) |_| {
-                    if (t_tcp.connect(ctx.io, "127.0.0.1", port)) |pr| {
+                    if (tTcp.connect(ctx.io, "127.0.0.1", port)) |pr| {
                         pr.close();
-                        still_ready = true;
+                        stillReady = true;
                         break;
                     } else |_| {}
                 }

@@ -10,9 +10,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Method = @import("../../common/method.zig").Method;
-const pattern_mod = @import("pattern.zig");
-const Pattern = pattern_mod.Pattern;
-const SegmentKind = pattern_mod.SegmentKind;
+const patternMod = @import("pattern.zig");
+const Pattern = patternMod.Pattern;
+const SegmentKind = patternMod.SegmentKind;
 
 pub const HandlerFn = *const fn (*Context) anyerror!Response;
 pub const NextFn = *const fn (*Context) anyerror!Response;
@@ -129,26 +129,26 @@ pub const Context = struct {
         inline for (info.@"struct".fields) |field| {
             const FT = field.type;
             const fti = @typeInfo(FT);
-            const is_optional = fti == .optional;
-            const inner = if (is_optional) @typeInfo(fti.optional.child) else fti;
+            const isOptional = fti == .optional;
+            const inner = if (isOptional) @typeInfo(fti.optional.child) else fti;
             const raw = self.param(field.name);
-            if (raw == null and is_optional) {
+            if (raw == null and isOptional) {
                 @field(out, field.name) = null;
             } else if (raw == null and field.default_value_ptr != null) {
-                const dv_ptr: *const field.type = @ptrCast(@alignCast(field.default_value_ptr.?));
-                @field(out, field.name) = dv_ptr.*;
+                const dvPtr: *const field.type = @ptrCast(@alignCast(field.default_value_ptr.?));
+                @field(out, field.name) = dvPtr.*;
             } else if (raw == null) {
                 return ParamError.MissingParam;
             } else {
                 const v = raw.?;
                 switch (inner) {
                     .int => {
-                        const ChildT = if (is_optional) fti.optional.child else FT;
+                        const ChildT = if (isOptional) fti.optional.child else FT;
                         const parsed = std.fmt.parseInt(ChildT, v, 10) catch return ParamError.InvalidParamValue;
                         @field(out, field.name) = parsed;
                     },
                     .float => {
-                        const ChildT = if (is_optional) fti.optional.child else FT;
+                        const ChildT = if (isOptional) fti.optional.child else FT;
                         const parsed = std.fmt.parseFloat(ChildT, v) catch return ParamError.InvalidParamValue;
                         @field(out, field.name) = parsed;
                     },
@@ -240,17 +240,17 @@ pub const Context = struct {
 
     /// Renders a native server-side template with a custom HTTP status code.
     pub fn renderStatus(self: *const Context, code: u16, templateName: []const u8, data: anytype) anyerror!Response {
-        const templates_mod = @import("../templates/templates.zig");
-        var engine: ?*templates_mod.Engine = null;
-        if (self.activeRouter) |r_ptr| {
-            const r: *Router = @ptrCast(@alignCast(r_ptr));
+        const templatesMod = @import("../templates/templates.zig");
+        var engine: ?*templatesMod.Engine = null;
+        if (self.activeRouter) |rPtr| {
+            const r: *Router = @ptrCast(@alignCast(rPtr));
             if (r.templateEngine) |te| {
                 engine = @ptrCast(@alignCast(te));
             }
         }
         if (engine) |eng| {
-            const body_str = try eng.renderToString(self.allocator, templateName, data);
-            return self.htmlStatus(code, body_str);
+            const bodyStr = try eng.renderToString(self.allocator, templateName, data);
+            return self.htmlStatus(code, bodyStr);
         }
         return error.TemplateEngineNotConfigured;
     }
@@ -358,12 +358,12 @@ pub const Context = struct {
 
     /// HTTP Redirect response (default 302 Found or 301/307/308).
     pub fn redirect(self: *const Context, location: []const u8, code: ?u16) !Response {
-        const headers_slice = try self.allocator.alloc(Header, 1);
-        headers_slice[0] = .{ .name = "Location", .value = location };
+        const headersSlice = try self.allocator.alloc(Header, 1);
+        headersSlice[0] = .{ .name = "Location", .value = location };
         return Response{
             .status = code orelse 302,
             .body = "",
-            .headers = headers_slice,
+            .headers = headersSlice,
         };
     }
 
@@ -569,7 +569,7 @@ pub const ParamError = error{
     UnsupportedField,
 };
 
-const meta_mod = @import("metadata.zig");
+const metaMod = @import("metadata.zig");
 
 const RouteEntry = struct {
     method: Method,
@@ -580,7 +580,7 @@ const RouteEntry = struct {
     handler: *const fn (*Context) anyerror!Response,
     priority: u32,
     /// OpenAPI documentation source; empty default keeps plain routes free.
-    meta: meta_mod.Metadata = .{},
+    meta: metaMod.Metadata = .{},
     /// Route name for URL reversing (borrowed, typically a literal).
     name: ?[]const u8 = null,
     /// Route-level middleware, run after router middleware. Owned iff
@@ -595,7 +595,7 @@ const RouteEntry = struct {
 /// here; `path` + `handler` stay positional as the fundamental inputs.
 pub const RouteOptions = struct {
     /// OpenAPI documentation source.
-    meta: meta_mod.Metadata = .{},
+    meta: metaMod.Metadata = .{},
     /// Route name for `url()` reversing. Must be unique per router.
     name: ?[]const u8 = null,
     /// Route-level middleware (router middleware runs first).
@@ -744,16 +744,16 @@ pub const Router = struct {
     }
 
     pub fn deinit(self: *Router) void {
-        var freed_ptrs = std.AutoHashMap(?*anyopaque, void).init(self.allocator);
-        defer freed_ptrs.deinit();
+        var freedPtrs = std.AutoHashMap(?*anyopaque, void).init(self.allocator);
+        defer freedPtrs.deinit();
 
         for (self.routes.items) |entry| {
             self.allocator.free(entry.path);
             if (entry.ownsMiddleware) self.allocator.free(entry.middleware);
             if (entry.userData != null and entry.deinitData != null) {
-                if (!freed_ptrs.contains(entry.userData)) {
+                if (!freedPtrs.contains(entry.userData)) {
                     entry.deinitData.?(entry.userData);
-                    freed_ptrs.put(entry.userData, {}) catch {};
+                    freedPtrs.put(entry.userData, {}) catch {};
                 }
             }
         }
@@ -790,20 +790,20 @@ pub const Router = struct {
         const owned = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(owned);
 
-        const pat = pattern_mod.parsePattern(owned) catch |err| switch (err) {
+        const pat = patternMod.parsePattern(owned) catch |err| switch (err) {
             error.EmptyParameterName, error.InvalidWildcardPlacement, error.UnknownConverter, error.DuplicateParameter => return RouteError.InvalidPattern,
             error.TooManySegments => return RouteError.InvalidPattern,
         };
 
         // Check duplicates
         var buf1: [512]u8 = undefined;
-        const new_shape = pat.shape(&buf1) catch return RouteError.InvalidPattern;
+        const newShape = pat.shape(&buf1) catch return RouteError.InvalidPattern;
 
         for (self.routes.items) |existing| {
             if (existing.method != method) continue;
             var buf2: [512]u8 = undefined;
-            const existing_shape = existing.pattern.shape(&buf2) catch continue;
-            if (std.mem.eql(u8, new_shape, existing_shape)) {
+            const existingShape = existing.pattern.shape(&buf2) catch continue;
+            if (std.mem.eql(u8, newShape, existingShape)) {
                 return RouteError.DuplicateRoute;
             }
         }
@@ -816,25 +816,25 @@ pub const Router = struct {
             }
         }
 
-        var owned_mw: []const MiddlewareFn = &.{};
-        var owns_mw = false;
+        var ownedMw: []const MiddlewareFn = &.{};
+        var ownsMw = false;
         if (opts.middleware.len > 0) {
             const duped = try self.allocator.dupe(MiddlewareFn, opts.middleware);
-            owned_mw = duped;
-            owns_mw = true;
+            ownedMw = duped;
+            ownsMw = true;
         }
-        errdefer if (owns_mw) self.allocator.free(owned_mw);
+        errdefer if (ownsMw) self.allocator.free(ownedMw);
 
         try self.routes.append(self.allocator, .{
             .method = method,
             .path = owned,
             .pattern = pat,
             .handler = handler,
-            .priority = pattern_mod.priorityScore(&pat),
+            .priority = patternMod.priorityScore(&pat),
             .meta = opts.meta,
             .name = opts.name,
-            .middleware = owned_mw,
-            .ownsMiddleware = owns_mw,
+            .middleware = ownedMw,
+            .ownsMiddleware = ownsMw,
             .userData = opts.userData,
             .deinitData = opts.deinitData,
         });
@@ -853,14 +853,14 @@ pub const Router = struct {
     /// Query strings and fragments are ignored for conflict checks.
     pub fn hasConflict(self: *Router, method: Method, path: []const u8) bool {
         const clean = cleanRequestPath(path);
-        const pat = pattern_mod.parsePattern(clean) catch return false;
+        const pat = patternMod.parsePattern(clean) catch return false;
         var buf1: [512]u8 = undefined;
-        const new_shape = pat.shape(&buf1) catch return false;
+        const newShape = pat.shape(&buf1) catch return false;
         for (self.routes.items) |existing| {
             if (existing.method != method) continue;
             var buf2: [512]u8 = undefined;
-            const existing_shape = existing.pattern.shape(&buf2) catch continue;
-            if (std.mem.eql(u8, new_shape, existing_shape)) return true;
+            const existingShape = existing.pattern.shape(&buf2) catch continue;
+            if (std.mem.eql(u8, newShape, existingShape)) return true;
         }
         return false;
     }
@@ -869,14 +869,14 @@ pub const Router = struct {
     /// route was removed (its owned path is freed). Query/fragment ignored.
     pub fn remove(self: *Router, method: Method, path: []const u8) bool {
         const clean = cleanRequestPath(path);
-        const pat = pattern_mod.parsePattern(clean) catch return false;
+        const pat = patternMod.parsePattern(clean) catch return false;
         var buf1: [512]u8 = undefined;
         const target = pat.shape(&buf1) catch return false;
         for (self.routes.items, 0..) |existing, i| {
             if (existing.method != method) continue;
             var buf2: [512]u8 = undefined;
-            const existing_shape = existing.pattern.shape(&buf2) catch continue;
-            if (std.mem.eql(u8, target, existing_shape)) {
+            const existingShape = existing.pattern.shape(&buf2) catch continue;
+            if (std.mem.eql(u8, target, existingShape)) {
                 const entry = self.routes.orderedRemove(i);
                 self.allocator.free(entry.path);
                 return true;
@@ -926,10 +926,10 @@ pub const Router = struct {
         const clean = cleanRequestPath(path);
         // Preserve a transport-populated query when the match input is
         // already stripped (server path); otherwise extract from the input.
-        const from_path = queryStringOf(path);
-        const query = if (from_path.len > 0) from_path else ctx.query;
+        const fromPath = queryStringOf(path);
+        const query = if (fromPath.len > 0) fromPath else ctx.query;
         var best: ?*const RouteEntry = null;
-        var best_score: i64 = -1;
+        var bestScore: i64 = -1;
 
         // Sort-like approach: find highest-priority match
         for (self.routes.items) |*entry| {
@@ -937,7 +937,7 @@ pub const Router = struct {
 
             // Trial context for parameter extraction; carries the caller's
             // request-scoped fields so a successful match preserves them.
-            var ctx_params = Context{
+            var ctxParams = Context{
                 .allocator = ctx.allocator,
                 .headers = ctx.headers,
                 .body = ctx.body,
@@ -952,20 +952,20 @@ pub const Router = struct {
                 .activeRouter = ctx.activeRouter,
             };
 
-            if (matchPattern(&entry.pattern, clean, &ctx_params)) {
+            if (matchPattern(&entry.pattern, clean, &ctxParams)) {
                 const score: i64 = @intCast(entry.priority);
-                if (score > best_score) {
-                    best_score = score;
+                if (score > bestScore) {
+                    bestScore = score;
                     best = entry;
-                    const saved_router = ctx.activeRouter;
-                    const saved_handler = ctx.activeHandler;
-                    const saved_mw = ctx.middlewareIndex;
-                    ctx.* = ctx_params;
+                    const savedRouter = ctx.activeRouter;
+                    const savedHandler = ctx.activeHandler;
+                    const savedMw = ctx.middlewareIndex;
+                    ctx.* = ctxParams;
                     // match() must not clobber dispatch bookkeeping; dispatch
                     // sets activeHandler/middlewareIndex itself.
-                    ctx.activeRouter = saved_router;
-                    ctx.activeHandler = saved_handler;
-                    ctx.middlewareIndex = saved_mw;
+                    ctx.activeRouter = savedRouter;
+                    ctx.activeHandler = savedHandler;
+                    ctx.middlewareIndex = savedMw;
                     ctx.routeMiddleware = entry.middleware;
                     ctx.routeMiddlewareIndex = 0;
                 }
@@ -981,15 +981,15 @@ pub const Router = struct {
         if (self.match(method, path, ctx) == null) return null;
         const clean = cleanRequestPath(path);
         var best: ?*const RouteEntry = null;
-        var best_score: i64 = -1;
+        var bestScore: i64 = -1;
         for (self.routes.items) |*entry| {
             if (entry.method != method) continue;
             var probe = ctx.*;
             probe.paramCount = 0;
             if (matchPattern(&entry.pattern, clean, &probe)) {
                 const score: i64 = @intCast(entry.priority);
-                if (score > best_score) {
-                    best_score = score;
+                if (score > bestScore) {
+                    bestScore = score;
                     best = entry;
                 }
             }
@@ -1003,10 +1003,10 @@ pub const Router = struct {
         const clean = cleanRequestPath(path);
         var count: usize = 0;
         var seen: [9]Method = undefined;
-        var seen_count: usize = 0;
+        var seenCount: usize = 0;
         for (self.routes.items) |*entry| {
             var already = false;
-            for (seen[0..seen_count]) |m| {
+            for (seen[0..seenCount]) |m| {
                 if (m == entry.method) {
                     already = true;
                     break;
@@ -1023,9 +1023,9 @@ pub const Router = struct {
                     out[count] = entry.method;
                     count += 1;
                 }
-                if (seen_count < seen.len) {
-                    seen[seen_count] = entry.method;
-                    seen_count += 1;
+                if (seenCount < seen.len) {
+                    seen[seenCount] = entry.method;
+                    seenCount += 1;
                 }
             }
         }
@@ -1065,9 +1065,9 @@ pub const Router = struct {
     /// Writes one anonymous-struct field into `out` for `url()`.
     /// Integers/floats/bools format; strings borrow; null optionals count
     /// as missing.
-    fn writeParamField(out: *std.ArrayList(u8), allocator: Allocator, params: anytype, comptime field_name: []const u8) RouteError!void {
-        if (!@hasField(@TypeOf(params), field_name)) return RouteError.MissingParam;
-        return writeParamInner(out, allocator, @field(params, field_name));
+    fn writeParamField(out: *std.ArrayList(u8), allocator: Allocator, params: anytype, comptime fieldName: []const u8) RouteError!void {
+        if (!@hasField(@TypeOf(params), fieldName)) return RouteError.MissingParam;
+        return writeParamInner(out, allocator, @field(params, fieldName));
     }
 
     fn writeParamInner(out: *std.ArrayList(u8), allocator: Allocator, value: anytype) RouteError!void {
@@ -1080,8 +1080,8 @@ pub const Router = struct {
                 if (ptr.size == .slice and ptr.child == u8) {
                     out.appendSlice(allocator, value) catch return RouteError.OutOfMemory;
                 } else if (ptr.size == .one) {
-                    const child_info = @typeInfo(ptr.child);
-                    if (child_info == .array and child_info.array.child == u8) {
+                    const childInfo = @typeInfo(ptr.child);
+                    if (childInfo == .array and childInfo.array.child == u8) {
                         out.appendSlice(allocator, value[0..]) catch return RouteError.OutOfMemory;
                     } else return RouteError.InvalidParamValue;
                 } else return RouteError.InvalidParamValue;
@@ -1172,10 +1172,10 @@ pub const Router = struct {
     /// with no explicit OPTIONS route but other methods on the path gets an
     /// automatic `204 No Content` + `Allow` response.
     pub fn dispatch(self: *Router, ctx: *Context) Response {
-        const maybe_handler = self.match(ctx.method, ctx.path, ctx);
-        if (maybe_handler == null) {
-            var allow_buf: [9]Method = undefined;
-            const allowed = self.allowedMethods(ctx.path, &allow_buf);
+        const maybeHandler = self.match(ctx.method, ctx.path, ctx);
+        if (maybeHandler == null) {
+            var allowBuf: [9]Method = undefined;
+            const allowed = self.allowedMethods(ctx.path, &allowBuf);
             if (allowed.len > 0) {
                 if (ctx.method == .OPTIONS) {
                     return self.methodNotAllowedResponse(ctx, allowed, 204, "");
@@ -1184,7 +1184,7 @@ pub const Router = struct {
             }
         }
         ctx.activeRouter = self;
-        ctx.activeHandler = maybe_handler;
+        ctx.activeHandler = maybeHandler;
         ctx.middlewareIndex = 0;
         return ctx.next() catch |err| self.handleError(ctx, err);
     }
@@ -1207,11 +1207,11 @@ pub const Router = struct {
             @memcpy(buf[pos..][0..name.len], name);
             pos += name.len;
         }
-        const allow_value = ctx.allocator.dupe(u8, buf[0..pos]) catch {
+        const allowValue = ctx.allocator.dupe(u8, buf[0..pos]) catch {
             return Response{ .status = status, .body = body };
         };
-        const hs = ctx.allocator.dupe(Header, &.{.{ .name = "Allow", .value = allow_value }}) catch {
-            ctx.allocator.free(allow_value);
+        const hs = ctx.allocator.dupe(Header, &.{.{ .name = "Allow", .value = allowValue }}) catch {
+            ctx.allocator.free(allowValue);
             return Response{ .status = status, .body = body };
         };
         return Response{ .status = status, .body = body, .headers = hs };
@@ -1230,25 +1230,25 @@ pub const Router = struct {
 
 fn matchPattern(pat: *const Pattern, path: []const u8, ctx: *Context) bool {
     const clean = cleanRequestPath(path);
-    var path_it = std.mem.splitScalar(u8, clean, '/');
-    var seg_idx: usize = 0;
+    var pathIt = std.mem.splitScalar(u8, clean, '/');
+    var segIdx: usize = 0;
 
-    while (path_it.next()) |path_seg| {
-        if (path_seg.len == 0) continue;
+    while (pathIt.next()) |pathSeg| {
+        if (pathSeg.len == 0) continue;
 
-        if (seg_idx >= pat.count) return false;
-        const seg = pat.segments[seg_idx];
+        if (segIdx >= pat.count) return false;
+        const seg = pat.segments[segIdx];
 
         switch (seg.kind) {
             .literal => {
-                if (!std.mem.eql(u8, seg.text, path_seg)) return false;
+                if (!std.mem.eql(u8, seg.text, pathSeg)) return false;
             },
             .parameter => {
                 // Typed converters reject non-conforming segments so more
                 // specific routes (static, narrower types) win deterministically.
-                if (!seg.converter.matches(path_seg)) return false;
+                if (!seg.converter.matches(pathSeg)) return false;
                 if (ctx.paramCount < 16) {
-                    ctx.params[ctx.paramCount] = .{ .name = seg.text, .value = path_seg };
+                    ctx.params[ctx.paramCount] = .{ .name = seg.text, .value = pathSeg };
                     ctx.paramCount += 1;
                 }
             },
@@ -1256,19 +1256,19 @@ fn matchPattern(pat: *const Pattern, path: []const u8, ctx: *Context) bool {
                 // Wildcard matches everything remaining in the path from this segment on
                 // (nested slugs preserved, query already stripped via clean).
                 if (ctx.paramCount < 16) {
-                    const seg_start = @intFromPtr(path_seg.ptr) - @intFromPtr(clean.ptr);
-                    const remainder = clean[seg_start..];
+                    const segStart = @intFromPtr(pathSeg.ptr) - @intFromPtr(clean.ptr);
+                    const remainder = clean[segStart..];
                     ctx.params[ctx.paramCount] = .{ .name = seg.text, .value = remainder };
                     ctx.paramCount += 1;
                 }
                 return true;
             },
         }
-        seg_idx += 1;
+        segIdx += 1;
     }
 
     // All path segments consumed — check all pattern segments consumed
-    return seg_idx == pat.count;
+    return segIdx == pat.count;
 }
 
 /// Strips query string and fragment for route matching.
@@ -1770,17 +1770,17 @@ test "url reversing covers params, nesting, errors" {
     try router.get("/users/{userId:int}/posts/{postId:int}", dummyHandler, .{ .name = "userPost" });
     try router.get("/files/{path:path}", dummyHandler, .{ .name = "file" });
 
-    const user_url = try router.url("user", .{ .id = 42 });
-    defer a.free(user_url);
-    try std.testing.expectEqualStrings("/users/42", user_url);
+    const userUrl = try router.url("user", .{ .id = 42 });
+    defer a.free(userUrl);
+    try std.testing.expectEqualStrings("/users/42", userUrl);
 
-    const post_url = try router.url("userPost", .{ .userId = 7, .postId = 9 });
-    defer a.free(post_url);
-    try std.testing.expectEqualStrings("/users/7/posts/9", post_url);
+    const postUrl = try router.url("userPost", .{ .userId = 7, .postId = 9 });
+    defer a.free(postUrl);
+    try std.testing.expectEqualStrings("/users/7/posts/9", postUrl);
 
-    const file_url = try router.url("file", .{ .path = "a/b/c.txt" });
-    defer a.free(file_url);
-    try std.testing.expectEqualStrings("/files/a/b/c.txt", file_url);
+    const fileUrl = try router.url("file", .{ .path = "a/b/c.txt" });
+    defer a.free(fileUrl);
+    try std.testing.expectEqualStrings("/files/a/b/c.txt", fileUrl);
 
     try std.testing.expectError(RouteError.UnknownRoute, router.url("nope", .{}));
     try std.testing.expectError(RouteError.MissingParam, router.url("user", .{}));

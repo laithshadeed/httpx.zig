@@ -56,11 +56,7 @@ pub const Multipart = struct {
     boundary: []const u8,
     subtype: Subtype,
 
-    pub fn init(allocator: Allocator) Multipart {
-        return initWithSubtype(allocator, .formData);
-    }
-
-    pub fn initWithSubtype(allocator: Allocator, subtype: Subtype) Multipart {
+    pub fn init(allocator: Allocator, subtype: Subtype) Multipart {
         var mb = Multipart{
             .allocator = allocator,
             .parts = .empty,
@@ -126,10 +122,10 @@ pub const FileOptions = struct {
 
 // Boundary
 
-var boundary_counter = std.atomic.Value(usize).init(0);
+var boundaryCounter = std.atomic.Value(usize).init(0);
 
 pub fn generateBoundary(buf: *[32]u8) []const u8 {
-    const n: usize = boundary_counter.fetchAdd(1, .monotonic);
+    const n: usize = boundaryCounter.fetchAdd(1, .monotonic);
     var raw: [16]u8 = @splat(0);
     std.mem.writeInt(usize, raw[0..@sizeOf(usize)], n, .little);
     std.mem.writeInt(usize, raw[@sizeOf(usize)..][0..@sizeOf(usize)], @intFromPtr(buf), .little);
@@ -297,10 +293,10 @@ test "streaming length math matches buffered encode" {
     var ref: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer ref.deinit();
     try encodeParts(&ref.writer, b, &parts);
-    const buffered_len = ref.written().len;
+    const bufferedLen = ref.written().len;
 
     const computed = totalLength(b, &parts);
-    try std.testing.expectEqual(buffered_len, computed);
+    try std.testing.expectEqual(bufferedLen, computed);
 }
 
 test "encodes field and file with canonical framing" {
@@ -317,15 +313,15 @@ test "encodes field and file with canonical framing" {
     try encodeParts(&out.writer, b, &parts);
 
     const body = out.written();
-    const needle_final = std.fmt.allocPrint(std.testing.allocator, "--{s}--\r\n", .{b}) catch unreachable;
-    defer std.testing.allocator.free(needle_final);
-    try std.testing.expect(std.mem.endsWith(u8, body, needle_final));
+    const needleFinal = std.fmt.allocPrint(std.testing.allocator, "--{s}--\r\n", .{b}) catch unreachable;
+    defer std.testing.allocator.free(needleFinal);
+    try std.testing.expect(std.mem.endsWith(u8, body, needleFinal));
     try std.testing.expect(std.mem.indexOf(u8, body, "Content-Disposition: form-data; name=\"file\"; filename=\"a.bin\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "Content-Type: application/x-foo") != null);
 }
 
 test "builder API works" {
-    var form = Multipart.init(std.testing.allocator);
+    var form = Multipart.init(std.testing.allocator, .formData);
     defer form.deinit();
 
     try form.field("name", "Alice");
@@ -344,13 +340,13 @@ test "builder API works" {
 }
 
 test "custom subtype works" {
-    var form = Multipart.initWithSubtype(std.testing.allocator, .related);
+    var form = Multipart.init(std.testing.allocator, .related);
     defer form.deinit();
 
     try form.file("data", "payload", .{ .contentType = "application/json" });
 
-    var ct_buf: [128]u8 = undefined;
-    const ct = form.contentType(&ct_buf);
+    var ctBuf: [128]u8 = undefined;
+    const ct = form.contentType(&ctBuf);
     try std.testing.expect(std.mem.startsWith(u8, ct, "multipart/related;"));
 }
 
@@ -426,7 +422,7 @@ test "empty parts list" {
     defer out.deinit();
     try encodeParts(&out.writer, b, &.{});
     const body = out.written();
-    var expected_buf: [40]u8 = undefined;
-    const expected = std.fmt.bufPrint(&expected_buf, "--{s}--\r\n", .{b}) catch unreachable;
+    var expectedBuf: [40]u8 = undefined;
+    const expected = std.fmt.bufPrint(&expectedBuf, "--{s}--\r\n", .{b}) catch unreachable;
     try std.testing.expectEqualStrings(expected, body);
 }

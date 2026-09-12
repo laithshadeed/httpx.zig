@@ -1,7 +1,7 @@
 # Retry Example
 
 Automatic retries are configured on the client (linear backoff:
-`retryDelayMs * (attempt + 1)`). See `examples/retry_demo.zig`.
+`retryDelayMs * (attempt + 1)`). See `examples/retryDemo.zig`.
 
 ```zig
 var client = httpx.Client.init(allocator, io, .{

@@ -39,13 +39,13 @@ pub const Uri = struct {
 
     /// Reconstructs the authority portion "host[:port]" with brackets for IPv6.
     pub fn authority(self: *const Uri, buf: []u8) []const u8 {
-        const needs_brackets = std.mem.indexOfScalar(u8, self.host, ':') != null;
+        const needsBrackets = std.mem.indexOfScalar(u8, self.host, ':') != null;
         if (self.port == 0 or self.port == defaultPort(self.scheme)) {
-            if (needs_brackets) return std.fmt.bufPrint(buf, "[{s}]", .{self.host}) catch self.host;
+            if (needsBrackets) return std.fmt.bufPrint(buf, "[{s}]", .{self.host}) catch self.host;
             @memcpy(buf[0..self.host.len], self.host);
             return buf[0..self.host.len];
         }
-        if (needs_brackets) return std.fmt.bufPrint(buf, "[{s}]:{d}", .{ self.host, self.port }) catch self.host;
+        if (needsBrackets) return std.fmt.bufPrint(buf, "[{s}]:{d}", .{ self.host, self.port }) catch self.host;
         return std.fmt.bufPrint(buf, "{s}:{d}", .{ self.host, self.port }) catch self.host;
     }
 };
@@ -91,14 +91,14 @@ pub fn parse(input: []const u8) !Uri {
     if (std.mem.indexOfScalar(u8, rest, '/')) |idx| {
         authorityEnd = idx;
     }
-    const authority_str = rest[0..authorityEnd];
+    const authorityStr = rest[0..authorityEnd];
 
     // Userinfo
-    if (std.mem.lastIndexOfScalar(u8, authority_str, '@')) |idx| {
-        uri.userinfo = authority_str[0..idx];
-        uri.host = authority_str[idx + 1 ..];
+    if (std.mem.lastIndexOfScalar(u8, authorityStr, '@')) |idx| {
+        uri.userinfo = authorityStr[0..idx];
+        uri.host = authorityStr[idx + 1 ..];
     } else {
-        uri.host = authority_str;
+        uri.host = authorityStr;
     }
 
     // Port  handle both regular hosts and bracketed IPv6 literals

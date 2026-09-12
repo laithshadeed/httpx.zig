@@ -11,13 +11,13 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const router_mod = @import("../router/router.zig");
-const Context = router_mod.Context;
-const Response = router_mod.Response;
-const Router = router_mod.Router;
+const routerMod = @import("../router/router.zig");
+const Context = routerMod.Context;
+const Response = routerMod.Response;
+const Router = routerMod.Router;
 const Method = @import("../../common/method.zig").Method;
-const meta_mod = @import("../router/metadata.zig");
-const pattern_mod = @import("../router/pattern.zig");
+const metaMod = @import("../router/metadata.zig");
+const patternMod = @import("../router/pattern.zig");
 pub const Info = @import("../../common/version.zig").Info;
 
 const PathGroup = struct {
@@ -52,11 +52,11 @@ pub fn generate(router: *const Router, info: Info) GenerateError![]u8 {
         // user routes like "/docs-custom" or "/redocly" are NOT filtered.
         if (isDocsPath(entry.path)) continue;
 
-        const path_str = try renderOpenApiPath(allocator, &entry.pattern);
-        defer allocator.free(path_str);
+        const pathStr = try renderOpenApiPath(allocator, &entry.pattern);
+        defer allocator.free(pathStr);
 
         const found = for (groups.items) |*g| {
-            if (std.mem.eql(u8, g.openapiPath, path_str)) break g;
+            if (std.mem.eql(u8, g.openapiPath, pathStr)) break g;
         } else null;
 
         if (found) |g| {
@@ -68,7 +68,7 @@ pub fn generate(router: *const Router, info: Info) GenerateError![]u8 {
             var idx: std.ArrayList(usize) = .empty;
             try idx.append(allocator, ei);
             try groups.append(allocator, .{
-                .openapiPath = try allocator.dupe(u8, path_str),
+                .openapiPath = try allocator.dupe(u8, pathStr),
                 .methods = methods,
                 .entryIdx = idx,
             });
@@ -98,10 +98,10 @@ pub fn generate(router: *const Router, info: Info) GenerateError![]u8 {
     try j.objectField("paths");
     try j.beginObject();
 
-    var used_ids: std.ArrayList([]u8) = .empty;
+    var usedIds: std.ArrayList([]u8) = .empty;
     defer {
-        for (used_ids.items) |id| allocator.free(id);
-        used_ids.deinit(allocator);
+        for (usedIds.items) |id| allocator.free(id);
+        usedIds.deinit(allocator);
     }
 
     for (groups.items) |*g| {
@@ -112,21 +112,21 @@ pub fn generate(router: *const Router, info: Info) GenerateError![]u8 {
         // method even when multiple router shapes render to the same path.
         const order = [_]Method{ .GET, .POST, .PUT, .PATCH, .DELETE, .HEAD, .OPTIONS, .TRACE, .CONNECT };
         var emitted = [_]bool{false} ** order.len;
-        const all_entries = router.entries();
+        const allEntries = router.entries();
         for (order, 0..) |m, mi| {
             for (g.entryIdx.items) |ei| {
-                const entry = all_entries[ei];
+                const entry = allEntries[ei];
                 if (entry.method != m or emitted[mi]) continue;
                 emitted[mi] = true;
 
-                const op_id = if (entry.meta.operationId) |explicit|
-                    try uniqueExplicitId(allocator, explicit, &used_ids)
+                const opId = if (entry.meta.operationId) |explicit|
+                    try uniqueExplicitId(allocator, explicit, &usedIds)
                 else
-                    try uniqueOperationId(allocator, m, g.openapiPath, &used_ids);
+                    try uniqueOperationId(allocator, m, g.openapiPath, &usedIds);
 
                 try j.objectField(methodName(m));
                 try j.beginObject();
-                try writeOperation(&j, entry.meta, &entry.pattern, op_id);
+                try writeOperation(&j, entry.meta, &entry.pattern, opId);
                 try j.endObject();
             }
         }
@@ -197,20 +197,20 @@ fn uniqueExplicitId(allocator: Allocator, explicit: []const u8, used: *std.Array
 }
 
 /// Maps a route converter to an OpenAPI schema for synthesized path params.
-const uuid_schema: meta_mod.Schema = .{ .stringFmt = "uuid" };
-fn converterSchema(conv: pattern_mod.Converter) *const meta_mod.Schema {
+const uuidSchema: metaMod.Schema = .{ .stringFmt = "uuid" };
+fn converterSchema(conv: patternMod.Converter) *const metaMod.Schema {
     return switch (conv) {
-        .int, .uint => &meta_mod.schemas.integer,
-        .float => &meta_mod.schemas.number,
-        .boolean => &meta_mod.schemas.boolean,
-        .uuid => &uuid_schema,
-        .str, .slug, .path => &meta_mod.schemas.string,
+        .int, .uint => &metaMod.schemas.integer,
+        .float => &metaMod.schemas.number,
+        .boolean => &metaMod.schemas.boolean,
+        .uuid => &uuidSchema,
+        .str, .slug, .path => &metaMod.schemas.string,
     };
 }
 
-fn writeOperation(j: *std.json.Stringify, meta: meta_mod.Metadata, pattern: *const pattern_mod.Pattern, op_id: []const u8) !void {
+fn writeOperation(j: *std.json.Stringify, meta: metaMod.Metadata, pattern: *const patternMod.Pattern, opId: []const u8) !void {
     try j.objectField("operationId");
-    try j.write(op_id);
+    try j.write(opId);
     if (meta.summary.len > 0) {
         try j.objectField("summary");
         try j.write(meta.summary);
@@ -268,7 +268,7 @@ fn writeOperation(j: *std.json.Stringify, meta: meta_mod.Metadata, pattern: *con
     // Synthesize path parameters from typed converters for pattern params
     // not explicitly documented in meta.params (converter chooses schema).
     {
-        var any_synth = false;
+        var anySynth = false;
         for (pattern.segments[0..pattern.count]) |seg| {
             if (seg.kind != .parameter and seg.kind != .wildcard) continue;
             var covered = false;
@@ -279,10 +279,10 @@ fn writeOperation(j: *std.json.Stringify, meta: meta_mod.Metadata, pattern: *con
                 }
             }
             if (covered) continue;
-            if (!any_synth) {
+            if (!anySynth) {
                 try j.objectField("parameters");
                 try j.beginArray();
-                any_synth = true;
+                anySynth = true;
             }
             try j.beginObject();
             try j.objectField("name");
@@ -295,7 +295,7 @@ fn writeOperation(j: *std.json.Stringify, meta: meta_mod.Metadata, pattern: *con
             try writeSchema(j, converterSchema(seg.converter));
             try j.endObject();
         }
-        if (any_synth) try j.endArray();
+        if (anySynth) try j.endArray();
     }
 
     if (meta.request) |rb| {
@@ -325,16 +325,16 @@ fn writeOperation(j: *std.json.Stringify, meta: meta_mod.Metadata, pattern: *con
     if (meta.responses.len == 0) {
         try writeBareResponse(j, "200", "OK", null);
     } else {
-        var status_buf: [8]u8 = undefined;
+        var statusBuf: [8]u8 = undefined;
         for (meta.responses) |r| {
-            const s = std.fmt.bufPrint(&status_buf, "{d}", .{r.status}) catch "200";
+            const s = std.fmt.bufPrint(&statusBuf, "{d}", .{r.status}) catch "200";
             try writeBareResponse(j, s, r.description, r.schema);
         }
     }
     try j.endObject();
 }
 
-fn writeBareResponse(j: *std.json.Stringify, status: []const u8, description: []const u8, schema: ?*const meta_mod.Schema) !void {
+fn writeBareResponse(j: *std.json.Stringify, status: []const u8, description: []const u8, schema: ?*const metaMod.Schema) !void {
     try j.objectField(status);
     try j.beginObject();
     try j.objectField("description");
@@ -352,7 +352,7 @@ fn writeBareResponse(j: *std.json.Stringify, status: []const u8, description: []
     try j.endObject();
 }
 
-fn writeSchema(j: *std.json.Stringify, s: *const meta_mod.Schema) !void {
+fn writeSchema(j: *std.json.Stringify, s: *const metaMod.Schema) !void {
     switch (s.*) {
         .string, .integer, .number, .boolean => {
             try j.beginObject();
@@ -405,17 +405,17 @@ fn writeSchema(j: *std.json.Stringify, s: *const meta_mod.Schema) !void {
                 }
             }
             try j.endObject(); // properties
-            var any_required = false;
+            var anyRequired = false;
             for (fields) |f| {
                 if (!f.required) continue;
-                if (!any_required) {
+                if (!anyRequired) {
                     try j.objectField("required");
                     try j.beginArray();
-                    any_required = true;
+                    anyRequired = true;
                 }
                 try j.write(f.name);
             }
-            if (any_required) try j.endArray();
+            if (anyRequired) try j.endArray();
             try j.endObject(); // object
         },
         .ref => |name| {
@@ -509,7 +509,7 @@ fn containsId(ids: []const []u8, candidate: []const u8) bool {
 
 // Tests
 
-fn h(ctx: *router_mod.Context) anyerror!router_mod.Response {
+fn h(ctx: *routerMod.Context) anyerror!routerMod.Response {
     _ = ctx;
     return .{};
 }
@@ -525,10 +525,10 @@ test "generates valid spec for mixed routes" {
     try router.delete("/users/{id}", h, .{});
     try router.get("/files/*path", h, .{});
 
-    const json_data = try generate(&router, .{ .title = "T", .version = "9.9" });
-    defer a.free(json_data);
+    const jsonData = try generate(&router, .{ .title = "T", .version = "9.9" });
+    defer a.free(jsonData);
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, a, json_data, .{});
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, jsonData, .{});
     defer parsed.deinit();
 
     const root = parsed.value;
@@ -539,12 +539,12 @@ test "generates valid spec for mixed routes" {
     try std.testing.expect(paths.get("/users") != null);
     try std.testing.expect(paths.get("/") != null);
 
-    const users_id = paths.get("/users/{id}").?.object;
-    try std.testing.expect(users_id.get("get") != null);
-    try std.testing.expect(users_id.get("delete") != null);
+    const usersId = paths.get("/users/{id}").?.object;
+    try std.testing.expect(usersId.get("get") != null);
+    try std.testing.expect(usersId.get("delete") != null);
     try std.testing.expectEqualStrings(
         "get_users__id_",
-        users_id.get("get").?.object.get("operationId").?.string,
+        usersId.get("get").?.object.get("operationId").?.string,
     );
 }
 
@@ -553,10 +553,10 @@ test "empty router yields empty paths object" {
     var router = Router.init(a);
     defer router.deinit();
 
-    const json_data = try generate(&router, .{});
-    defer a.free(json_data);
+    const jsonData = try generate(&router, .{});
+    defer a.free(jsonData);
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, a, json_data, .{});
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, jsonData, .{});
     defer parsed.deinit();
     try std.testing.expectEqual(@as(usize, 0), parsed.value.object.get("paths").?.object.count());
 }
@@ -566,28 +566,28 @@ test "operation ids are de-duplicated on sanitizer collision" {
     var router = Router.init(a);
     defer router.deinit();
 
-    // Distinct shapes -> both allowed by the router; both sanitize to get_a_b.
+    // Distinct shapes -> both allowed by the router; both sanitize to getAB.
     try router.get("/a b", h, .{});
     try router.get("/a_b", h, .{});
 
-    const json_data = try generate(&router, .{});
-    defer a.free(json_data);
+    const jsonData = try generate(&router, .{});
+    defer a.free(jsonData);
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, a, json_data, .{});
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, jsonData, .{});
     defer parsed.deinit();
     const paths = parsed.value.object.get("paths").?.object;
 
-    var seen_get_a_b: usize = 0;
-    var seen_get_a_b_2: usize = 0;
+    var seenGetAB: usize = 0;
+    var seenGetAB2: usize = 0;
     var it = paths.iterator();
     while (it.next()) |kv| {
         const op = kv.value_ptr.*.object.get("get").?;
         const id = op.object.get("operationId").?.string;
-        if (std.mem.eql(u8, id, "get_a_b")) seen_get_a_b += 1;
-        if (std.mem.eql(u8, id, "get_a_b_2")) seen_get_a_b_2 += 1;
+        if (std.mem.eql(u8, id, "get_a_b")) seenGetAB += 1;
+        if (std.mem.eql(u8, id, "get_a_b_2")) seenGetAB2 += 1;
     }
-    try std.testing.expectEqual(@as(usize, 1), seen_get_a_b);
-    try std.testing.expectEqual(@as(usize, 1), seen_get_a_b_2);
+    try std.testing.expectEqual(@as(usize, 1), seenGetAB);
+    try std.testing.expectEqual(@as(usize, 1), seenGetAB2);
 }
 
 // Metadata-driven generation ("define once" verification)
@@ -615,10 +615,10 @@ test "typed converters synthesize path parameters" {
     try router.get("/users/{id:int}", hMeta, .{});
     try router.get("/posts/{slug:slug}", hMeta, .{});
 
-    const json_data = try generate(&router, .{});
-    defer a.free(json_data);
+    const jsonData = try generate(&router, .{});
+    defer a.free(jsonData);
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, a, json_data, .{});
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, jsonData, .{});
     defer parsed.deinit();
     const paths = parsed.value.object.get("paths").?.object;
 
@@ -648,10 +648,10 @@ test "explicit meta params take precedence over synthesis" {
         },
     } });
 
-    const json_data = try generate(&router, .{});
-    defer a.free(json_data);
+    const jsonData = try generate(&router, .{});
+    defer a.free(jsonData);
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, a, json_data, .{});
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, jsonData, .{});
     defer parsed.deinit();
     const users = parsed.value.object.get("paths").?.object.get("/users/{id}").?.object.get("get").?.object;
     const uparams = users.get("parameters").?.array;
@@ -665,7 +665,7 @@ test "metadata flows into full operation object" {
     var router = Router.init(a);
     defer router.deinit();
 
-    const page_param = tmeta.Param{
+    const pageParam = tmeta.Param{
         .name = "page",
         .in = .query,
         .description = "1-based page number",
@@ -676,7 +676,7 @@ test "metadata flows into full operation object" {
         .summary = "Fetch one user",
         .tags = &.{"users"},
         .params = &.{
-            page_param,
+            pageParam,
             .{ .name = "id", .in = .path, .schema = &tmeta.schemas.integer },
         },
         .request = .{
@@ -692,8 +692,8 @@ test "metadata flows into full operation object" {
         .deprecated = false,
     } });
 
-    const json_data = try generate(&router, .{});
-    defer a.free(json_data);
+    const jsonData = try generate(&router, .{});
+    defer a.free(jsonData);
 
     // Spot-check every metadata surface made it through.
     for ([_][]const u8{
@@ -718,11 +718,11 @@ test "metadata flows into full operation object" {
             // no uri format used here; skip sentinel
             continue;
         }
-        try std.testing.expect(std.mem.indexOf(u8, json_data, needle) != null);
+        try std.testing.expect(std.mem.indexOf(u8, jsonData, needle) != null);
     }
 
     // Parse to guarantee structurally valid JSON.
-    const parsed = try std.json.parseFromSlice(std.json.Value, a, json_data, .{});
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, jsonData, .{});
     defer parsed.deinit();
 }
 
@@ -747,10 +747,10 @@ test "nullable object field emits anyOf null union" {
         .request = .{ .content = .json, .schema = &UserSchema },
     } });
 
-    const json_data = try generate(&router, .{});
-    defer a.free(json_data);
-    try std.testing.expect(std.mem.indexOf(u8, json_data, "\"anyOf\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json_data, "\"type\":\"null\"") != null);
+    const jsonData = try generate(&router, .{});
+    defer a.free(jsonData);
+    try std.testing.expect(std.mem.indexOf(u8, jsonData, "\"anyOf\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, jsonData, "\"type\":\"null\"") != null);
 }
 
 test "docs prefix filter uses slash boundary and internal flag" {
@@ -769,9 +769,9 @@ test "docs prefix filter uses slash boundary and internal flag" {
     try router.get("/docs", h, .{});
     try router.get("/docs/swagger-ui-bundle.js", h, .{});
 
-    const json_data = try generate(&router, .{});
-    defer a.free(json_data);
-    const parsed = try std.json.parseFromSlice(std.json.Value, a, json_data, .{});
+    const jsonData = try generate(&router, .{});
+    defer a.free(jsonData);
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, jsonData, .{});
     defer parsed.deinit();
     const paths = parsed.value.object.get("paths").?.object;
     try std.testing.expect(paths.get("/docs-custom") != null);

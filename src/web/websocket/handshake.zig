@@ -72,8 +72,8 @@ fn hasHeaderToken(head: []const u8, name: []const u8, wanted: []const u8) bool {
         const end = std.mem.indexOfPos(u8, head, pos, "\r\n") orelse return false;
         const line = head[pos..end];
         if (std.mem.indexOfScalar(u8, line, ':')) |colon| {
-            const field_name = std.mem.trim(u8, line[0..colon], " \t");
-            if (std.ascii.eqlIgnoreCase(field_name, name)) {
+            const fieldName = std.mem.trim(u8, line[0..colon], " \t");
+            if (std.ascii.eqlIgnoreCase(fieldName, name)) {
                 var tokens = std.mem.splitScalar(u8, line[colon + 1 ..], ',');
                 while (tokens.next()) |token| {
                     if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, token, " \t"), wanted)) return true;

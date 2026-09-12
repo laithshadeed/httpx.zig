@@ -1,6 +1,6 @@
 # Example: Tls13 Client
 
-Demonstrates tls13_client.zig using the canonical HTTPX API.
+Demonstrates tls13Client.zig using the canonical HTTPX API.
 
 ## Complete Example
 

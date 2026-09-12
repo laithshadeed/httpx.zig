@@ -32,7 +32,7 @@ defer r.deinit();
 
 ## Worker Pool
 
-`httpx.WorkerPool` (`src/concurrency/worker_pool.zig`) is a fixed-thread,
+`httpx.WorkerPool` (`src/concurrency/workerPool.zig`) is a fixed-thread,
 bounded-queue pool with graceful drain:
 
 ```zig

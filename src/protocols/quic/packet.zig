@@ -10,18 +10,18 @@ const std = @import("std");
 const varint = @import("varint.zig");
 
 pub const Version = enum(u32) {
-    version_1 = 0x00000001,
-    version_2 = 0x6B3343CF,
+    version1 = 0x00000001,
+    version2 = 0x6B3343CF,
     _,
 
     pub fn isSupported(v: u32) bool {
-        return v == @intFromEnum(Version.version_1) or v == @intFromEnum(Version.version_2);
+        return v == @intFromEnum(Version.version1) or v == @intFromEnum(Version.version2);
     }
 };
 
 pub const LongType = enum(u2) {
     initial = 0,
-    zero_rtt = 1,
+    zeroRtt = 1,
     handshake = 2,
     retry = 3,
 
@@ -31,7 +31,7 @@ pub const LongType = enum(u2) {
         // v2 mapping: Initial=1, 0-RTT=2, Handshake=3, Retry=0
         return switch (self) {
             .initial => 1,
-            .zero_rtt => 2,
+            .zeroRtt => 2,
             .handshake => 3,
             .retry => 0,
         };
@@ -42,7 +42,7 @@ pub const LongType = enum(u2) {
         return switch (w) {
             0 => .retry,
             1 => .initial,
-            2 => .zero_rtt,
+            2 => .zeroRtt,
             else => .handshake,
         };
     }
@@ -93,10 +93,10 @@ pub fn parseLongHeader(data: []const u8) HeaderError!ParseResult {
     if (!Version.isSupported(version)) return HeaderError.UnsupportedVersion;
     var offset: usize = 5;
 
-    const pkt_type = LongType.fromWire(version, @truncate((first >> 4) & 0x3));
+    const pktType = LongType.fromWire(version, @truncate((first >> 4) & 0x3));
 
     var h = LongHeader{
-        .type = pkt_type,
+        .type = pktType,
         .version = version,
         .dcid = "",
         .scid = "",
@@ -113,19 +113,19 @@ pub fn parseLongHeader(data: []const u8) HeaderError!ParseResult {
     if (scidLen > 20) return HeaderError.InvalidPacket;
     h.scid = try take(data, &offset, scidLen);
 
-    if (pkt_type == .initial) {
-        const tok_len_raw = try varint.decode(data, &offset);
-        h.token = try take(data, &offset, tok_len_raw);
+    if (pktType == .initial) {
+        const tokLenRaw = try varint.decode(data, &offset);
+        h.token = try take(data, &offset, tokLenRaw);
     }
 
-    const length_raw = try varint.decode(data, &offset);
-    h.length = length_raw;
+    const lengthRaw = try varint.decode(data, &offset);
+    h.length = lengthRaw;
 
     // Packet number sits AFTER the Length varint.
     h.pnOffset = offset;
 
     // Retry/VN have no Length/PN; this parser handles Initial/0RTT/Handshake.
-    if (pkt_type == .retry) return HeaderError.InvalidPacket;
+    if (pktType == .retry) return HeaderError.InvalidPacket;
 
     return .{ .header = h, .payloadOffset = offset };
 }
@@ -168,9 +168,9 @@ pub const BuildInfo = struct {
 pub fn writeLongHeader(buf: []u8, info: BuildInfo) HeaderError!usize {
     if (info.dcid.len > 20 or info.scid.len > 20) return HeaderError.InvalidPacket;
     if (info.pnLen == 0 or info.pnLen > 4) return HeaderError.InvalidPacket;
-    const token_varint_len = if (info.type == .initial) varintWidth(info.token.len) else 0;
-    const length_value = std.math.add(usize, info.protectedPayloadLen, info.pnLen) catch return HeaderError.TooLarge;
-    const needed = 5 + 1 + info.dcid.len + 1 + info.scid.len + token_varint_len + info.token.len + varintWidth(length_value);
+    const tokenVarintLen = if (info.type == .initial) varintWidth(info.token.len) else 0;
+    const lengthValue = std.math.add(usize, info.protectedPayloadLen, info.pnLen) catch return HeaderError.TooLarge;
+    const needed = 5 + 1 + info.dcid.len + 1 + info.scid.len + tokenVarintLen + info.token.len + varintWidth(lengthValue);
     if (buf.len < needed) return HeaderError.BufferTooSmall;
 
     const wt = info.type.wireType(info.version);
@@ -200,7 +200,7 @@ pub fn writeLongHeader(buf: []u8, info: BuildInfo) HeaderError!usize {
     }
 
     // Length covers PN bytes + protected payload (RFC 9000 17.2).
-    const n = try varint.encode(buf[pos..], length_value);
+    const n = try varint.encode(buf[pos..], lengthValue);
     pos += n;
     return pos;
 }

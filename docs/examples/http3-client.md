@@ -1,6 +1,6 @@
 # Example: Http3 Client
 
-Demonstrates http3_client.zig using the canonical HTTPX API.
+Demonstrates http3Client.zig using the canonical HTTPX API.
 
 ## Complete Example
 

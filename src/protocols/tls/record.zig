@@ -17,14 +17,14 @@ pub const ContentType = tls.ContentType;
 
 /// Cipher suite selector for the record layer.
 pub const RecordCipher = enum {
-    aes_128_gcm,
-    aes_256_gcm,
-    chacha20_poly1305,
+    aes128Gcm,
+    aes256Gcm,
+    chacha20Poly1305,
 
     pub fn keyLen(self: RecordCipher) usize {
         return switch (self) {
-            .aes_128_gcm => 16,
-            .aes_256_gcm, .chacha20_poly1305 => 32,
+            .aes128Gcm => 16,
+            .aes256Gcm, .chacha20Poly1305 => 32,
         };
     }
 
@@ -77,21 +77,21 @@ pub fn encodeRecord(
     var nonce: [12]u8 = undefined;
     @memcpy(&nonce, ivBase[0..12]);
     const sn = std.mem.nativeToBig(u64, sequenceNumber);
-    const sn_bytes = std.mem.asBytes(&sn);
-    nonce[4] ^= sn_bytes[0];
-    nonce[5] ^= sn_bytes[1];
-    nonce[6] ^= sn_bytes[2];
-    nonce[7] ^= sn_bytes[3];
-    nonce[8] ^= sn_bytes[4];
-    nonce[9] ^= sn_bytes[5];
-    nonce[10] ^= sn_bytes[6];
-    nonce[11] ^= sn_bytes[7];
+    const snBytes = std.mem.asBytes(&sn);
+    nonce[4] ^= snBytes[0];
+    nonce[5] ^= snBytes[1];
+    nonce[6] ^= snBytes[2];
+    nonce[7] ^= snBytes[3];
+    nonce[8] ^= snBytes[4];
+    nonce[9] ^= snBytes[5];
+    nonce[10] ^= snBytes[6];
+    nonce[11] ^= snBytes[7];
 
     // Associated data = record header (5 bytes)
     var header: [5]u8 = undefined;
     header[0] = @intFromEnum(ContentType.application_data); // Always opaque in TLS 1.3
-    header[1] = 3; // legacy_major
-    header[2] = 3; // legacy_minor
+    header[1] = 3; // legacyMajor
+    header[2] = 3; // legacyMinor
     const ctLen: u16 = @intCast(total + cipher.tagLen());
     header[3] = @intCast(ctLen >> 8);
     header[4] = @intCast(ctLen & 0xFF);
@@ -101,17 +101,17 @@ pub fn encodeRecord(
     var tag: [16]u8 = undefined;
 
     switch (cipher) {
-        .aes_128_gcm => {
+        .aes128Gcm => {
             var k16: [16]u8 = undefined;
             @memcpy(&k16, key[0..16]);
             Aes128Gcm.encrypt(ciphertext[0..total], &tag, inner[0..total], &header, nonce, k16);
         },
-        .aes_256_gcm => {
+        .aes256Gcm => {
             var k32: [32]u8 = undefined;
             @memcpy(&k32, key[0..32]);
             Aes256Gcm.encrypt(ciphertext[0..total], &tag, inner[0..total], &header, nonce, k32);
         },
-        .chacha20_poly1305 => {
+        .chacha20Poly1305 => {
             var k32: [32]u8 = undefined;
             @memcpy(&k32, key[0..32]);
             ChaCha20Poly1305.encrypt(ciphertext[0..total], &tag, inner[0..total], &header, nonce, k32);
@@ -143,22 +143,22 @@ pub fn decodeRecord(
     if (ivBase.len != cipher.ivLen()) return error.InvalidIvLength;
 
     const header = wire[0..5];
-    const record_len: usize = (@as(usize, header[3]) << 8) | header[4];
-    // TLS 1.3 outer type is always application_data, but allow
-    // change_cipher_spec (0x14) for middlebox compatibility (RFC 8446 Section 5.4).
+    const recordLen: usize = (@as(usize, header[3]) << 8) | header[4];
+    // TLS 1.3 outer type is always applicationData, but allow
+    // changeCipherSpec (0x14) for middlebox compatibility (RFC 8446 Section 5.4).
     if (header[0] == @intFromEnum(ContentType.change_cipher_spec)) {
-        if (record_len != 1 or wire.len < 6 or wire[5] != 0x01) return error.InvalidContentType;
+        if (recordLen != 1 or wire.len < 6 or wire[5] != 0x01) return error.InvalidContentType;
         return .{ .contentType = .change_cipher_spec, .plaintext = outBuf[0..0] };
     }
     if (header[0] != @intFromEnum(ContentType.application_data)) return error.InvalidContentType;
-    const legacy_major = header[1];
-    const legacy_minor = header[2];
-    if (legacy_major != 3 or legacy_minor != 3) return error.InvalidRecordVersion;
-    if (record_len < cipher.tagLen()) return error.RecordTooShort;
-    if (record_len > maxRecordPlaintext + 1 + cipher.tagLen()) return error.RecordTooLarge;
-    if (wire.len < 5 + record_len) return error.RecordTooShort;
+    const legacyMajor = header[1];
+    const legacyMinor = header[2];
+    if (legacyMajor != 3 or legacyMinor != 3) return error.InvalidRecordVersion;
+    if (recordLen < cipher.tagLen()) return error.RecordTooShort;
+    if (recordLen > maxRecordPlaintext + 1 + cipher.tagLen()) return error.RecordTooLarge;
+    if (wire.len < 5 + recordLen) return error.RecordTooShort;
 
-    const encLen = record_len - cipher.tagLen();
+    const encLen = recordLen - cipher.tagLen();
     if (outBuf.len < encLen) return error.BufferTooSmall;
 
     const ciphertext = wire[5..][0..encLen];
@@ -168,31 +168,31 @@ pub fn decodeRecord(
     var nonce: [12]u8 = undefined;
     @memcpy(&nonce, ivBase[0..12]);
     const sn = std.mem.nativeToBig(u64, sequenceNumber);
-    const sn_bytes = std.mem.asBytes(&sn);
-    nonce[4] ^= sn_bytes[0];
-    nonce[5] ^= sn_bytes[1];
-    nonce[6] ^= sn_bytes[2];
-    nonce[7] ^= sn_bytes[3];
-    nonce[8] ^= sn_bytes[4];
-    nonce[9] ^= sn_bytes[5];
-    nonce[10] ^= sn_bytes[6];
-    nonce[11] ^= sn_bytes[7];
+    const snBytes = std.mem.asBytes(&sn);
+    nonce[4] ^= snBytes[0];
+    nonce[5] ^= snBytes[1];
+    nonce[6] ^= snBytes[2];
+    nonce[7] ^= snBytes[3];
+    nonce[8] ^= snBytes[4];
+    nonce[9] ^= snBytes[5];
+    nonce[10] ^= snBytes[6];
+    nonce[11] ^= snBytes[7];
 
     // Decrypt with selected cipher
     switch (cipher) {
-        .aes_128_gcm => {
+        .aes128Gcm => {
             var k16: [16]u8 = undefined;
             @memcpy(&k16, key[0..16]);
             Aes128Gcm.decrypt(outBuf[0..encLen], ciphertext, tag.*, header, nonce, k16) catch
                 return error.DecryptionFailed;
         },
-        .aes_256_gcm => {
+        .aes256Gcm => {
             var k32: [32]u8 = undefined;
             @memcpy(&k32, key[0..32]);
             Aes256Gcm.decrypt(outBuf[0..encLen], ciphertext, tag.*, header, nonce, k32) catch
                 return error.DecryptionFailed;
         },
-        .chacha20_poly1305 => {
+        .chacha20Poly1305 => {
             var k32: [32]u8 = undefined;
             @memcpy(&k32, key[0..32]);
             ChaCha20Poly1305.decrypt(outBuf[0..encLen], ciphertext, tag.*, header, nonce, k32) catch
@@ -205,8 +205,8 @@ pub fn decodeRecord(
     var end = encLen;
     while (end > 0 and outBuf[end - 1] == 0) end -= 1;
     if (end == 0) return error.EmptyPlaintext;
-    const inner_ct = outBuf[end - 1];
-    const inner_ct_enum: ContentType = switch (inner_ct) {
+    const innerCt = outBuf[end - 1];
+    const innerCtEnum: ContentType = switch (innerCt) {
         @intFromEnum(ContentType.change_cipher_spec) => .change_cipher_spec,
         @intFromEnum(ContentType.alert) => .alert,
         @intFromEnum(ContentType.handshake) => .handshake,
@@ -215,7 +215,7 @@ pub fn decodeRecord(
     };
 
     return .{
-        .contentType = inner_ct_enum,
+        .contentType = innerCtEnum,
         .plaintext = outBuf[0 .. end - 1],
     };
 }
@@ -223,37 +223,37 @@ pub fn decodeRecord(
 // Tests
 
 test "record roundtrip aes-128-gcm" {
-    const test_key = [_]u8{0x42} ** 16;
-    const test_iv = [_]u8{0x24} ** 12;
+    const testKey = [_]u8{0x42} ** 16;
+    const testIv = [_]u8{0x24} ** 12;
 
-    const encoded = try encodeRecord(.handshake, "hello TLS 1.3 world", 0, &test_key, &test_iv, .aes_128_gcm);
+    const encoded = try encodeRecord(.handshake, "hello TLS 1.3 world", 0, &testKey, &testIv, .aes128Gcm);
 
     var readBuf: [maxRecordPlaintext]u8 = undefined;
-    const result = try decodeRecord(encoded.bytes[0..encoded.len], &readBuf, 0, &test_key, &test_iv, .aes_128_gcm);
+    const result = try decodeRecord(encoded.bytes[0..encoded.len], &readBuf, 0, &testKey, &testIv, .aes128Gcm);
     try std.testing.expectEqual(ContentType.handshake, result.contentType);
     try std.testing.expectEqualStrings("hello TLS 1.3 world", result.plaintext);
 }
 
 test "record roundtrip aes-256-gcm" {
-    const test_key = [_]u8{0x42} ** 32;
-    const test_iv = [_]u8{0x24} ** 12;
+    const testKey = [_]u8{0x42} ** 32;
+    const testIv = [_]u8{0x24} ** 12;
 
-    const encoded = try encodeRecord(.handshake, "AES-256-GCM record", 0, &test_key, &test_iv, .aes_256_gcm);
+    const encoded = try encodeRecord(.handshake, "AES-256-GCM record", 0, &testKey, &testIv, .aes256Gcm);
 
     var readBuf: [maxRecordPlaintext]u8 = undefined;
-    const result = try decodeRecord(encoded.bytes[0..encoded.len], &readBuf, 0, &test_key, &test_iv, .aes_256_gcm);
+    const result = try decodeRecord(encoded.bytes[0..encoded.len], &readBuf, 0, &testKey, &testIv, .aes256Gcm);
     try std.testing.expectEqual(ContentType.handshake, result.contentType);
     try std.testing.expectEqualStrings("AES-256-GCM record", result.plaintext);
 }
 
 test "record roundtrip chacha20-poly1305" {
-    const test_key = [_]u8{0x42} ** 32;
-    const test_iv = [_]u8{0x24} ** 12;
+    const testKey = [_]u8{0x42} ** 32;
+    const testIv = [_]u8{0x24} ** 12;
 
-    const encoded = try encodeRecord(.handshake, "ChaCha20 record", 0, &test_key, &test_iv, .chacha20_poly1305);
+    const encoded = try encodeRecord(.handshake, "ChaCha20 record", 0, &testKey, &testIv, .chacha20Poly1305);
 
     var readBuf: [maxRecordPlaintext]u8 = undefined;
-    const result = try decodeRecord(encoded.bytes[0..encoded.len], &readBuf, 0, &test_key, &test_iv, .chacha20_poly1305);
+    const result = try decodeRecord(encoded.bytes[0..encoded.len], &readBuf, 0, &testKey, &testIv, .chacha20Poly1305);
     try std.testing.expectEqual(ContentType.handshake, result.contentType);
     try std.testing.expectEqualStrings("ChaCha20 record", result.plaintext);
 }
@@ -263,8 +263,8 @@ test "different sequence numbers produce different ciphertexts" {
     const iv = [_]u8{0xBB} ** 12;
     const msg = "test";
 
-    const r0 = try encodeRecord(.application_data, msg, 0, &key, &iv, .aes_128_gcm);
-    const r1 = try encodeRecord(.application_data, msg, 1, &key, &iv, .aes_128_gcm);
+    const r0 = try encodeRecord(.application_data, msg, 0, &key, &iv, .aes128Gcm);
+    const r1 = try encodeRecord(.application_data, msg, 1, &key, &iv, .aes128Gcm);
 
     try std.testing.expectEqual(r0.len, r1.len);
     try std.testing.expect(!std.mem.eql(u8, r0.bytes[5..r0.len], r1.bytes[5..r1.len]));
@@ -273,52 +273,52 @@ test "different sequence numbers produce different ciphertexts" {
 test "decryption failure on wrong key" {
     const key = [_]u8{0x42} ** 16;
     const iv = [_]u8{0x24} ** 12;
-    const wrong_key = [_]u8{0xFF} ** 16;
+    const wrongKey = [_]u8{0xFF} ** 16;
 
-    const encoded = try encodeRecord(.handshake, "secret", 0, &key, &iv, .aes_128_gcm);
+    const encoded = try encodeRecord(.handshake, "secret", 0, &key, &iv, .aes128Gcm);
 
     var readBuf: [maxRecordPlaintext]u8 = undefined;
-    const result = decodeRecord(encoded.bytes[0..encoded.len], &readBuf, 0, &wrong_key, &iv, .aes_128_gcm);
+    const result = decodeRecord(encoded.bytes[0..encoded.len], &readBuf, 0, &wrongKey, &iv, .aes128Gcm);
     try std.testing.expectError(error.DecryptionFailed, result);
 }
 
 test "empty plaintext rejected" {
     const key = [_]u8{0x42} ** 16;
     const iv = [_]u8{0x24} ** 12;
-    const result = encodeRecord(.handshake, "", 0, &key, &iv, .aes_128_gcm);
+    const result = encodeRecord(.handshake, "", 0, &key, &iv, .aes128Gcm);
     try std.testing.expectEqual(@as(usize, 5 + 1 + Aes128Gcm.tag_length), (try result).len);
 }
 
 test "encrypted records reject a non-application outer content type" {
     const key = [_]u8{0x42} ** 16;
     const iv = [_]u8{0x24} ** 12;
-    const encoded = try encodeRecord(.handshake, "payload", 0, &key, &iv, .aes_128_gcm);
+    const encoded = try encodeRecord(.handshake, "payload", 0, &key, &iv, .aes128Gcm);
     var wire = encoded;
     wire.bytes[0] = @intFromEnum(ContentType.handshake);
     var out: [maxRecordPlaintext]u8 = undefined;
-    try std.testing.expectError(error.InvalidContentType, decodeRecord(wire.bytes[0..wire.len], &out, 0, &key, &iv, .aes_128_gcm));
+    try std.testing.expectError(error.InvalidContentType, decodeRecord(wire.bytes[0..wire.len], &out, 0, &key, &iv, .aes128Gcm));
 }
 
 test "tampered ciphertext fails authentication" {
     const key = [_]u8{0x42} ** 16;
     const iv = [_]u8{0x24} ** 12;
-    const encoded = try encodeRecord(.application_data, "sensitive", 3, &key, &iv, .aes_128_gcm);
+    const encoded = try encodeRecord(.application_data, "sensitive", 3, &key, &iv, .aes128Gcm);
     var wire = encoded;
     // Flip a bit in the ciphertext body (not the header).
     wire.bytes[7] ^= 0x01;
     var out: [maxRecordPlaintext]u8 = undefined;
-    try std.testing.expectError(error.DecryptionFailed, decodeRecord(wire.bytes[0..wire.len], &out, 3, &key, &iv, .aes_128_gcm));
+    try std.testing.expectError(error.DecryptionFailed, decodeRecord(wire.bytes[0..wire.len], &out, 3, &key, &iv, .aes128Gcm));
 }
 
 test "wrong sequence number fails nonce authentication" {
     const key = [_]u8{0x42} ** 16;
     const iv = [_]u8{0x24} ** 12;
-    const encoded = try encodeRecord(.application_data, "ordered", 7, &key, &iv, .aes_128_gcm);
+    const encoded = try encodeRecord(.application_data, "ordered", 7, &key, &iv, .aes128Gcm);
     var out: [maxRecordPlaintext]u8 = undefined;
     // Same keys, replayed/stale sequence number must not decrypt.
-    try std.testing.expectError(error.DecryptionFailed, decodeRecord(encoded.bytes[0..encoded.len], &out, 6, &key, &iv, .aes_128_gcm));
-    try std.testing.expectError(error.DecryptionFailed, decodeRecord(encoded.bytes[0..encoded.len], &out, 8, &key, &iv, .aes_128_gcm));
+    try std.testing.expectError(error.DecryptionFailed, decodeRecord(encoded.bytes[0..encoded.len], &out, 6, &key, &iv, .aes128Gcm));
+    try std.testing.expectError(error.DecryptionFailed, decodeRecord(encoded.bytes[0..encoded.len], &out, 8, &key, &iv, .aes128Gcm));
     // Correct sequence still verifies.
-    const ok = try decodeRecord(encoded.bytes[0..encoded.len], &out, 7, &key, &iv, .aes_128_gcm);
+    const ok = try decodeRecord(encoded.bytes[0..encoded.len], &out, 7, &key, &iv, .aes128Gcm);
     try std.testing.expectEqualStrings("ordered", ok.plaintext);
 }

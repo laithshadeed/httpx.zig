@@ -39,18 +39,18 @@ pub fn main() !void {
     var client = httpx.Client.init(allocator, io, .{});
     defer client.deinit();
 
-    var url_buf: [64]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/", .{port});
+    var urlBuf: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&urlBuf, "http://127.0.0.1:{d}/", .{port});
 
     var res = try client.get(url, .{});
     defer res.deinit();
 
     std.debug.print("GET / -> Status {d}, Length {d} bytes\n", .{ res.status, res.body.len });
 
-    const css_url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/static/style.css", .{port});
-    var css_res = try client.get(css_url, .{});
-    defer css_res.deinit();
-    std.debug.print("GET /static/style.css -> Status {d}, Length {d} bytes\n", .{ css_res.status, css_res.body.len });
+    const cssUrl = try std.fmt.bufPrint(&urlBuf, "http://127.0.0.1:{d}/static/style.css", .{port});
+    var cssRes = try client.get(cssUrl, .{});
+    defer cssRes.deinit();
+    std.debug.print("GET /static/style.css -> Status {d}, Length {d} bytes\n", .{ cssRes.status, cssRes.body.len });
 
     server.stop();
 }

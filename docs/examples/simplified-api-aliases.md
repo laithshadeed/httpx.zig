@@ -1,7 +1,7 @@
 # Simplified API Aliases
 
 Concise top-level helpers mirror the client methods, URL-first with no
-allocator needed. See `examples/simple_get.zig`.
+allocator needed. See `examples/simpleGet.zig`.
 
 ```zig
 var res = try httpx.get("https://httpbun.com/get", .{});

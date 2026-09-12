@@ -52,8 +52,8 @@ pub const Feed = struct {
 };
 
 pub fn parse(allocator: Allocator, src: []const u8, contentType: ?[]const u8) !Feed {
-    const is_json = if (contentType) |ct| std.mem.indexOf(u8, ct, "json") != null else std.mem.startsWith(u8, std.mem.trim(u8, src, " \t\r\n"), "{");
-    if (is_json) {
+    const isJson = if (contentType) |ct| std.mem.indexOf(u8, ct, "json") != null else std.mem.startsWith(u8, std.mem.trim(u8, src, " \t\r\n"), "{");
+    if (isJson) {
         return parseJsonFeed(allocator, src);
     }
 
@@ -64,13 +64,13 @@ pub fn parse(allocator: Allocator, src: []const u8, contentType: ?[]const u8) !F
     var tree = try xml.parse(al, src, .{});
     defer tree.deinit(al);
 
-    var rss_nodes: std.ArrayList(u32) = .empty;
-    try tree.getElementsByTag(al, 0, "rss", &rss_nodes);
-    if (rss_nodes.items.len > 0) return parseRss(allocator, &tree);
+    var rssNodes: std.ArrayList(u32) = .empty;
+    try tree.getElementsByTag(al, 0, "rss", &rssNodes);
+    if (rssNodes.items.len > 0) return parseRss(allocator, &tree);
 
-    var feed_nodes: std.ArrayList(u32) = .empty;
-    try tree.getElementsByTag(al, 0, "feed", &feed_nodes);
-    if (feed_nodes.items.len > 0) return parseAtom(allocator, &tree);
+    var feedNodes: std.ArrayList(u32) = .empty;
+    try tree.getElementsByTag(al, 0, "feed", &feedNodes);
+    if (feedNodes.items.len > 0) return parseAtom(allocator, &tree);
 
     return parseRss(allocator, &tree);
 }
@@ -107,20 +107,20 @@ fn parseRss(allocator: Allocator, tree: *const dom.Tree) !Feed {
     }
 
     var entries: std.ArrayList(FeedEntry) = .empty;
-    for (items.items) |item_idx| {
+    for (items.items) |itemIdx| {
         var entry = FeedEntry{};
-        var iw = try tree.walk(allocator, item_idx);
+        var iw = try tree.walk(allocator, itemIdx);
         defer iw.deinit();
         _ = iw.next();
-        while (iw.next()) |i_cidx| {
-            const in = tree.get(i_cidx);
+        while (iw.next()) |iCidx| {
+            const in = tree.get(iCidx);
             if (in.kind != .element) continue;
-            if (in.hasTag("title")) entry.title = getText(tree, i_cidx);
-            if (in.hasTag("link")) entry.link = getText(tree, i_cidx);
-            if (in.hasTag("guid")) entry.id = getText(tree, i_cidx);
-            if (in.hasTag("description")) entry.description = getText(tree, i_cidx);
-            if (in.hasTag("pubDate")) entry.published = getText(tree, i_cidx);
-            if (in.hasTag("author")) entry.author = getText(tree, i_cidx);
+            if (in.hasTag("title")) entry.title = getText(tree, iCidx);
+            if (in.hasTag("link")) entry.link = getText(tree, iCidx);
+            if (in.hasTag("guid")) entry.id = getText(tree, iCidx);
+            if (in.hasTag("description")) entry.description = getText(tree, iCidx);
+            if (in.hasTag("pubDate")) entry.published = getText(tree, iCidx);
+            if (in.hasTag("author")) entry.author = getText(tree, iCidx);
         }
         try entries.append(allocator, entry);
     }
@@ -157,16 +157,16 @@ fn parseAtom(allocator: Allocator, tree: *const dom.Tree) !Feed {
         var iw = try tree.walk(allocator, entryIdx);
         defer iw.deinit();
         _ = iw.next();
-        while (iw.next()) |i_cidx| {
-            const in = tree.get(i_cidx);
+        while (iw.next()) |iCidx| {
+            const in = tree.get(iCidx);
             if (in.kind != .element) continue;
-            if (in.hasTag("title")) entry.title = getText(tree, i_cidx);
-            if (in.hasTag("link")) entry.link = in.attr("href") orelse getText(tree, i_cidx);
-            if (in.hasTag("id")) entry.id = getText(tree, i_cidx);
-            if (in.hasTag("summary")) entry.description = getText(tree, i_cidx);
-            if (in.hasTag("content")) entry.content = getText(tree, i_cidx);
-            if (in.hasTag("published")) entry.published = getText(tree, i_cidx);
-            if (in.hasTag("updated")) entry.updated = getText(tree, i_cidx);
+            if (in.hasTag("title")) entry.title = getText(tree, iCidx);
+            if (in.hasTag("link")) entry.link = in.attr("href") orelse getText(tree, iCidx);
+            if (in.hasTag("id")) entry.id = getText(tree, iCidx);
+            if (in.hasTag("summary")) entry.description = getText(tree, iCidx);
+            if (in.hasTag("content")) entry.content = getText(tree, iCidx);
+            if (in.hasTag("published")) entry.published = getText(tree, iCidx);
+            if (in.hasTag("updated")) entry.updated = getText(tree, iCidx);
         }
         try entries.append(allocator, entry);
     }
@@ -205,8 +205,8 @@ fn parseJsonFeed(allocator: Allocator, src: []const u8) !Feed {
 
     var entries = std.ArrayList(FeedEntry).empty;
     errdefer entries.deinit(allocator);
-    if (try objField(allocator, &owned, root, "items")) |items_val| {
-        const arr = unwrapValue(items_val) orelse return error.InvalidFeed;
+    if (try objField(allocator, &owned, root, "items")) |itemsVal| {
+        const arr = unwrapValue(itemsVal) orelse return error.InvalidFeed;
         if (!std.mem.eql(u8, arr.nodeType(), "array")) return error.InvalidFeed;
         // Collect element objects, descending through `elements`/`value`
         // wrappers. Non-object elements are ignored, not fatal.
@@ -250,8 +250,8 @@ fn appendJsonEntry(allocator: Allocator, owned: *std.ArrayList([]const u8), entr
     }
     if (try objString(allocator, owned, obj, "date_published")) |v| entry.published = v;
     if (try objString(allocator, owned, obj, "date_modified")) |v| entry.updated = v;
-    if (try objField(allocator, owned, obj, "author")) |author_val| {
-        if (try authorName(allocator, owned, author_val)) |v| entry.author = v;
+    if (try objField(allocator, owned, obj, "author")) |authorVal| {
+        if (try authorName(allocator, owned, authorVal)) |v| entry.author = v;
     }
     try entries.append(allocator, entry);
 }

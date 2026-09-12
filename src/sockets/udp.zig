@@ -65,9 +65,9 @@ pub const UdpSocket = struct {
 
 test "udp bind and local datagram echo" {
     // Bind two UDP sockets on loopback and exchange a datagram
-    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const gpa = gpa_state.allocator();
+    var gpaState: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpaState.deinit();
+    const gpa = gpaState.allocator();
 
     var ctx = @import("../sockets/tcp.zig").IoContext.init(gpa) catch return;
     defer ctx.deinit();
@@ -77,12 +77,12 @@ test "udp bind and local datagram echo" {
     var b = UdpSocket.bind(ctx.io, 0) catch return;
     defer b.close();
 
-    const b_port = switch (b.socket.address) {
+    const bPort = switch (b.socket.address) {
         .ip4 => |v| v.port,
         .ip6 => |v| v.port,
     };
 
-    const dest = net.IpAddress.parseIp4("127.0.0.1", b_port) catch return;
+    const dest = net.IpAddress.parseIp4("127.0.0.1", bPort) catch return;
 
     a.sendTo(&dest, "ping") catch return;
 

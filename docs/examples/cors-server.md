@@ -1,6 +1,6 @@
 # Example: Cors Server
 
-Demonstrates cors_server.zig using the canonical HTTPX API.
+Demonstrates corsServer.zig using the canonical HTTPX API.
 
 ## Complete Example
 

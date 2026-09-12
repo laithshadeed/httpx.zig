@@ -1,7 +1,7 @@
 # HTTP/2 Client Runtime Example
 
 End-to-end HTTP/2 over cleartext (h2c) with the high-level client runtime
-(`.http2 = true`). See `examples/http2_client.zig`.
+(`.http2 = true`). See `examples/http2Client.zig`.
 
 ```zig
 var client = httpx.Client.init(allocator, io, .{

@@ -1,6 +1,6 @@
 # Example: Metrics Server
 
-Demonstrates metrics_server.zig using the canonical HTTPX API.
+Demonstrates metricsServer.zig using the canonical HTTPX API.
 
 ## Complete Example
 

@@ -1,8 +1,8 @@
 # HTTP/2 Server Runtime Example
 
 End-to-end HTTP/2 server routes with the high-level server runtime
-(`.http2 = true`). See `examples/http11_server.zig` for the HTTP/1.x shape
-and `examples/http2_client.zig` for h2c verification.
+(`.http2 = true`). See `examples/http11Server.zig` for the HTTP/1.x shape
+and `examples/http2Client.zig` for h2c verification.
 
 ```zig
 var server = try httpx.Server.init(allocator, io, .{

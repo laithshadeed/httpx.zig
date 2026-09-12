@@ -5,12 +5,12 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const loader_mod = @import("loader.zig");
-const cache_mod = @import("cache.zig");
-const parser_mod = @import("parser.zig");
-const renderer_mod = @import("renderer.zig");
-const context_mod = @import("context.zig");
-const err_mod = @import("error.zig");
+const loaderMod = @import("loader.zig");
+const cacheMod = @import("cache.zig");
+const parserMod = @import("parser.zig");
+const rendererMod = @import("renderer.zig");
+const contextMod = @import("context.zig");
+const errMod = @import("error.zig");
 
 const sync = @import("../../common/sync.zig");
 
@@ -30,17 +30,17 @@ pub const Engine = struct {
     allocator: Allocator,
     io: std.Io,
     config: Config,
-    loader: loader_mod.Loader,
-    cache: cache_mod.Cache,
-    renderer: renderer_mod.Renderer,
-    filters: renderer_mod.FilterRegistry,
-    globals: renderer_mod.GlobalMap,
+    loader: loaderMod.Loader,
+    cache: cacheMod.Cache,
+    renderer: rendererMod.Renderer,
+    filters: rendererMod.FilterRegistry,
+    globals: rendererMod.GlobalMap,
     lock: sync.Spinlock = .{},
-    lastError: ?err_mod.SourceError = null,
+    lastError: ?errMod.SourceError = null,
     /// Scratch AST for cache-disabled mode: getOrCompile parses fresh on
     /// every call and owns the result here (previous entry freed first),
     /// so rendering works with enableCache=false instead of TemplateNotFound.
-    scratchAst: ?parser_mod.TemplateAst = null,
+    scratchAst: ?parserMod.TemplateAst = null,
     scratchSource: ?[]u8 = null,
 
     pub fn init(allocator: Allocator, io: std.Io, config: Config) !Engine {
@@ -48,23 +48,23 @@ pub const Engine = struct {
             .allocator = allocator,
             .io = io,
             .config = config,
-            .loader = loader_mod.Loader.init(.{
+            .loader = loaderMod.Loader.init(.{
                 .directory = config.directory,
                 .maxFileSize = config.maxFileSize,
             }),
-            .cache = cache_mod.Cache.init(allocator, .{
+            .cache = cacheMod.Cache.init(allocator, .{
                 .enabled = config.enableCache,
                 .maxTemplates = config.maxTemplates,
             }),
-            .renderer = renderer_mod.Renderer{
+            .renderer = rendererMod.Renderer{
                 .options = .{
                     .maxIncludeDepth = config.maxIncludeDepth,
                     .maxInheritanceDepth = config.maxInheritanceDepth,
                     .strictUndefined = config.strictUndefined,
                 },
             },
-            .filters = renderer_mod.FilterRegistry.init(allocator),
-            .globals = renderer_mod.GlobalMap.init(allocator),
+            .filters = rendererMod.FilterRegistry.init(allocator),
+            .globals = rendererMod.GlobalMap.init(allocator),
         };
     }
 
@@ -78,31 +78,31 @@ pub const Engine = struct {
 
     /// Registers a custom filter for `{{ value|name }}` pipelines.
     /// Register before rendering; builtins remain available as fallback.
-    pub fn registerFilter(self: *Engine, name: []const u8, func: renderer_mod.FilterFn) !void {
+    pub fn registerFilter(self: *Engine, name: []const u8, func: rendererMod.FilterFn) !void {
         self.lock.lock();
         defer self.lock.unlock();
         try self.filters.register(name, func);
     }
 
     /// Registers a global callable for `{{ name(args) }}` expressions.
-    /// `user_data` is passed through on every call (e.g. a router pointer
-    /// for `url_for`); it must outlive the engine. Macros and the `range`
+    /// `userData` is passed through on every call (e.g. a router pointer
+    /// for `urlFor`); it must outlive the engine. Macros and the `range`
     /// builtin take precedence at call sites.
-    pub fn addGlobal(self: *Engine, name: []const u8, func: renderer_mod.GlobalFn, user_data: ?*const anyopaque) !void {
+    pub fn addGlobal(self: *Engine, name: []const u8, func: rendererMod.GlobalFn, userData: ?*const anyopaque) !void {
         self.lock.lock();
         defer self.lock.unlock();
-        try self.globals.map.put(name, .{ .func = func, .user_data = user_data });
+        try self.globals.map.put(name, .{ .func = func, .userData = userData });
     }
 
     /// Provides AST lookup for includes and inheritance.
-    pub fn provider(self: *Engine) renderer_mod.TemplateProvider {
+    pub fn provider(self: *Engine) rendererMod.TemplateProvider {
         return .{
             .ptr = @ptrCast(self),
             .getAstFn = getAstCallback,
         };
     }
 
-    fn getAstCallback(ptr: *const anyopaque, name: []const u8) ?*const parser_mod.TemplateAst {
+    fn getAstCallback(ptr: *const anyopaque, name: []const u8) ?*const parserMod.TemplateAst {
         const self: *Engine = @ptrCast(@alignCast(@constCast(ptr)));
         return self.getOrCompile(name) catch null;
     }
@@ -110,7 +110,7 @@ pub const Engine = struct {
     /// Compiles a template or retrieves it from cache.
     /// With enableCache=false, parses fresh on every call into an owned
     /// scratch slot (previous scratch freed), so callers always get a valid AST.
-    pub fn getOrCompile(self: *Engine, name: []const u8) !*const parser_mod.TemplateAst {
+    pub fn getOrCompile(self: *Engine, name: []const u8) !*const parserMod.TemplateAst {
         if (!self.config.enableCache) {
             self.lock.lock();
             defer self.lock.unlock();
@@ -120,7 +120,7 @@ pub const Engine = struct {
             self.scratchSource = null;
             const source = try self.loader.load(self.allocator, name);
             errdefer self.allocator.free(source);
-            var parser = parser_mod.Parser.init(self.allocator, name, source);
+            var parser = parserMod.Parser.init(self.allocator, name, source);
             const ast = parser.parse() catch |err| {
                 if (parser.lastError) |diag| self.lastError = diag;
                 self.allocator.free(source);
@@ -137,7 +137,7 @@ pub const Engine = struct {
         const source = try self.loader.load(self.allocator, name);
         errdefer self.allocator.free(source);
 
-        var parser = parser_mod.Parser.init(self.allocator, name, source);
+        var parser = parserMod.Parser.init(self.allocator, name, source);
         const ast = parser.parse() catch |err| {
             if (parser.lastError) |diag| {
                 self.lastError = diag;
@@ -169,7 +169,7 @@ pub const Engine = struct {
     ) !void {
         const ast = try self.getOrCompile(name);
 
-        var ctx = try context_mod.Context.init(self.allocator, data);
+        var ctx = try contextMod.Context.init(self.allocator, data);
         defer ctx.deinit();
 
         var renderer = self.renderer;
@@ -187,7 +187,7 @@ pub const Engine = struct {
     ) ![]u8 {
         var list = std.ArrayList(u8).empty;
         errdefer list.deinit(allocator);
-        var lw = renderer_mod.ListWriter{ .list = &list, .allocator = allocator };
+        var lw = rendererMod.ListWriter{ .list = &list, .allocator = allocator };
         try self.render(name, data, &lw);
         return try list.toOwnedSlice(allocator);
     }
@@ -199,11 +199,11 @@ pub const Engine = struct {
         data: anytype,
         writer: anytype,
     ) !void {
-        var parser = parser_mod.Parser.init(self.allocator, "<inline>", source);
+        var parser = parserMod.Parser.init(self.allocator, "<inline>", source);
         var ast = try parser.parse();
         defer ast.deinit();
 
-        var ctx = try context_mod.Context.init(self.allocator, data);
+        var ctx = try contextMod.Context.init(self.allocator, data);
         defer ctx.deinit();
 
         var renderer = self.renderer;
@@ -224,18 +224,18 @@ pub const Engine = struct {
         }
 
         // Normalize backslashes to forward slashes for cross-platform lookup
-        var norm_buf: [256]u8 = undefined;
-        var norm_name = relName;
-        if (relName.len <= norm_buf.len) {
-            @memcpy(norm_buf[0..relName.len], relName);
-            for (norm_buf[0..relName.len]) |*b| {
+        var normBuf: [256]u8 = undefined;
+        var normName = relName;
+        if (relName.len <= normBuf.len) {
+            @memcpy(normBuf[0..relName.len], relName);
+            for (normBuf[0..relName.len]) |*b| {
                 if (b.* == '\\') b.* = '/';
             }
-            norm_name = norm_buf[0..relName.len];
+            normName = normBuf[0..relName.len];
         }
 
-        self.cache.invalidate(norm_name);
-        if (!std.mem.eql(u8, norm_name, relName)) {
+        self.cache.invalidate(normName);
+        if (!std.mem.eql(u8, normName, relName)) {
             self.cache.invalidate(relName);
         }
     }
@@ -244,12 +244,12 @@ pub const Engine = struct {
 test "Engine cache-disabled still renders" {
     const testing = std.testing;
     const alloc = testing.allocator;
-    const fs_mod = @import("../../utils/fs.zig");
+    const fsMod = @import("../../utils/fs.zig");
 
     // Filesystem-backed template (no global embedded registry, which is
     // process-lifetime and would leak under the test allocator).
     const dir = "test_nocache_templates.tmp";
-    const tpl_path = dir ++ "/hello.html";
+    const tplPath = dir ++ "/hello.html";
     {
         var tmp: [512]u8 = undefined;
         @memcpy(tmp[0..dir.len], dir);
@@ -257,20 +257,20 @@ test "Engine cache-disabled still renders" {
         _ = std.c.mkdir(tmp[0..dir.len :0], 0o755);
     }
     defer {
-        fs_mod.deleteFile(tpl_path) catch {};
+        fsMod.deleteFile(tplPath) catch {};
         var tmp: [512]u8 = undefined;
         @memcpy(tmp[0..dir.len], dir);
         tmp[dir.len] = 0;
         _ = std.c.rmdir(tmp[0..dir.len :0]);
     }
-    try fs_mod.writeFile(tpl_path, "<h1>{{ title }}</h1>");
+    try fsMod.writeFile(tplPath, "<h1>{{ title }}</h1>");
 
     var engine = try Engine.init(alloc, undefined, .{ .directory = dir, .enableCache = false });
     defer engine.deinit();
 
     var list = std.ArrayList(u8).empty;
     defer list.deinit(alloc);
-    var lw = renderer_mod.ListWriter{ .list = &list, .allocator = alloc };
+    var lw = rendererMod.ListWriter{ .list = &list, .allocator = alloc };
     try engine.render("hello.html", .{ .title = "Hi" }, &lw);
     try testing.expect(std.mem.indexOf(u8, list.items, "<h1>Hi</h1>") != null);
 
@@ -291,7 +291,7 @@ test "Engine renders safely under concurrent load" {
         fn run(eng: *Engine, out: *?[]const u8) void {
             var list = std.ArrayList(u8).empty;
             defer list.deinit(std.testing.allocator);
-            var lw = renderer_mod.ListWriter{ .list = &list, .allocator = std.testing.allocator };
+            var lw = rendererMod.ListWriter{ .list = &list, .allocator = std.testing.allocator };
             eng.renderString(src, .{ .title = "T", .items = [_][]const u8{ "a", "b" } }, &lw) catch {
                 out.* = null;
                 return;
@@ -317,7 +317,7 @@ test "Engine custom globals resolve in expressions" {
     const testing = std.testing;
     const alloc = testing.allocator;
     const double = struct {
-        fn f(_: ?*const anyopaque, _: Allocator, args: []const context_mod.Value, kwargs: []const renderer_mod.GlobalKwarg) anyerror!context_mod.Value {
+        fn f(_: ?*const anyopaque, _: Allocator, args: []const contextMod.Value, kwargs: []const rendererMod.GlobalKwarg) anyerror!contextMod.Value {
             _ = kwargs;
             if (args.len != 1 or args[0] != .integer) return .nullVal;
             return .{ .integer = args[0].integer * 2 };
@@ -330,7 +330,7 @@ test "Engine custom globals resolve in expressions" {
 
     var list = std.ArrayList(u8).empty;
     defer list.deinit(alloc);
-    var lw = renderer_mod.ListWriter{ .list = &list, .allocator = alloc };
+    var lw = rendererMod.ListWriter{ .list = &list, .allocator = alloc };
     try engine.renderString("{{ double(21) }}", .{}, &lw);
     try testing.expectEqualStrings("42", list.items);
 }
@@ -342,7 +342,7 @@ test "Engine strictUndefined config fails on missing output" {
     defer engine.deinit();
     var list = std.ArrayList(u8).empty;
     defer list.deinit(alloc);
-    var lw = renderer_mod.ListWriter{ .list = &list, .allocator = alloc };
+    var lw = rendererMod.ListWriter{ .list = &list, .allocator = alloc };
     try testing.expectError(error.UnknownVariable, engine.renderString("{{ nope }}", .{}, &lw));
     list.clearRetainingCapacity();
     try engine.renderString("{{ nope|default(\"ok\") }}", .{}, &lw);
@@ -366,7 +366,7 @@ test "Engine in-memory rendering and context evaluation" {
         \\{% endfor %}
     ;
 
-    var lw = renderer_mod.ListWriter{ .list = &list, .allocator = alloc };
+    var lw = rendererMod.ListWriter{ .list = &list, .allocator = alloc };
     try engine.renderString(src, .{
         .title = "Hello HTTPX",
         .items = [_][]const u8{ "A", "B" },

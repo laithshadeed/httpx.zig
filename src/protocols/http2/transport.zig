@@ -13,8 +13,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const tcp = @import("../../sockets/tcp.zig");
 const clock = @import("../../common/clock.zig");
-const session_mod = @import("connection.zig");
-const Session = session_mod.Session;
+const sessionMod = @import("connection.zig");
+const Session = sessionMod.Session;
 const hpack = @import("hpack.zig");
 const tlsClientMod = @import("../tls/tcpClient.zig");
 const tlsServerMod = @import("../tls/tcpTls.zig");
@@ -443,8 +443,8 @@ fn serveStream(
     handler: HandlerFn,
     handlerCtx: ?*anyopaque,
 ) !void {
-    var arena_state = std.heap.ArenaAllocator.init(allocator);
-    defer arena_state.deinit();
+    var arenaState = std.heap.ArenaAllocator.init(allocator);
+    defer arenaState.deinit();
 
     var session = try Session.init(allocator, .server, .{});
     defer session.deinit();
@@ -452,7 +452,7 @@ fn serveStream(
     stream.writeAll(session.outbound.items) catch return error.WriteFailed;
     session.outbound.clearRetainingCapacity();
 
-    var sc = ServerCtx{ .arena = arena_state.allocator() };
+    var sc = ServerCtx{ .arena = arenaState.allocator() };
     session.cbs = .{
         .ctx = &sc,
         .onHeaders = svrOnHeaders,
@@ -475,19 +475,19 @@ fn serveStream(
                 sc.body.items,
             ) catch HandlerResponse{ .status = 500 };
 
-            var out_fields = std.ArrayList(hpack.HeaderField).empty;
-            defer out_fields.deinit(allocator);
-            var st_buf: [8]u8 = undefined;
-            var cl_buf: [8]u8 = undefined;
-            const st = std.fmt.bufPrint(&st_buf, "{d}", .{resp.status}) catch "500";
-            const cl = std.fmt.bufPrint(&cl_buf, "{d}", .{resp.body.len}) catch "0";
-            out_fields.append(allocator, .{ .name = ":status", .value = st }) catch break;
-            out_fields.append(allocator, .{ .name = "content-length", .value = cl }) catch break;
+            var outFields = std.ArrayList(hpack.HeaderField).empty;
+            defer outFields.deinit(allocator);
+            var stBuf: [8]u8 = undefined;
+            var clBuf: [8]u8 = undefined;
+            const st = std.fmt.bufPrint(&stBuf, "{d}", .{resp.status}) catch "500";
+            const cl = std.fmt.bufPrint(&clBuf, "{d}", .{resp.body.len}) catch "0";
+            outFields.append(allocator, .{ .name = ":status", .value = st }) catch break;
+            outFields.append(allocator, .{ .name = "content-length", .value = cl }) catch break;
             for (resp.headers) |h| {
-                out_fields.append(allocator, .{ .name = h.name, .value = h.value }) catch break;
+                outFields.append(allocator, .{ .name = h.name, .value = h.value }) catch break;
             }
 
-            session.sendHeaders(sc.sid, out_fields.items, false) catch break;
+            session.sendHeaders(sc.sid, outFields.items, false) catch break;
             _ = session.sendData(sc.sid, resp.body, true) catch break;
         }
 
@@ -556,8 +556,8 @@ test "http2 over native tls loopback negotiates h2 via alpn" {
     defer l.close(ctx.io);
     const port = l.localPort();
 
-    const cert_pem = @embedFile("../tls/testdata/localhost_cert.pem");
-    const key_pem = @embedFile("../tls/testdata/localhost_key.pem");
+    const certPem = @embedFile("../tls/testdata/localhostCert.pem");
+    const keyPem = @embedFile("../tls/testdata/localhostKey.pem");
 
     const H = struct {
         fn handle(_: ?*anyopaque, method: []const u8, path: []const u8, _: []const Header, _: []const u8) anyerror!HandlerResponse {
@@ -576,18 +576,18 @@ test "http2 over native tls loopback negotiates h2 via alpn" {
             defer conn.close();
             var srv = tlsServerMod.TlsServer.init(.{
                 .allocator = std.heap.page_allocator,
-                .defaultIdentity = .{ .certChainPem = cert_pem, .privateKeyPem = key_pem },
+                .defaultIdentity = .{ .certChainPem = certPem, .privateKeyPem = keyPem },
             });
-            var tls_conn = srv.handshake(io2, &conn) catch |e| {
+            var tlsConn = srv.handshake(io2, &conn) catch |e| {
                 out.* = e;
                 return;
             };
-            defer tls_conn.deinit();
-            if (tls_conn.alpn != .h2) {
+            defer tlsConn.deinit();
+            if (tlsConn.alpn != .h2) {
                 out.* = error.AlpnMismatch;
                 return;
             }
-            serveTlsConnection(std.heap.page_allocator, &tls_conn, H.handle, null) catch |e| {
+            serveTlsConnection(std.heap.page_allocator, &tlsConn, H.handle, null) catch |e| {
                 out.* = e;
                 return;
             };
@@ -599,21 +599,21 @@ test "http2 over native tls loopback negotiates h2 via alpn" {
 
     var sock = try tcp.connect(ctx.io, "127.0.0.1", port);
     errdefer sock.close();
-    var tls_cli = tlsClientMod.TlsClient.init(.{
+    var tlsCli = tlsClientMod.TlsClient.init(.{
         .allocator = a,
         .verify = .caBundle,
-        .caPem = cert_pem,
+        .caPem = certPem,
         .alpnProtocols = &.{"h2"},
     });
-    var tls_conn = try tls_cli.handshake(ctx.io, &sock, "127.0.0.1");
+    var tlsConn = try tlsCli.handshake(ctx.io, &sock, "127.0.0.1");
     {
         // TlsClientConn borrows the socket; the block scope ends the
         // session (and closes the socket) before joining below, so the
         // serve loop observes EOF and exits instead of deadlocking.
-        var hc = try Client.connectTls(a, &tls_conn);
+        var hc = try Client.connectTls(a, &tlsConn);
         defer hc.deinit();
 
-        const negotiated = tls_conn.alpn orelse return error.AlpnMissing;
+        const negotiated = tlsConn.alpn orelse return error.AlpnMissing;
         try std.testing.expect(negotiated == .h2);
         const r = try hc.request("GET", "/h2s", &[_]Header{}, "https", "127.0.0.1");
         defer r.deinit();

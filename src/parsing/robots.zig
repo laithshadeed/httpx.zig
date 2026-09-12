@@ -32,27 +32,27 @@ pub const RobotsFile = struct {
     }
 
     pub fn isAllowed(self: *const RobotsFile, userAgent: []const u8, path: []const u8) bool {
-        var best_group: ?*const UserAgentGroup = null;
-        var wildcard_group: ?*const UserAgentGroup = null;
+        var bestGroup: ?*const UserAgentGroup = null;
+        var wildcardGroup: ?*const UserAgentGroup = null;
 
         for (self.groups) |*g| {
             if (std.mem.eql(u8, g.userAgent, "*")) {
-                wildcard_group = g;
+                wildcardGroup = g;
             } else if (std.ascii.indexOfIgnoreCase(userAgent, g.userAgent) != null) {
-                best_group = g;
+                bestGroup = g;
                 break;
             }
         }
 
-        const group = best_group orelse wildcard_group orelse return true;
+        const group = bestGroup orelse wildcardGroup orelse return true;
 
-        var longest_match_len: usize = 0;
+        var longestMatchLen: usize = 0;
         var allowed = true;
 
         for (group.rules) |r| {
             if (matchPath(r.pathPrefix, path)) {
-                if (r.pathPrefix.len >= longest_match_len) {
-                    longest_match_len = r.pathPrefix.len;
+                if (r.pathPrefix.len >= longestMatchLen) {
+                    longestMatchLen = r.pathPrefix.len;
                     allowed = r.allow;
                 }
             }
@@ -75,11 +75,11 @@ pub fn parse(allocator: Allocator, src: []const u8) !RobotsFile {
     var groups: std.ArrayList(UserAgentGroup) = .empty;
     var sitemaps: std.ArrayList([]const u8) = .empty;
 
-    var current_agents: std.ArrayList([]const u8) = .empty;
-    defer current_agents.deinit(allocator);
-    var current_rules: std.ArrayList(Rule) = .empty;
-    defer current_rules.deinit(allocator);
-    var current_delay: ?f32 = null;
+    var currentAgents: std.ArrayList([]const u8) = .empty;
+    defer currentAgents.deinit(allocator);
+    var currentRules: std.ArrayList(Rule) = .empty;
+    defer currentRules.deinit(allocator);
+    var currentDelay: ?f32 = null;
 
     var lines = std.mem.splitScalar(u8, src, '\n');
     while (lines.next()) |rawLine| {
@@ -94,39 +94,39 @@ pub fn parse(allocator: Allocator, src: []const u8) !RobotsFile {
         const val = std.mem.trim(u8, line[colon + 1 ..], " \t");
 
         if (std.ascii.eqlIgnoreCase(key, "user-agent")) {
-            if (current_rules.items.len > 0 and current_agents.items.len > 0) {
-                for (current_agents.items) |ua| {
+            if (currentRules.items.len > 0 and currentAgents.items.len > 0) {
+                for (currentAgents.items) |ua| {
                     try groups.append(allocator, .{
                         .userAgent = ua,
-                        .rules = try current_rules.toOwnedSlice(allocator),
-                        .crawlDelay = current_delay,
+                        .rules = try currentRules.toOwnedSlice(allocator),
+                        .crawlDelay = currentDelay,
                     });
                 }
-                current_agents.clearRetainingCapacity();
-                current_delay = null;
+                currentAgents.clearRetainingCapacity();
+                currentDelay = null;
             }
-            try current_agents.append(allocator, val);
+            try currentAgents.append(allocator, val);
         } else if (std.ascii.eqlIgnoreCase(key, "disallow")) {
             if (val.len == 0) {
-                try current_rules.append(allocator, .{ .pathPrefix = "/", .allow = true });
+                try currentRules.append(allocator, .{ .pathPrefix = "/", .allow = true });
             } else {
-                try current_rules.append(allocator, .{ .pathPrefix = val, .allow = false });
+                try currentRules.append(allocator, .{ .pathPrefix = val, .allow = false });
             }
         } else if (std.ascii.eqlIgnoreCase(key, "allow")) {
-            try current_rules.append(allocator, .{ .pathPrefix = val, .allow = true });
+            try currentRules.append(allocator, .{ .pathPrefix = val, .allow = true });
         } else if (std.ascii.eqlIgnoreCase(key, "crawl-delay")) {
-            if (std.fmt.parseFloat(f32, val)) |d| current_delay = d else |_| {}
+            if (std.fmt.parseFloat(f32, val)) |d| currentDelay = d else |_| {}
         } else if (std.ascii.eqlIgnoreCase(key, "sitemap")) {
             try sitemaps.append(allocator, val);
         }
     }
 
-    if (current_agents.items.len > 0) {
-        for (current_agents.items) |ua| {
+    if (currentAgents.items.len > 0) {
+        for (currentAgents.items) |ua| {
             try groups.append(allocator, .{
                 .userAgent = ua,
-                .rules = try current_rules.toOwnedSlice(allocator),
-                .crawlDelay = current_delay,
+                .rules = try currentRules.toOwnedSlice(allocator),
+                .crawlDelay = currentDelay,
             });
         }
     }

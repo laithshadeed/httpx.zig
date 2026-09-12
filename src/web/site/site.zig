@@ -20,46 +20,46 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const router_mod = @import("../router/router.zig");
-const Context = router_mod.Context;
-const Response = router_mod.Response;
+const routerMod = @import("../router/router.zig");
+const Context = routerMod.Context;
+const Response = routerMod.Response;
 const uri = @import("../../common/uri.zig");
-const assets_mod = @import("../assets.zig");
-const templates_mod = @import("../templates/templates.zig");
-const static_files = @import("../static_files/serve.zig");
+const assetsMod = @import("../assets.zig");
+const templatesMod = @import("../templates/templates.zig");
+const staticFiles = @import("../static_files/serve.zig");
 const spa = @import("../spa/serve.zig");
-const watcher_mod = @import("../watcher/backend.zig");
+const watcherMod = @import("../watcher/backend.zig");
 const Server = @import("../../server/lifecycle.zig").Server;
-const routes_mod = @import("routes.zig");
+const routesMod = @import("routes.zig");
 
 pub const TrailingSlash = enum { serveBoth, redirectSlash, redirectNoSlash, strict };
 
 /// Re-exported route-table vocabulary so site users import one namespace.
-pub const UrlStyle = routes_mod.UrlStyle;
-pub const FileRoute = routes_mod.FileRoute;
-pub const Collision = routes_mod.Collision;
-pub const CustomRoute = routes_mod.CustomRoute;
+pub const UrlStyle = routesMod.UrlStyle;
+pub const FileRoute = routesMod.FileRoute;
+pub const Collision = routesMod.Collision;
+pub const CustomRoute = routesMod.CustomRoute;
 
 /// Asset source: a filesystem directory (development) or a build-generated
 /// manifest slice (production single-executable).
 pub const Source = union(enum) {
     filesystem: []const u8,
-    embedded: []const assets_mod.EmbeddedFile,
+    embedded: []const assetsMod.EmbeddedFile,
 };
 
 pub const Config = struct {
     base: []const u8 = "/",
-    urls: routes_mod.UrlStyle = .both,
+    urls: routesMod.UrlStyle = .both,
     trailing: TrailingSlash = .serveBoth,
     indexBase: []const u8 = "index",
-    custom: []const routes_mod.CustomRoute = &.{},
+    custom: []const routesMod.CustomRoute = &.{},
     /// SPA fallback file (e.g. "index.html"); null disables SPA fallback.
     spaFallback: ?[]const u8 = null,
     /// Filesystem mode: drive the server watcher on the site root.
     watch: bool = true,
     /// Filesystem mode: enable live-reload script injection + SSE endpoint.
     reload: bool = true,
-    templates: templates_mod.Config = .{},
+    templates: templatesMod.Config = .{},
     /// Subtree reserved for templates: rendered through the engine and
     /// never routed as pages (null disables the reservation).
     templateDir: ?[]const u8 = "templates",
@@ -72,7 +72,7 @@ pub const NavEntry = struct {
 
 const Target = struct {
     site: *Site,
-    route: *const routes_mod.FileRoute,
+    route: *const routesMod.FileRoute,
 };
 
 pub const Site = struct {
@@ -84,7 +84,7 @@ pub const Site = struct {
     /// Site root directory (filesystem mode) or "" (embedded). The template
     /// engine created at mount time serves templates relative to it.
     root: []u8,
-    table: routes_mod.BuildResult,
+    table: routesMod.BuildResult,
     targets: std.ArrayList(Target),
     nav: std.ArrayList(NavEntry),
     ssePath: []u8,
@@ -112,7 +112,7 @@ pub const Site = struct {
         switch (source) {
             .filesystem => |r| try discoverFiles(allocator, io, r, &files),
             .embedded => |manifest| {
-                try assets_mod.registerEmbeddedDir(allocator, manifest);
+                try assetsMod.registerEmbeddedDir(allocator, manifest);
                 for (manifest) |f| try files.append(allocator, try allocator.dupe(u8, f.path));
             },
         }
@@ -130,7 +130,7 @@ pub const Site = struct {
             try files.appendSlice(allocator, kept.items);
         }
 
-        var table = try routes_mod.buildRoutes(allocator, files.items, .{
+        var table = try routesMod.buildRoutes(allocator, files.items, .{
             .base = config.base,
             .urls = config.urls,
             .indexBase = config.indexBase,
@@ -177,11 +177,11 @@ pub const Site = struct {
         self.allocator.free(self.base);
     }
 
-    pub fn routes(self: *const Site) []const routes_mod.FileRoute {
+    pub fn routes(self: *const Site) []const routesMod.FileRoute {
         return self.table.routes;
     }
 
-    pub fn collisions(self: *const Site) []const routes_mod.Collision {
+    pub fn collisions(self: *const Site) []const routesMod.Collision {
         return self.table.collisions;
     }
 
@@ -195,7 +195,7 @@ pub const Site = struct {
     pub fn mount(self: *Site, server: *Server) !void {
         // Server.init already wires router.templateEngine when it creates
         // the engine itself; a Site-created engine is unwound below.
-        var created: ?*templates_mod.Engine = null;
+        var created: ?*templatesMod.Engine = null;
         errdefer if (created) |e| {
             server.templateEngine = null;
             server.router.templateEngine = null;
@@ -205,12 +205,12 @@ pub const Site = struct {
         if (server.templateEngine) |existing| {
             if (!std.mem.eql(u8, existing.config.directory, self.root)) return error.TemplateEngineAlreadyConfigured;
         } else {
-            var engine_cfg = self.config.templates;
-            engine_cfg.directory = self.root;
-            const engine = try server.allocator.create(templates_mod.Engine);
+            var engineCfg = self.config.templates;
+            engineCfg.directory = self.root;
+            const engine = try server.allocator.create(templatesMod.Engine);
             errdefer server.allocator.destroy(engine);
             // Engine.init either fully succeeds or leaves nothing to deinit.
-            engine.* = try templates_mod.Engine.init(server.allocator, server.io, engine_cfg);
+            engine.* = try templatesMod.Engine.init(server.allocator, server.io, engineCfg);
             server.templateEngine = engine;
             server.router.templateEngine = engine;
             created = engine;
@@ -222,12 +222,12 @@ pub const Site = struct {
 
         // Atomicity: pre-check every pattern (file routes plus the asset
         // layer's two patterns) before registering anything.
-        const asset_p1 = try staticMountPattern(self.allocator, self.base, false);
-        defer self.allocator.free(asset_p1);
-        const asset_p2 = try staticMountPattern(self.allocator, self.base, true);
-        defer self.allocator.free(asset_p2);
-        try self.checkPattern(server, asset_p1);
-        try self.checkPattern(server, asset_p2);
+        const assetP1 = try staticMountPattern(self.allocator, self.base, false);
+        defer self.allocator.free(assetP1);
+        const assetP2 = try staticMountPattern(self.allocator, self.base, true);
+        defer self.allocator.free(assetP2);
+        try self.checkPattern(server, assetP1);
+        try self.checkPattern(server, assetP2);
         for (self.table.routes) |*r| {
             try self.checkPattern(server, r.route);
             if (r.extRoute) |e| try self.checkPattern(server, e);
@@ -242,39 +242,39 @@ pub const Site = struct {
             self.targets.clearRetainingCapacity();
         }
 
-        const embedded_only = self.embedded;
+        const embeddedOnly = self.embedded;
         // The asset layer always needs a non-empty root string; in embedded
         // mode it is only a lookup prefix since `filesystem = false`.
         // A site root page replaces the asset layer's bare mount route so
         // `/` renders through templates; the wildcard and SPA fallback stay
         // for everything else.
-        var has_root = false;
+        var hasRoot = false;
         for (self.table.routes) |r| {
             if (std.mem.eql(u8, r.route, self.base)) {
-                has_root = true;
+                hasRoot = true;
                 break;
             }
         }
-        const asset_root = if (self.rootDir().len == 0) "." else self.rootDir();
+        const assetRoot = if (self.rootDir().len == 0) "." else self.rootDir();
         if (self.config.spaFallback) |fb| {
             try spa.register(&server.router, .{
-                .root = asset_root,
+                .root = assetRoot,
                 .fallback = fb,
                 .mount = self.base,
-                .filesystem = !embedded_only,
+                .filesystem = !embeddedOnly,
             });
         } else {
-            try static_files.register(&server.router, .{
-                .root = asset_root,
+            try staticFiles.register(&server.router, .{
+                .root = assetRoot,
                 .mount = self.base,
-                .liveReload = self.config.reload and !embedded_only,
+                .liveReload = self.config.reload and !embeddedOnly,
                 .reloadSsePath = self.ssePath,
-                .filesystem = !embedded_only,
+                .filesystem = !embeddedOnly,
             });
         }
-        try registered.append(self.allocator, asset_p1);
-        try registered.append(self.allocator, asset_p2);
-        if (has_root) _ = server.router.remove(.GET, self.base);
+        try registered.append(self.allocator, assetP1);
+        try registered.append(self.allocator, assetP2);
+        if (hasRoot) _ = server.router.remove(.GET, self.base);
 
         for (self.table.routes) |*r| {
             const target = try self.targets.addOne(self.allocator);
@@ -291,7 +291,7 @@ pub const Site = struct {
             }
         }
 
-        if (!embedded_only) {
+        if (!embeddedOnly) {
             if (self.config.watch) {
                 server.cfg.watch = true;
                 server.cfg.watchDir = self.rootDir();
@@ -301,7 +301,7 @@ pub const Site = struct {
         self.mounted = true;
     }
 
-    /// Mirrors static_files mount pattern construction (`/` + `/*path`).
+    /// Mirrors staticFiles mount pattern construction (`/` + `/*path`).
     fn staticMountPattern(allocator: Allocator, base: []const u8, wildcard: bool) ![]u8 {
         if (std.mem.eql(u8, base, "/")) {
             if (wildcard) return allocator.dupe(u8, "/*path");
@@ -330,8 +330,8 @@ pub const Site = struct {
         }
     }
 
-    fn canonicalUrl(self: *Site, route: []const u8, is_index: bool) ![]u8 {
-        _ = is_index;
+    fn canonicalUrl(self: *Site, route: []const u8, isIndex: bool) ![]u8 {
+        _ = isIndex;
         if (self.config.trailing == .redirectSlash and !std.mem.eql(u8, route, "/")) {
             return std.fmt.allocPrint(self.allocator, "{s}/", .{route});
         }
@@ -466,15 +466,15 @@ fn appendQuery(allocator: Allocator, out: *std.ArrayList(u8), query: anytype) !v
     inline for (info.@"struct".fields) |f| {
         const v = @field(query, f.name);
         if (@TypeOf(v) == @TypeOf(null)) continue;
-        const enc_k = try encodeOwned(allocator, f.name);
-        defer allocator.free(enc_k);
-        const enc_v = try encodeParamValue(allocator, v);
-        defer allocator.free(enc_v);
+        const encK = try encodeOwned(allocator, f.name);
+        defer allocator.free(encK);
+        const encV = try encodeParamValue(allocator, v);
+        defer allocator.free(encV);
         try out.append(allocator, if (first) '?' else '&');
         first = false;
-        try out.appendSlice(allocator, enc_k);
+        try out.appendSlice(allocator, encK);
         try out.append(allocator, '=');
-        try out.appendSlice(allocator, enc_v);
+        try out.appendSlice(allocator, encV);
     }
 }
 
@@ -516,7 +516,7 @@ fn servePage(ctx: *Context) anyerror!Response {
     });
     if (ctx.method == .HEAD) resp.body = @constCast("");
     if (site.config.reload and ctx.method != .HEAD) {
-        const script = try watcher_mod.Watcher.liveReloadScript(ctx.allocator, site.ssePath);
+        const script = try watcherMod.Watcher.liveReloadScript(ctx.allocator, site.ssePath);
         resp.body = try std.fmt.allocPrint(ctx.allocator, "{s}\n{s}", .{ resp.body, script });
     }
     return resp;
@@ -529,8 +529,8 @@ fn allocatorTrimSlash(allocator: Allocator, raw: []const u8) ![]u8 {
 }
 
 /// True when a logical path lives under the reserved template subtree.
-fn isReservedPath(path: []const u8, template_dir: ?[]const u8) bool {
-    const td = template_dir orelse return false;
+fn isReservedPath(path: []const u8, templateDir: ?[]const u8) bool {
+    const td = templateDir orelse return false;
     if (std.mem.eql(u8, path, td)) return true;
     if (path.len > td.len and std.mem.startsWith(u8, path, td) and path[td.len] == '/') return true;
     return false;

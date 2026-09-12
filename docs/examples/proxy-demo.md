@@ -1,6 +1,6 @@
 # Example: Proxy Demo
 
-Demonstrates proxy_demo.zig using the canonical HTTPX API.
+Demonstrates proxyDemo.zig using the canonical HTTPX API.
 
 ## Complete Example
 

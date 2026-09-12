@@ -1,6 +1,6 @@
 # Example: Download Update
 
-Demonstrates download_update.zig using the canonical HTTPX API.
+Demonstrates downloadUpdate.zig using the canonical HTTPX API.
 
 ## Complete Example
 

@@ -2,7 +2,7 @@
 
 Run requests concurrently with `client.getAll(urls)` and
 `client.requestAll(reqs)` (or the `httpx.getAll` / `httpx.requestAll`
-zero-config helpers). See `examples/concurrent_demo.zig`.
+zero-config helpers). See `examples/concurrentDemo.zig`.
 
 ```zig
 const urls = [_][]const u8{

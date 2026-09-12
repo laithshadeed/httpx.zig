@@ -1,5 +1,5 @@
 //! NewReno congestion control (RFC 9002 section 7) with constants from
-//! ngtcp2_cc: initial window = min(10*MSS, max(2*MSS, 14720)), minimum
+//! ngtcp2Cc: initial window = min(10*MSS, max(2*MSS, 14720)), minimum
 //! window = 2*MSS, halving on congestion event, additive growth per RTT
 //! in congestion avoidance.
 
@@ -14,7 +14,7 @@ pub const NewReno = struct {
     /// Congestion-avoidance fractional credit (bytes toward one MSS).
     caPending: usize = 0,
 
-    const max_cwnd_cap: usize = 1 << 30;
+    const maxCwndCap: usize = 1 << 30;
 
     pub fn init(mss: usize) NewReno {
         return .{
@@ -47,7 +47,7 @@ pub const NewReno = struct {
                 self.cwnd += self.mss;
             }
         }
-        self.cwnd = @min(self.cwnd, max_cwnd_cap);
+        self.cwnd = @min(self.cwnd, maxCwndCap);
     }
 
     /// Congestion event (new loss or ECN-CE): halve, enter recovery.

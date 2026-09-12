@@ -1,6 +1,6 @@
 # Example: Download Batch
 
-Demonstrates download_batch.zig using the canonical HTTPX API.
+Demonstrates downloadBatch.zig using the canonical HTTPX API.
 
 ## Complete Example
 

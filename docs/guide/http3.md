@@ -23,7 +23,7 @@ HTTP/3 support is validated across Linux, Windows, and macOS targets:
 ## Features
 
 - **High-level Client Runtime** - `Client` executes real requests over HTTP/3: `client.get("https://host/", .{ .httpVersion = .http3 })` performs a live QUIC + TLS 1.3 handshake (ALPN `h3`, verified chain) over UDP and returns the response.
-- **Protocol-level Server Runtime** - serve H3 over QUIC with `httpx.quic` (Endpoint + Pump + HandshakeDriver) and `httpx.http3` builders; see `examples/http3_client.zig` for a complete loopback server. `httpx.Server` has no UDP front-end yet (TCP only).
+- **Protocol-level Server Runtime** - serve H3 over QUIC with `httpx.quic` (Endpoint + Pump + HandshakeDriver) and `httpx.http3` builders; see `examples/http3Client.zig` for a complete loopback server. `httpx.Server` has no UDP front-end yet (TCP only).
 - **QPACK Header Compression** - RFC 9204 static-table encode/decode with encoder/decoder stream prefixes.
 - **QUIC Transport Framing** - STREAM, CRYPTO, ACK, HANDSHAKE_DONE, RESET_STREAM/STOP_SENDING stubs, version negotiation, and transport parameters.
 - **Variable-Length Integers** - QUIC varint encoding/decoding.
@@ -59,7 +59,7 @@ A wrong chain fails fast and loudly (`error.TlsCertificateNotVerified`); an ALPN
 
 ## Protocol-level Server Usage
 
-An H3 server is one UDP socket plus the protocol pieces (full example in `examples/http3_client.zig`):
+An H3 server is one UDP socket plus the protocol pieces (full example in `examples/http3Client.zig`):
 
 ```zig
 var ep = try httpx.quic.transport.Endpoint.initPort(allocator, io, conn, 8443);

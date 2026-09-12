@@ -3,7 +3,7 @@
 HTTPX has no client interceptor registry. Cross-cutting request/response
 behavior belongs in server middleware (`httpx.middleware.*`) or in small
 wrappers around the URL-first client calls. See
-`examples/interceptor_example.zig`, which exercises a plain server route plus
+`examples/interceptorExample.zig`, which exercises a plain server route plus
 a client GET against it.
 
 ```zig

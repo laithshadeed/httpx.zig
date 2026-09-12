@@ -11,19 +11,19 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const engine_mod = @import("engine.zig");
-const handshake_mod = @import("handshake.zig");
-const record_mod = @import("record.zig");
-const alpn_mod = @import("alpn.zig");
-const cert_mod = @import("certificate.zig");
-const verify_mod = @import("verify.zig");
+const engineMod = @import("engine.zig");
+const handshakeMod = @import("handshake.zig");
+const recordMod = @import("record.zig");
+const alpnMod = @import("alpn.zig");
+const certMod = @import("certificate.zig");
+const verifyMod = @import("verify.zig");
 const trustStoreMod = @import("trustStore.zig");
-const clock_mod = @import("../../common/clock.zig");
-const address_mod = @import("../../net/address.zig");
+const clockMod = @import("../../common/clock.zig");
+const addressMod = @import("../../net/address.zig");
 const tcp = @import("../../sockets/tcp.zig");
 const tcpTls = @import("tcpTls.zig");
-const transport_mod = @import("transport.zig");
-const session_mod = @import("session.zig");
+const transportMod = @import("transport.zig");
+const sessionMod = @import("session.zig");
 
 // Errors
 
@@ -54,10 +54,10 @@ pub const TlsClientConn = struct {
     allocator: Allocator,
 
     /// Negotiated ALPN protocol, if the server selected one we offered.
-    alpn: ?alpn_mod.Protocol = null,
+    alpn: ?alpnMod.Protocol = null,
 
     /// Application traffic keys for encrypt/decrypt.
-    appKeys: engine_mod.DerivedKeys,
+    appKeys: engineMod.DerivedKeys,
 
     /// Cipher suite negotiated for this connection (binds NST tickets).
     suite: std.crypto.tls.CipherSuite = .AES_128_GCM_SHA256,
@@ -76,7 +76,7 @@ pub const TlsClientConn = struct {
     sessionHost: ?[]u8 = null,
     /// Latest captured session, replaced by each subsequent ticket.
     /// Owned; transfer with `takeCapturedSession`.
-    pendingSession: ?session_mod.ClientSession = null,
+    pendingSession: ?sessionMod.ClientSession = null,
 
     /// Sequence numbers for application records.
     txSeq: u64 = 0,
@@ -89,7 +89,7 @@ pub const TlsClientConn = struct {
     readBuf: []u8,
 
     /// Leftover plaintext from a previous read (partial record).
-    leftoverBuf: [record_mod.maxRecordPlaintext + 1]u8 = undefined,
+    leftoverBuf: [recordMod.maxRecordPlaintext + 1]u8 = undefined,
     leftoverLen: usize = 0,
     leftover: []const u8 = &.{},
 
@@ -110,7 +110,7 @@ pub const TlsClientConn = struct {
     /// Takes ownership of the latest captured resumption session, if any.
     /// Returns null when capture is disabled or no ticket arrived yet.
     /// Caller owns the result and must `deinit` it with an allocator.
-    pub fn takeCapturedSession(self: *TlsClientConn) ?session_mod.ClientSession {
+    pub fn takeCapturedSession(self: *TlsClientConn) ?sessionMod.ClientSession {
         const s = self.pendingSession orelse return null;
         self.pendingSession = null;
         return s;
@@ -120,8 +120,8 @@ pub const TlsClientConn = struct {
     pub fn writeAll(self: *TlsClientConn, plaintext: []const u8) Error!void {
         var offset: usize = 0;
         while (offset < plaintext.len) {
-            const chunkLen = @min(plaintext.len - offset, record_mod.maxRecordPlaintext);
-            const encoded = try record_mod.encodeRecord(
+            const chunkLen = @min(plaintext.len - offset, recordMod.maxRecordPlaintext);
+            const encoded = try recordMod.encodeRecord(
                 .application_data,
                 plaintext[offset..][0..chunkLen],
                 self.txSeq,
@@ -155,41 +155,41 @@ pub const TlsClientConn = struct {
         }
 
         while (true) {
-            var hdr_buf: [5]u8 = undefined;
+            var hdrBuf: [5]u8 = undefined;
             var totalRead: usize = 0;
             while (totalRead < 5) {
-                const n = self.socket.read(hdr_buf[totalRead..]) catch return error.IoError;
+                const n = self.socket.read(hdrBuf[totalRead..]) catch return error.IoError;
                 if (n == 0) return 0; // peer closed
                 totalRead += n;
             }
-            if (hdr_buf[1] != 0x03 or hdr_buf[2] != 0x03) return error.TlsRecordError;
+            if (hdrBuf[1] != 0x03 or hdrBuf[2] != 0x03) return error.TlsRecordError;
 
-            const record_len: usize = (@as(usize, hdr_buf[3]) << 8) | hdr_buf[4];
-            const tag_len = self.appKeys.cipher.tagLen();
-            if (record_len < tag_len or
-                record_len > record_mod.maxRecordPlaintext + 1 + tag_len)
+            const recordLen: usize = (@as(usize, hdrBuf[3]) << 8) | hdrBuf[4];
+            const tagLen = self.appKeys.cipher.tagLen();
+            if (recordLen < tagLen or
+                recordLen > recordMod.maxRecordPlaintext + 1 + tagLen)
             {
                 return error.TlsRecordError;
             }
 
-            var wire_buf: [record_mod.maxRecordWire]u8 = undefined;
-            @memcpy(wire_buf[0..5], &hdr_buf);
+            var wireBuf: [recordMod.maxRecordWire]u8 = undefined;
+            @memcpy(wireBuf[0..5], &hdrBuf);
             totalRead = 0;
-            while (totalRead < record_len) {
-                const n = self.socket.read(wire_buf[5 + totalRead ..][0 .. record_len - totalRead]) catch return error.IoError;
+            while (totalRead < recordLen) {
+                const n = self.socket.read(wireBuf[5 + totalRead ..][0 .. recordLen - totalRead]) catch return error.IoError;
                 if (n == 0) return error.TlsRecordError;
                 totalRead += n;
             }
 
-            const contentTypeByte = wire_buf[0];
-            if (contentTypeByte != @intFromEnum(record_mod.ContentType.application_data)) {
+            const contentTypeByte = wireBuf[0];
+            if (contentTypeByte != @intFromEnum(recordMod.ContentType.application_data)) {
                 return error.TlsRecordError;
             }
 
-            var decrypt_buf: [record_mod.maxRecordPlaintext + 1]u8 = undefined;
-            const result = record_mod.decodeRecord(
-                wire_buf[0..][0 .. 5 + record_len],
-                &decrypt_buf,
+            var decryptBuf: [recordMod.maxRecordPlaintext + 1]u8 = undefined;
+            const result = recordMod.decodeRecord(
+                wireBuf[0..][0 .. 5 + recordLen],
+                &decryptBuf,
                 self.rxSeq,
                 self.appKeys.serverKeySlice(),
                 &self.appKeys.serverIv,
@@ -230,18 +230,18 @@ pub const TlsClientConn = struct {
         const master = self.resumptionMaster orelse return error.TlsRecordError;
         const host = self.sessionHost orelse return error.TlsRecordError;
         if (plaintext.len < 4) return error.TlsRecordError;
-        if (plaintext[0] != @intFromEnum(handshake_mod.HandshakeType.new_session_ticket)) {
+        if (plaintext[0] != @intFromEnum(handshakeMod.HandshakeType.new_session_ticket)) {
             return error.TlsRecordError;
         }
-        const nst = handshake_mod.NewSessionTicket.decode(plaintext[4..]) catch return error.TlsRecordError;
-        const now_ms: u64 = @intCast(clock_mod.millisNow());
-        var fresh = session_mod.clientSessionFromTicket(
+        const nst = handshakeMod.NewSessionTicket.decode(plaintext[4..]) catch return error.TlsRecordError;
+        const nowMs: u64 = @intCast(clockMod.millisNow());
+        var fresh = sessionMod.clientSessionFromTicket(
             self.allocator,
             nst,
             master,
             self.suite,
             host,
-            now_ms,
+            nowMs,
         ) catch return error.TlsRecordError;
         errdefer fresh.deinit(self.allocator);
         if (self.pendingSession) |*old| old.deinit(self.allocator);
@@ -257,7 +257,7 @@ pub const TlsClientConn = struct {
 pub const TlsClientConfig = struct {
     allocator: Allocator,
     /// How the server certificate is verified.
-    verify: transport_mod.VerifyMode = .caBundle,
+    verify: transportMod.VerifyMode = .caBundle,
     /// PEM bundle of extra/custom CAs (in addition to system trust when
     /// verify == .caBundle). Null means system trust only.
     caPem: ?[]const u8 = null,
@@ -273,7 +273,7 @@ pub const TlsClientConfig = struct {
     /// Resumption session to offer (single PSK identity). Borrowed for
     /// the handshake only; ownership stays with the caller. The offer is
     /// skipped unless usable for `host` right now.
-    session: ?*const session_mod.ClientSession = null,
+    session: ?*const sessionMod.ClientSession = null,
     /// When true, post-handshake NewSessionTicket messages are captured
     /// into the connection (see `takeCapturedSession`). Zero behavior
     /// change otherwise.
@@ -297,15 +297,15 @@ pub const TlsClient = struct {
     /// hello. Owned slice; caller frees.
     fn produceHello(
         self: *TlsClient,
-        engine: *engine_mod.Engine,
+        engine: *engineMod.Engine,
         sni: ?[]const u8,
-        session: ?*const session_mod.ClientSession,
+        session: ?*const sessionMod.ClientSession,
         nowMs: u64,
     ) ![]u8 {
         if (session) |s| {
             return engine.produceClientHelloResumption(self.config.alpnProtocols, &.{}, sni, s, nowMs);
         }
-        return engine.produceClientHelloWithSni(self.config.alpnProtocols, &.{}, sni, null);
+        return engine.produceClientHello(self.config.alpnProtocols, &.{}, sni, null);
     }
 
     /// Performs the TLS 1.3 client handshake against `host` over an
@@ -316,42 +316,42 @@ pub const TlsClient = struct {
     pub fn handshake(self: *TlsClient, io: std.Io, socket: *tcp.Socket, host: []const u8) !TlsClientConn {
         const a = self.config.allocator;
 
-        var engine = engine_mod.Engine.initClient(a, .{});
+        var engine = engineMod.Engine.initClient(a, .{});
         defer engine.deinit();
 
         // SNI only for DNS names; IP literals carry none.
-        var probe = address_mod.Address{ .family = .ip4, .port = 0 };
+        var probe = addressMod.Address{ .family = .ip4, .port = 0 };
         const sni: ?[]const u8 = if (probe.parseIp(host)) |_| null else |_| host;
-        const now_ms: u64 = @intCast(clock_mod.millisNow());
+        const nowMs: u64 = @intCast(clockMod.millisNow());
 
         // A configured session is offered only when usable for this host
         // right now (host binding + freshness); otherwise a full
         // handshake proceeds exactly as before.
-        const offer_session: ?*const session_mod.ClientSession = blk: {
+        const offerSession: ?*const sessionMod.ClientSession = blk: {
             const s = self.config.session orelse break :blk null;
-            if (!s.isUsable(host, now_ms)) break :blk null;
-            if (!session_mod.suiteSupportsResumption(s.suite)) break :blk null;
+            if (!s.isUsable(host, nowMs)) break :blk null;
+            if (!sessionMod.suiteSupportsResumption(s.suite)) break :blk null;
             break :blk s;
         };
 
-        const ch = try self.produceHello(&engine, sni, offer_session, now_ms);
+        const ch = try self.produceHello(&engine, sni, offerSession, nowMs);
         defer a.free(ch);
         try writePlaintextHandshakeRecord(socket, ch);
 
         // ServerHello arrives as one plaintext record. A HelloRetryRequest
         // (at most one — the engine aborts a second) restarts the hello
         // with a fresh share; the PSK offer, if any, is re-sent on CH2.
-        const sh_msg = try readPlaintextRecord(a, socket);
-        defer a.free(sh_msg);
-        try engine.processServerHello(sh_msg);
+        const shMsg = try readPlaintextRecord(a, socket);
+        defer a.free(shMsg);
+        try engine.processServerHello(shMsg);
         if (engine.hrrPendingGroup != null) {
             engine.hrrPendingGroup = null;
-            const ch2 = try self.produceHello(&engine, sni, offer_session, now_ms);
+            const ch2 = try self.produceHello(&engine, sni, offerSession, nowMs);
             defer a.free(ch2);
             try writePlaintextHandshakeRecord(socket, ch2);
-            const sh2_msg = try readPlaintextRecord(a, socket);
-            defer a.free(sh2_msg);
-            try engine.processServerHello(sh2_msg);
+            const sh2Msg = try readPlaintextRecord(a, socket);
+            defer a.free(sh2Msg);
+            try engine.processServerHello(sh2Msg);
             if (engine.hrrPendingGroup != null) return error.TlsHandshakeFailed;
         }
 
@@ -359,56 +359,56 @@ pub const TlsClient = struct {
         // The server Certificate DERs are retained for chain verification.
         // A CertificateRequest (if sent) only sets a flag here: the client
         // flight goes out after the server Finished, in one place below.
-        var hs_buf = std.ArrayList(u8).empty;
-        defer hs_buf.deinit(a);
-        var cert_ders = std.ArrayList([]const u8).empty;
+        var hsBuf = std.ArrayList(u8).empty;
+        defer hsBuf.deinit(a);
+        var certDers = std.ArrayList([]const u8).empty;
         defer {
-            for (cert_ders.items) |d| a.free(d);
-            cert_ders.deinit(a);
+            for (certDers.items) |d| a.free(d);
+            certDers.deinit(a);
         }
-        var hs_rx: u64 = 0;
-        var hs_tx: u64 = 0;
-        var saw_fin = false;
-        var saw_cr = false;
-        while (!saw_fin) {
-            try readHandshakeRecord(socket, engine.hsKeys orelse return error.TlsHandshakeFailed, &hs_rx, &hs_buf, a);
+        var hsRx: u64 = 0;
+        var hsTx: u64 = 0;
+        var sawFin = false;
+        var sawCr = false;
+        while (!sawFin) {
+            try readHandshakeRecord(socket, engine.hsKeys orelse return error.TlsHandshakeFailed, &hsRx, &hsBuf, a);
             while (true) {
-                if (hs_buf.items.len < 4) break;
-                const t = hs_buf.items[0];
-                const blen: usize = (@as(usize, hs_buf.items[1]) << 16) | (@as(usize, hs_buf.items[2]) << 8) | hs_buf.items[3];
-                if (hs_buf.items.len < 4 + blen) break;
-                const msg = hs_buf.items[0 .. 4 + blen];
-                const ee = @intFromEnum(handshake_mod.HandshakeType.encrypted_extensions);
-                const cr = @intFromEnum(handshake_mod.HandshakeType.certificate_request);
-                const cert = @intFromEnum(handshake_mod.HandshakeType.certificate);
-                const cv = @intFromEnum(handshake_mod.HandshakeType.certificate_verify);
-                const fin = @intFromEnum(handshake_mod.HandshakeType.finished);
+                if (hsBuf.items.len < 4) break;
+                const t = hsBuf.items[0];
+                const blen: usize = (@as(usize, hsBuf.items[1]) << 16) | (@as(usize, hsBuf.items[2]) << 8) | hsBuf.items[3];
+                if (hsBuf.items.len < 4 + blen) break;
+                const msg = hsBuf.items[0 .. 4 + blen];
+                const ee = @intFromEnum(handshakeMod.HandshakeType.encrypted_extensions);
+                const cr = @intFromEnum(handshakeMod.HandshakeType.certificate_request);
+                const cert = @intFromEnum(handshakeMod.HandshakeType.certificate);
+                const cv = @intFromEnum(handshakeMod.HandshakeType.certificate_verify);
+                const fin = @intFromEnum(handshakeMod.HandshakeType.finished);
                 if (t == ee) {
                     try engine.processEncryptedExtensions(msg);
                 } else if (t == cr) {
                     try engine.processCertificateRequest(msg);
-                    saw_cr = true;
+                    sawCr = true;
                 } else if (t == cert) {
                     // Feeds the transcript AND returns the DERs (single
                     // parse); chain verification happens below.
                     var presented = try engine.processClientCertificate(msg);
                     defer presented.deinit();
                     for (presented.ders) |d| {
-                        try cert_ders.append(a, try a.dupe(u8, d));
+                        try certDers.append(a, try a.dupe(u8, d));
                     }
                 } else if (t == cv) {
                     // Full verification (decode + leaf signature + feed):
                     // the decode-only path would leave the transcript
                     // unbound to the server key.
-                    if (cert_ders.items.len == 0) return error.TlsHandshakeFailed;
-                    try engine.processServerCertificateVerify(msg, cert_ders.items[0]);
+                    if (certDers.items.len == 0) return error.TlsHandshakeFailed;
+                    try engine.processServerCertificateVerify(msg, certDers.items[0]);
                 } else if (t == fin) {
                     try engine.processFinished(msg);
-                    saw_fin = true;
+                    sawFin = true;
                 } else return error.TlsHandshakeFailed;
-                const rest = hs_buf.items.len - (4 + blen);
-                std.mem.copyForwards(u8, hs_buf.items[0..rest], hs_buf.items[4 + blen ..]);
-                hs_buf.items.len = rest;
+                const rest = hsBuf.items.len - (4 + blen);
+                std.mem.copyForwards(u8, hsBuf.items[0..rest], hsBuf.items[4 + blen ..]);
+                hsBuf.items.len = rest;
             }
         }
 
@@ -418,17 +418,17 @@ pub const TlsClient = struct {
         // PSK. Anything else without a certificate fails loudly below.
         const resumed = engine.resumptionPsk != null;
         if (!resumed) {
-            try self.verifyServerChain(io, host, cert_ders.items);
-        } else if (cert_ders.items.len != 0) {
+            try self.verifyServerChain(io, host, certDers.items);
+        } else if (certDers.items.len != 0) {
             return error.TlsHandshakeFailed;
         }
 
         // Mutual TLS: answer a CertificateRequest before our Finished so
         // the transcript order is Cert/CV/Fin (RFC 8446 Section 4.3.1).
-        if (saw_cr) {
-            const cert_pem = self.config.clientCertPem orelse return error.ClientCertificateRequired;
-            const key_pem = self.config.clientKeyPem orelse return error.ClientCertificateRequired;
-            var chain = cert_mod.parseCertificateChainPem(a, cert_pem) catch return error.TlsHandshakeFailed;
+        if (sawCr) {
+            const certPem = self.config.clientCertPem orelse return error.ClientCertificateRequired;
+            const keyPem = self.config.clientKeyPem orelse return error.ClientCertificateRequired;
+            var chain = certMod.parseCertificateChainPem(a, certPem) catch return error.TlsHandshakeFailed;
             defer chain.deinit();
             var ours = std.ArrayList([]const u8).empty;
             defer ours.deinit(a);
@@ -437,38 +437,38 @@ pub const TlsClient = struct {
                 try ours.append(a, c.rawDer());
             }
             if (ours.items.len == 0) return error.TlsHandshakeFailed;
-            const cert_msg = try engine.produceClientCertificate(ours.items);
-            defer a.free(cert_msg);
-            try writeHandshakeRecord(socket, engine.hsKeys orelse return error.TlsHandshakeFailed, &hs_tx, cert_msg);
-            const cv_msg = try engine.produceClientCertificateVerify(key_pem);
-            defer a.free(cv_msg);
-            try writeHandshakeRecord(socket, engine.hsKeys orelse return error.TlsHandshakeFailed, &hs_tx, cv_msg);
+            const certMsg = try engine.produceClientCertificate(ours.items);
+            defer a.free(certMsg);
+            try writeHandshakeRecord(socket, engine.hsKeys orelse return error.TlsHandshakeFailed, &hsTx, certMsg);
+            const cvMsg = try engine.produceClientCertificateVerify(keyPem);
+            defer a.free(cvMsg);
+            try writeHandshakeRecord(socket, engine.hsKeys orelse return error.TlsHandshakeFailed, &hsTx, cvMsg);
         }
 
         // Client Finished completes the handshake.
         const fin = try engine.produceClientFinished();
         defer a.free(fin);
-        try writeHandshakeRecord(socket, engine.hsKeys orelse return error.TlsHandshakeFailed, &hs_tx, fin);
+        try writeHandshakeRecord(socket, engine.hsKeys orelse return error.TlsHandshakeFailed, &hsTx, fin);
 
         const apKeys = engine.apKeys orelse return error.TlsHandshakeFailed;
-        const writeBuf = try a.alloc(u8, record_mod.maxRecordWire);
+        const writeBuf = try a.alloc(u8, recordMod.maxRecordWire);
         errdefer a.free(writeBuf);
-        const read_buf_app = try a.alloc(u8, record_mod.maxRecordWire);
-        errdefer a.free(read_buf_app);
+        const readBufApp = try a.alloc(u8, recordMod.maxRecordWire);
+        errdefer a.free(readBufApp);
 
         // Resumption master for future NST-derived sessions. The client
         // Finished was just fed to the transcript, so this binds the
         // complete handshake exactly per RFC 8446 Section 7.5.
-        const resumption_master = engine.deriveResumptionMaster() catch null;
+        const resumptionMaster = engine.deriveResumptionMaster() catch null;
         // Host binding for captured sessions (owned copy — the caller's
         // `host` slice is not retained).
-        const host_copy: ?[]u8 = if (self.config.captureSession)
+        const hostCopy: ?[]u8 = if (self.config.captureSession)
             a.dupe(u8, host) catch null
         else
             null;
-        errdefer if (host_copy) |h| a.free(h);
+        errdefer if (hostCopy) |h| a.free(h);
 
-        const alpn = if (engine.negotiatedAlpn) |wire| alpn_mod.Protocol.fromWire(wire) else null;
+        const alpn = if (engine.negotiatedAlpn) |wire| alpnMod.Protocol.fromWire(wire) else null;
         return .{
             .socket = socket,
             .allocator = a,
@@ -476,18 +476,18 @@ pub const TlsClient = struct {
             .appKeys = apKeys,
             .suite = engine.selectedSuite,
             .resumed = resumed,
-            .resumptionMaster = resumption_master,
+            .resumptionMaster = resumptionMaster,
             .captureSession = self.config.captureSession,
-            .sessionHost = host_copy,
+            .sessionHost = hostCopy,
             .writeBuf = writeBuf,
-            .readBuf = read_buf_app,
+            .readBuf = readBufApp,
         };
     }
 
     /// Verifies the server certificate chain against the configured trust
     /// (shared policy with the QUIC native client — see verify.zig).
     fn verifyServerChain(self: *TlsClient, io: std.Io, host: []const u8, ders: []const []const u8) !void {
-        try verify_mod.verifyServerChain(
+        try verifyMod.verifyServerChain(
             self.config.allocator,
             io,
             self.config.verify,
@@ -513,9 +513,9 @@ pub const TlsClient = struct {
             if (n == 0) return error.TlsHandshakeFailed;
             have += n;
         }
-        if (hdr[0] != @intFromEnum(record_mod.ContentType.handshake)) return error.TlsHandshakeFailed;
+        if (hdr[0] != @intFromEnum(recordMod.ContentType.handshake)) return error.TlsHandshakeFailed;
         const len: usize = (@as(usize, hdr[3]) << 8) | hdr[4];
-        if (len > record_mod.maxRecordPlaintext + 16) return error.TlsHandshakeFailed;
+        if (len > recordMod.maxRecordPlaintext + 16) return error.TlsHandshakeFailed;
         const body = try a.alloc(u8, len);
         errdefer a.free(body);
         var got: usize = 0;
@@ -533,14 +533,14 @@ pub const TlsClient = struct {
         return body;
     }
 
-    fn writeHandshakeRecord(socket: *tcp.Socket, hs_keys: engine_mod.DerivedKeys, seq: *u64, message: []const u8) !void {
-        const enc = record_mod.encodeRecord(
+    fn writeHandshakeRecord(socket: *tcp.Socket, hsKeys: engineMod.DerivedKeys, seq: *u64, message: []const u8) !void {
+        const enc = recordMod.encodeRecord(
             .handshake,
             message,
             seq.*,
-            hs_keys.clientKeySlice(),
-            &hs_keys.clientIv,
-            hs_keys.cipher,
+            hsKeys.clientKeySlice(),
+            &hsKeys.clientIv,
+            hsKeys.cipher,
         ) catch return error.TlsHandshakeFailed;
         seq.* += 1;
         socket.writeAll(enc.bytes[0..enc.len]) catch return error.IoError;
@@ -548,8 +548,8 @@ pub const TlsClient = struct {
 
     fn readHandshakeRecord(
         socket: *tcp.Socket,
-        hs_keys: engine_mod.DerivedKeys,
-        rx_seq: *u64,
+        hsKeys: engineMod.DerivedKeys,
+        rxSeq: *u64,
         out: *std.ArrayList(u8),
         a: Allocator,
     ) !void {
@@ -561,45 +561,45 @@ pub const TlsClient = struct {
                 if (n == 0) return error.TlsHandshakeFailed;
                 have += n;
             }
-            if (hdr[0] == @intFromEnum(record_mod.ContentType.change_cipher_spec)) {
-                const skip_len: usize = (@as(usize, hdr[3]) << 8) | hdr[4];
+            if (hdr[0] == @intFromEnum(recordMod.ContentType.change_cipher_spec)) {
+                const skipLen: usize = (@as(usize, hdr[3]) << 8) | hdr[4];
                 var skipped: usize = 0;
                 var tmp: [64]u8 = undefined;
-                while (skipped < skip_len) {
-                    const want = @min(tmp.len, skip_len - skipped);
+                while (skipped < skipLen) {
+                    const want = @min(tmp.len, skipLen - skipped);
                     const n = socket.read(tmp[0..want]) catch return error.IoError;
                     if (n == 0) return error.TlsHandshakeFailed;
                     skipped += n;
                 }
                 continue;
             }
-            if (hdr[0] != @intFromEnum(record_mod.ContentType.application_data)) {
+            if (hdr[0] != @intFromEnum(recordMod.ContentType.application_data)) {
                 return error.TlsHandshakeFailed;
             }
-            const rec_len: usize = (@as(usize, hdr[3]) << 8) | hdr[4];
-            if (rec_len < hs_keys.cipher.tagLen() or
-                rec_len > record_mod.maxRecordPlaintext + 1 + hs_keys.cipher.tagLen())
+            const recLen: usize = (@as(usize, hdr[3]) << 8) | hdr[4];
+            if (recLen < hsKeys.cipher.tagLen() or
+                recLen > recordMod.maxRecordPlaintext + 1 + hsKeys.cipher.tagLen())
             {
                 return error.TlsHandshakeFailed;
             }
-            var wire: [record_mod.maxRecordWire]u8 = undefined;
+            var wire: [recordMod.maxRecordWire]u8 = undefined;
             @memcpy(wire[0..5], &hdr);
             var got: usize = 0;
-            while (got < rec_len) {
-                const n = socket.read(wire[5 + got ..][0 .. rec_len - got]) catch return error.IoError;
+            while (got < recLen) {
+                const n = socket.read(wire[5 + got ..][0 .. recLen - got]) catch return error.IoError;
                 if (n == 0) return error.TlsHandshakeFailed;
                 got += n;
             }
-            var plain_buf: [record_mod.maxRecordPlaintext + 1]u8 = undefined;
-            const dec = record_mod.decodeRecord(
-                wire[0..][0 .. 5 + rec_len],
-                &plain_buf,
-                rx_seq.*,
-                hs_keys.serverKeySlice(),
-                &hs_keys.serverIv,
-                hs_keys.cipher,
+            var plainBuf: [recordMod.maxRecordPlaintext + 1]u8 = undefined;
+            const dec = recordMod.decodeRecord(
+                wire[0..][0 .. 5 + recLen],
+                &plainBuf,
+                rxSeq.*,
+                hsKeys.serverKeySlice(),
+                &hsKeys.serverIv,
+                hsKeys.cipher,
             ) catch return error.TlsHandshakeFailed;
-            rx_seq.* += 1;
+            rxSeq.* += 1;
             if (dec.contentType != .handshake) return error.TlsHandshakeFailed;
             try out.appendSlice(a, dec.plaintext);
             return;
@@ -607,13 +607,13 @@ pub const TlsClient = struct {
     }
 };
 
-const test_cert_pem = @embedFile("testdata/localhost_cert.pem");
-const test_key_pem = @embedFile("testdata/localhost_key.pem");
+const testCertPem = @embedFile("testdata/localhostCert.pem");
+const testKeyPem = @embedFile("testdata/localhostKey.pem");
 
 fn testServer(a: Allocator) tcpTls.TlsServer {
     return tcpTls.TlsServer.init(.{
         .allocator = a,
-        .defaultIdentity = .{ .certChainPem = test_cert_pem, .privateKeyPem = test_key_pem },
+        .defaultIdentity = .{ .certChainPem = testCertPem, .privateKeyPem = testKeyPem },
     });
 }
 
@@ -627,13 +627,13 @@ test "tls resumption over loopback abbreviates the second handshake" {
 
     var server = tcpTls.TlsServer.init(.{
         .allocator = a,
-        .defaultIdentity = .{ .certChainPem = test_cert_pem, .privateKeyPem = test_key_pem },
+        .defaultIdentity = .{ .certChainPem = testCertPem, .privateKeyPem = testKeyPem },
         .ticketKeys = .{ .current = [_]u8{0x5E} ** 32 },
     });
     const Acceptor = struct {
         fn run(lst: *tcp.Listener, io2: std.Io, srv: *tcpTls.TlsServer, out: *?anyerror) void {
             // Two sequential connections: full, then resumed.
-            var resumed_flags: [2]bool = .{ false, false };
+            var resumedFlags: [2]bool = .{ false, false };
             for (0..2) |i| {
                 var sock = lst.accept(io2) catch {
                     out.* = error.AcceptFailed;
@@ -645,7 +645,7 @@ test "tls resumption over loopback abbreviates the second handshake" {
                     return;
                 };
                 defer conn.deinit();
-                resumed_flags[i] = conn.resumed;
+                resumedFlags[i] = conn.resumed;
                 var buf: [16]u8 = undefined;
                 const n = conn.read(&buf) catch |e| {
                     out.* = e;
@@ -660,11 +660,11 @@ test "tls resumption over loopback abbreviates the second handshake" {
                     return;
                 };
             }
-            if (resumed_flags[0]) {
+            if (resumedFlags[0]) {
                 out.* = error.UnexpectedResumption;
                 return;
             }
-            if (!resumed_flags[1]) {
+            if (!resumedFlags[1]) {
                 out.* = error.ResumptionMissing;
                 return;
             }
@@ -681,7 +681,7 @@ test "tls resumption over loopback abbreviates the second handshake" {
     var cli1 = TlsClient.init(.{
         .allocator = a,
         .verify = .caBundle,
-        .caPem = test_cert_pem,
+        .caPem = testCertPem,
         .captureSession = true,
     });
     var conn1 = try cli1.handshake(ctx.io, &sock1, "127.0.0.1");
@@ -707,7 +707,7 @@ test "tls resumption over loopback abbreviates the second handshake" {
     var cli2 = TlsClient.init(.{
         .allocator = a,
         .verify = .caBundle,
-        .caPem = test_cert_pem,
+        .caPem = testCertPem,
         .session = &session,
     });
     var conn2 = try cli2.handshake(ctx.io, &sock2, "127.0.0.1");
@@ -746,7 +746,7 @@ test "tls client retries after hello retry request over loopback" {
                 return;
             };
             defer sock.close();
-            var eng = engine_mod.Engine.initServer(std.heap.page_allocator, .{});
+            var eng = engineMod.Engine.initServer(std.heap.page_allocator, .{});
             defer eng.deinit();
             // CH1 (with share — production client always offers; the HRR
             // here is unconditional to drive the retry path).
@@ -778,7 +778,7 @@ test "tls client retries after hello retry request over loopback" {
                 out.* = e;
                 return;
             };
-            var flight = eng.produceServerFlight(ch2[4..], test_cert_pem, test_key_pem, &.{}, &.{}, null) catch |e| {
+            var flight = eng.produceServerFlight(ch2[4..], testCertPem, testKeyPem, &.{}, &.{}, null) catch |e| {
                 out.* = e;
                 return;
             };
@@ -809,14 +809,14 @@ test "tls client retries after hello retry request over loopback" {
                 return;
             };
             // Client Finished, then app-data echo.
-            var hs_buf = std.ArrayList(u8).empty;
-            defer hs_buf.deinit(std.heap.page_allocator);
+            var hsBuf = std.ArrayList(u8).empty;
+            defer hsBuf.deinit(std.heap.page_allocator);
             var rx: u64 = 0;
-            readHs(io2, &sock, hs, &rx, &hs_buf) catch |e| {
+            readHs(io2, &sock, hs, &rx, &hsBuf) catch |e| {
                 out.* = e;
                 return;
             };
-            eng.verifyClientFinished(hs_buf.items) catch |e| {
+            eng.verifyClientFinished(hsBuf.items) catch |e| {
                 out.* = e;
                 return;
             };
@@ -824,12 +824,12 @@ test "tls client retries after hello retry request over loopback" {
                 out.* = error.NoKeys;
                 return;
             };
-            var app_buf: [64]u8 = undefined;
-            const n = readApp(io2, &sock, ap, &app_buf) catch |e| {
+            var appBuf: [64]u8 = undefined;
+            const n = readApp(io2, &sock, ap, &appBuf) catch |e| {
                 out.* = e;
                 return;
             };
-            if (!std.mem.eql(u8, app_buf[0..n], "hrr-ping")) {
+            if (!std.mem.eql(u8, appBuf[0..n], "hrr-ping")) {
                 out.* = error.BadReply;
                 return;
             }
@@ -869,14 +869,14 @@ test "tls client retries after hello retry request over loopback" {
             try sock.writeAll(msg);
         }
 
-        fn writeHs(io2: std.Io, sock: *tcp.Socket, keys: engine_mod.DerivedKeys, seq: *u64, msg: []const u8) !void {
+        fn writeHs(io2: std.Io, sock: *tcp.Socket, keys: engineMod.DerivedKeys, seq: *u64, msg: []const u8) !void {
             _ = io2;
-            const enc = try record_mod.encodeRecord(.handshake, msg, seq.*, keys.serverKeySlice(), &keys.serverIv, keys.cipher);
+            const enc = try recordMod.encodeRecord(.handshake, msg, seq.*, keys.serverKeySlice(), &keys.serverIv, keys.cipher);
             seq.* += 1;
             try sock.writeAll(enc.bytes[0..enc.len]);
         }
 
-        fn readHs(io2: std.Io, sock: *tcp.Socket, keys: engine_mod.DerivedKeys, rx: *u64, out: *std.ArrayList(u8)) !void {
+        fn readHs(io2: std.Io, sock: *tcp.Socket, keys: engineMod.DerivedKeys, rx: *u64, out: *std.ArrayList(u8)) !void {
             _ = io2;
             var hdr: [5]u8 = undefined;
             var have: usize = 0;
@@ -886,7 +886,7 @@ test "tls client retries after hello retry request over loopback" {
                 have += n;
             }
             const len: usize = (@as(usize, hdr[3]) << 8) | hdr[4];
-            var wire: [record_mod.maxRecordWire]u8 = undefined;
+            var wire: [recordMod.maxRecordWire]u8 = undefined;
             @memcpy(wire[0..5], &hdr);
             var got: usize = 0;
             while (got < len) {
@@ -894,13 +894,13 @@ test "tls client retries after hello retry request over loopback" {
                 if (n == 0) return error.Closed;
                 got += n;
             }
-            var plain: [record_mod.maxRecordPlaintext + 1]u8 = undefined;
-            const dec = try record_mod.decodeRecord(wire[0..][0 .. 5 + len], &plain, rx.*, keys.clientKeySlice(), &keys.clientIv, keys.cipher);
+            var plain: [recordMod.maxRecordPlaintext + 1]u8 = undefined;
+            const dec = try recordMod.decodeRecord(wire[0..][0 .. 5 + len], &plain, rx.*, keys.clientKeySlice(), &keys.clientIv, keys.cipher);
             rx.* += 1;
             try out.appendSlice(std.heap.page_allocator, dec.plaintext);
         }
 
-        fn readApp(io2: std.Io, sock: *tcp.Socket, keys: engine_mod.DerivedKeys, buf: []u8) !usize {
+        fn readApp(io2: std.Io, sock: *tcp.Socket, keys: engineMod.DerivedKeys, buf: []u8) !usize {
             _ = io2;
             var hdr: [5]u8 = undefined;
             var have: usize = 0;
@@ -910,7 +910,7 @@ test "tls client retries after hello retry request over loopback" {
                 have += n;
             }
             const len: usize = (@as(usize, hdr[3]) << 8) | hdr[4];
-            var wire: [record_mod.maxRecordWire]u8 = undefined;
+            var wire: [recordMod.maxRecordWire]u8 = undefined;
             @memcpy(wire[0..5], &hdr);
             var got: usize = 0;
             while (got < len) {
@@ -918,16 +918,16 @@ test "tls client retries after hello retry request over loopback" {
                 if (n == 0) return error.Closed;
                 got += n;
             }
-            var plain: [record_mod.maxRecordPlaintext + 1]u8 = undefined;
-            const dec = try record_mod.decodeRecord(wire[0..][0 .. 5 + len], &plain, 0, keys.clientKeySlice(), &keys.clientIv, keys.cipher);
+            var plain: [recordMod.maxRecordPlaintext + 1]u8 = undefined;
+            const dec = try recordMod.decodeRecord(wire[0..][0 .. 5 + len], &plain, 0, keys.clientKeySlice(), &keys.clientIv, keys.cipher);
             const n = @min(dec.plaintext.len, buf.len);
             @memcpy(buf[0..n], dec.plaintext[0..n]);
             return n;
         }
 
-        fn writeApp(io2: std.Io, sock: *tcp.Socket, keys: engine_mod.DerivedKeys, msg: []const u8) !void {
+        fn writeApp(io2: std.Io, sock: *tcp.Socket, keys: engineMod.DerivedKeys, msg: []const u8) !void {
             _ = io2;
-            const enc = try record_mod.encodeRecord(.application_data, msg, 0, keys.serverKeySlice(), &keys.serverIv, keys.cipher);
+            const enc = try recordMod.encodeRecord(.application_data, msg, 0, keys.serverKeySlice(), &keys.serverIv, keys.cipher);
             try sock.writeAll(enc.bytes[0..enc.len]);
         }
     };
@@ -940,7 +940,7 @@ test "tls client retries after hello retry request over loopback" {
     var cli = TlsClient.init(.{
         .allocator = a,
         .verify = .caBundle,
-        .caPem = test_cert_pem,
+        .caPem = testCertPem,
     });
     var conn = try cli.handshake(ctx.io, &sock, "127.0.0.1");
     defer conn.deinit();
@@ -1008,7 +1008,7 @@ test "native client handshake negotiates h2 with verified chain" {
     var cli = TlsClient.init(.{
         .allocator = a,
         .verify = .caBundle,
-        .caPem = test_cert_pem,
+        .caPem = testCertPem,
         .alpnProtocols = &.{"h2"},
     });
     var conn = try cli.handshake(ctx.io, &sock, "127.0.0.1");
@@ -1056,7 +1056,7 @@ test "native client rejects hostname mismatch" {
     var cli = TlsClient.init(.{
         .allocator = a,
         .verify = .caBundle,
-        .caPem = test_cert_pem,
+        .caPem = testCertPem,
     });
     // Chain anchors fine, but the cert is for 127.0.0.1/localhost.
     try std.testing.expectError(error.CertificateHostMismatch, cli.handshake(ctx.io, &sock, "wrong.invalid"));
@@ -1153,9 +1153,9 @@ test "native client presents certificate to requiring server" {
 
     var server = tcpTls.TlsServer.init(.{
         .allocator = a,
-        .defaultIdentity = .{ .certChainPem = test_cert_pem, .privateKeyPem = test_key_pem },
+        .defaultIdentity = .{ .certChainPem = testCertPem, .privateKeyPem = testKeyPem },
         .clientAuth = .required,
-        .clientCaPem = test_cert_pem,
+        .clientCaPem = testCertPem,
     });
     const Acceptor = struct {
         fn run(lst: *tcp.Listener, io2: std.Io, srv: *tcpTls.TlsServer, out: *?anyerror) void {
@@ -1193,9 +1193,9 @@ test "native client presents certificate to requiring server" {
     var cli = TlsClient.init(.{
         .allocator = a,
         .verify = .caBundle,
-        .caPem = test_cert_pem,
-        .clientCertPem = test_cert_pem,
-        .clientKeyPem = test_key_pem,
+        .caPem = testCertPem,
+        .clientCertPem = testCertPem,
+        .clientKeyPem = testKeyPem,
     });
     var conn = try cli.handshake(ctx.io, &sock, "127.0.0.1");
     defer conn.deinit();
@@ -1224,9 +1224,9 @@ test "native client without certificate fails required server" {
 
     var server = tcpTls.TlsServer.init(.{
         .allocator = a,
-        .defaultIdentity = .{ .certChainPem = test_cert_pem, .privateKeyPem = test_key_pem },
+        .defaultIdentity = .{ .certChainPem = testCertPem, .privateKeyPem = testKeyPem },
         .clientAuth = .required,
-        .clientCaPem = test_cert_pem,
+        .clientCaPem = testCertPem,
     });
     const Acceptor = struct {
         fn run(lst: *tcp.Listener, io2: std.Io, srv: *tcpTls.TlsServer, out: *?anyerror) void {

@@ -101,11 +101,7 @@ pub const HeadResult = struct {
 
 /// Parses a request line: METHOD SP TARGET SP HTTP/1.x CRLF.
 /// Tolerates multiple SPs between tokens like picohttpparser.
-pub fn parseRequestHead(buf: []const u8) ParseError!HeadResult {
-    return parseRequestHeadWithOptions(buf, .{});
-}
-
-pub fn parseRequestHeadWithOptions(buf: []const u8, opts: Options) ParseError!HeadResult {
+pub fn parseRequestHead(buf: []const u8, opts: Options) ParseError!HeadResult {
     _ = opts;
     var r = HeadResult{};
     var pos: usize = 0;
@@ -170,11 +166,7 @@ pub fn parseRequestHeadWithOptions(buf: []const u8, opts: Options) ParseError!He
     return ParseError.MalformedRequestLine;
 }
 
-pub fn parseResponseHead(buf: []const u8) ParseError!HeadResult {
-    return parseResponseHeadWithOptions(buf, .{});
-}
-
-pub fn parseResponseHeadWithOptions(buf: []const u8, opts: Options) ParseError!HeadResult {
+pub fn parseResponseHead(buf: []const u8, opts: Options) ParseError!HeadResult {
     var r = HeadResult{};
     var pos: usize = 0;
 
@@ -252,11 +244,7 @@ pub const HeaderBlockResult = struct { count: usize, end: usize };
 /// Returns field slices (into buf) and the offset past the blank line.
 // Rejects: obs-fold continuation lines, whitespace before the colon,
 // control chars in names/values, empty names.
-pub fn parseHeaderBlock(buf: []const u8, start: usize, fields: []Field) ParseError!HeaderBlockResult {
-    return parseHeaderBlockWithOptions(buf, start, fields, .{});
-}
-
-pub fn parseHeaderBlockWithOptions(buf: []const u8, start: usize, fields: []Field, opts: Options) ParseError!HeaderBlockResult {
+pub fn parseHeaderBlock(buf: []const u8, start: usize, fields: []Field, opts: Options) ParseError!HeaderBlockResult {
     var pos = start;
     var n: usize = 0;
 
@@ -370,10 +358,10 @@ pub fn framingFull(fields: []const Field, ctx: FramingContext) ParseError!Framin
         }
     }
 
-    var has_cl = false;
+    var hasCl = false;
     var cl: usize = 0;
-    var has_te = false;
-    var te_chunked_final = false;
+    var hasTe = false;
+    var teChunkedFinal = false;
 
     for (fields) |f| {
         if (std.ascii.eqlIgnoreCase(f.name, "Content-Length")) {
@@ -384,21 +372,21 @@ pub fn framingFull(fields: []const Field, ctx: FramingContext) ParseError!Framin
             }
             const v = std.fmt.parseInt(usize, f.value, 10) catch return ParseError.InvalidContentLength;
             if (v > ctx.maxBody) return ParseError.InvalidContentLength;
-            if (has_cl and cl != v) return ParseError.AmbiguousFraming; // differing duplicates
-            has_cl = true;
+            if (hasCl and cl != v) return ParseError.AmbiguousFraming; // differing duplicates
+            hasCl = true;
             cl = v;
         } else if (std.ascii.eqlIgnoreCase(f.name, "Transfer-Encoding")) {
-            has_te = true;
+            hasTe = true;
             // Final coding must be chunked; list form "gzip, chunked" ok.
-            te_chunked_final = endsWithCodingChunked(f.value);
+            teChunkedFinal = endsWithCodingChunked(f.value);
         }
     }
 
-    if (has_te and !te_chunked_final) return ParseError.AmbiguousFraming;
-    if (has_te and has_cl) return ParseError.AmbiguousFraming; // classic smuggling vector
-    if (has_te and ctx.isHttp10) return ParseError.AmbiguousFraming; // 1.0 must not use chunked
-    if (has_te) return .{ .framing = .chunked, .length = 0 };
-    if (has_cl) return .{ .framing = .contentLength, .length = cl };
+    if (hasTe and !teChunkedFinal) return ParseError.AmbiguousFraming;
+    if (hasTe and hasCl) return ParseError.AmbiguousFraming; // classic smuggling vector
+    if (hasTe and ctx.isHttp10) return ParseError.AmbiguousFraming; // 1.0 must not use chunked
+    if (hasTe) return .{ .framing = .chunked, .length = 0 };
+    if (hasCl) return .{ .framing = .contentLength, .length = cl };
 
     // No framing info: read-until-close for responses (caller decides);
     // requests without CL/TE have no body.
@@ -408,8 +396,8 @@ pub fn framingFull(fields: []const Field, ctx: FramingContext) ParseError!Framin
 /// True when the last comma-separated coding of a TE value is "chunked".
 fn endsWithCodingChunked(value: []const u8) bool {
     var it = std.mem.splitBackwardsScalar(u8, value, ',');
-    const last_raw = it.next() orelse return false;
-    const last = std.mem.trim(u8, last_raw, " \t");
+    const lastRaw = it.next() orelse return false;
+    const last = std.mem.trim(u8, lastRaw, " \t");
     return std.ascii.eqlIgnoreCase(last, "chunked");
 }
 
@@ -446,7 +434,7 @@ pub const ChunkedDecoder = struct {
 
     /// Raw bytes consumed from the most recent decode() input. On
     /// error.Incomplete the caller drops this prefix, appends new data,
-    /// and calls again (phr_decode_chunked-style).
+    /// and calls again (phrDecodeChunked-style).
     rawConsumed: usize = 0,
 
     /// Payload bytes produced by the most recent decode() call; they
@@ -538,7 +526,7 @@ pub const ChunkedDecoder = struct {
                 },
                 .trailer => {
                     var tfields: [DEFAULT_MAX_HEADERS]Field = undefined;
-                    const res = parseHeaderBlock(buf[src..], 0, tfields[0..]) catch |err| switch (err) {
+                    const res = parseHeaderBlock(buf[src..], 0, tfields[0..], .{}) catch |err| switch (err) {
                         ParseError.Incomplete => break :loop,
                         ParseError.TooManyHeaders => return ParseError.InvalidChunkSize,
                         else => return err,
@@ -603,7 +591,7 @@ pub const ChunkedDecoder = struct {
 
 test "parse simple GET request head" {
     const req = "GET /path?q=1 HTTP/1.1\r\nHost: x\r\n\r\n";
-    const r = try parseRequestHead(req);
+    const r = try parseRequestHead(req, .{});
     try std.testing.expectEqualStrings("GET", r.method);
     try std.testing.expectEqualStrings("/path?q=1", r.path);
     try std.testing.expectEqual(@as(u8, 1), r.minorVersion);
@@ -614,7 +602,7 @@ test "request head split across arbitrary reads" {
     for (1..req.len) |cut| {
         var acc: [128]u8 = undefined;
         @memcpy(acc[0..cut], req[0..cut]);
-        if (parseRequestHead(acc[0..cut])) |h| {
+        if (parseRequestHead(acc[0..cut], .{})) |h| {
             try std.testing.expect(h.headEnd <= cut);
         } else |e| {
             try std.testing.expectEqual(ParseError.Incomplete, e);
@@ -623,23 +611,23 @@ test "request head split across arbitrary reads" {
 }
 
 test "reject bad request lines" {
-    try std.testing.expectError(ParseError.MalformedRequestLine, parseRequestHead("GET / HTTP/1.1 extra\r\n\r\n"));
-    try std.testing.expectError(ParseError.Incomplete, parseRequestHead("GET / HTTP/1.1\r")); // truncated
-    try std.testing.expectError(ParseError.UnsupportedHttpVersion, parseRequestHead("G / HTTP/2.0\r\n"));
-    try std.testing.expectError(ParseError.UnsupportedHttpVersion, parseRequestHead("GE T / HTTP/1.1\r\n"));
-    try std.testing.expectError(ParseError.Incomplete, parseRequestHead("GET / HTT"));
+    try std.testing.expectError(ParseError.MalformedRequestLine, parseRequestHead("GET / HTTP/1.1 extra\r\n\r\n", .{}));
+    try std.testing.expectError(ParseError.Incomplete, parseRequestHead("GET / HTTP/1.1\r", .{})); // truncated
+    try std.testing.expectError(ParseError.UnsupportedHttpVersion, parseRequestHead("G / HTTP/2.0\r\n", .{}));
+    try std.testing.expectError(ParseError.UnsupportedHttpVersion, parseRequestHead("GE T / HTTP/1.1\r\n", .{}));
+    try std.testing.expectError(ParseError.Incomplete, parseRequestHead("GET / HTT", .{}));
 }
 
 test "parse response status line variants" {
-    const r1 = try parseResponseHead("HTTP/1.1 200 OK\r\nServer: x\r\n\r\n");
+    const r1 = try parseResponseHead("HTTP/1.1 200 OK\r\nServer: x\r\n\r\n", .{});
     try std.testing.expectEqual(@as(u16, 200), r1.statusCode);
     try std.testing.expectEqualStrings("OK", r1.reason);
 
-    const r2 = try parseResponseHead("HTTP/1.0 404 Not Found with words\r\n\r\n");
+    const r2 = try parseResponseHead("HTTP/1.0 404 Not Found with words\r\n\r\n", .{});
     try std.testing.expectEqual(@as(u16, 404), r2.statusCode);
     try std.testing.expectEqualStrings("Not Found with words", r2.reason);
 
-    const r3 = try parseResponseHead("HTTP/1.1 204\r\n\r\n");
+    const r3 = try parseResponseHead("HTTP/1.1 204\r\n\r\n", .{});
     try std.testing.expectEqual(@as(u16, 204), r3.statusCode);
     try std.testing.expectEqualStrings("", r3.reason);
 }
@@ -647,7 +635,7 @@ test "parse response status line variants" {
 test "header block parsing and validation" {
     const msg = "Host: example.com\r\nX-A: spaced\r\nX-B: v2\r\n\r\nbody";
     var fields: [8]Field = undefined;
-    const blk = try parseHeaderBlock(msg, 0, fields[0..]);
+    const blk = try parseHeaderBlock(msg, 0, fields[0..], .{});
     try std.testing.expectEqual(@as(usize, 3), blk.count);
     try std.testing.expectEqualStrings("example.com", fields[0].value);
     try std.testing.expectEqualStrings("spaced", fields[1].value);
@@ -657,11 +645,11 @@ test "header block parsing and validation" {
 test "header block rejects obs-fold and whitespace before colon" {
     const folded = "X-A: one\r\n  continued\r\n\r\n";
     var f1: [4]Field = undefined;
-    try std.testing.expectError(ParseError.ObsFold, parseHeaderBlock(folded, 0, f1[0..]));
+    try std.testing.expectError(ParseError.ObsFold, parseHeaderBlock(folded, 0, f1[0..], .{}));
 
     const wsc = "Host : x\r\n\r\n";
     var f2: [4]Field = undefined;
-    try std.testing.expectError(ParseError.MalformedHeaderLine, parseHeaderBlock(wsc, 0, f2[0..]));
+    try std.testing.expectError(ParseError.MalformedHeaderLine, parseHeaderBlock(wsc, 0, f2[0..], .{}));
 }
 
 test "framing decisions incl smuggling defenses" {
@@ -718,11 +706,11 @@ test "framing decisions incl smuggling defenses" {
     const r204 = try framingFull(&cl, .{ .isResponse = true, .status = 204, .methodLen = 4 });
     try std.testing.expectEqual(Framing.none, r204.framing);
 
-    const head_response = [_]Field{
+    const headResponse = [_]Field{
         .{ .name = "Content-Length", .value = "42" },
         .{ .name = "Transfer-Encoding", .value = "chunked" },
     };
-    const rhead = try framingFull(&head_response, .{ .isResponse = true, .status = 200, .methodLen = 4 });
+    const rhead = try framingFull(&headResponse, .{ .isResponse = true, .status = 200, .methodLen = 4 });
     try std.testing.expectEqual(Framing.none, rhead.framing);
 }
 
@@ -769,12 +757,12 @@ test "chunked decoder basic and incremental feeding" {
 }
 
 test "chunked decoder with extensions and trailers" {
-    var trailer_list = std.ArrayList(Field).empty;
-    defer trailer_list.deinit(std.testing.allocator);
+    var trailerList = std.ArrayList(Field).empty;
+    defer trailerList.deinit(std.testing.allocator);
 
     const input = "4;ext=1;x\r\nWiki\r\n0\r\nX-T: tv\r\nX-U: uv\r\n\r\nTAIL";
     var dec = ChunkedDecoder.init();
-    dec.trailers = &trailer_list;
+    dec.trailers = &trailerList;
     dec.trailerAllocator = std.testing.allocator;
     var buf: [96]u8 = undefined;
     @memcpy(buf[0..input.len], input);
@@ -782,9 +770,9 @@ test "chunked decoder with extensions and trailers" {
     try std.testing.expect(dec.isDone());
     try std.testing.expectEqualStrings("Wiki", buf[0..4]);
     try std.testing.expectEqualStrings("TAIL", buf[tail..input.len]);
-    try std.testing.expectEqual(@as(usize, 2), trailer_list.items.len);
-    try std.testing.expectEqualStrings("X-T", trailer_list.items[0].name);
-    try std.testing.expectEqualStrings("tv", trailer_list.items[0].value);
+    try std.testing.expectEqual(@as(usize, 2), trailerList.items.len);
+    try std.testing.expectEqualStrings("X-T", trailerList.items[0].name);
+    try std.testing.expectEqualStrings("tv", trailerList.items[0].value);
 }
 
 test "chunked decoder rejects malformed sizes and terminators" {
@@ -819,10 +807,10 @@ test "strict mode rejects bare LF in headers while lenient mode accepts it" {
     var fields: [4]Field = undefined;
 
     // Strict mode (default) must reject bare LF in header lines
-    try std.testing.expectError(ParseError.MalformedHeaderLine, parseHeaderBlock(raw, 16, fields[0..]));
+    try std.testing.expectError(ParseError.MalformedHeaderLine, parseHeaderBlock(raw, 16, fields[0..], .{}));
 
     // Lenient mode must parse bare LF lines successfully
-    const res = try parseHeaderBlockWithOptions(raw, 16, fields[0..], .{ .allowLfLineEndings = true });
+    const res = try parseHeaderBlock(raw, 16, fields[0..], .{ .allowLfLineEndings = true });
     try std.testing.expectEqual(@as(usize, 2), res.count);
     try std.testing.expectEqualStrings("Host", fields[0].name);
     try std.testing.expectEqualStrings("example.com", fields[0].value);
@@ -855,7 +843,7 @@ test "lone CR inside header value is treated as data byte, not line terminator" 
     const raw = "HTTP/1.1 200 OK\r\nHeader: v\rX: y\r\n\r\n";
     var fields: [4]Field = undefined;
 
-    const res = try parseHeaderBlockWithOptions(raw, 17, fields[0..], .{ .allowLfLineEndings = true });
+    const res = try parseHeaderBlock(raw, 17, fields[0..], .{ .allowLfLineEndings = true });
     try std.testing.expectEqual(@as(usize, 1), res.count);
     try std.testing.expectEqualStrings("Header", fields[0].name);
     try std.testing.expectEqualStrings("v\rX: y", fields[0].value);

@@ -1,6 +1,6 @@
 # Example: Sse Server
 
-Demonstrates sse_server.zig using the canonical HTTPX API.
+Demonstrates sseServer.zig using the canonical HTTPX API.
 
 ## Complete Example
 

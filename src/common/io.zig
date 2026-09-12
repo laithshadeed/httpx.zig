@@ -35,31 +35,31 @@ pub const IoContext = struct {
 /// once from the main thread before spawning workers.
 const sync = @import("sync.zig");
 
-var global_state: ?IoContext = null;
-var global_mutex: sync.Spinlock = .{};
+var globalState: ?IoContext = null;
+var globalMutex: sync.Spinlock = .{};
 
 pub fn globalInit(allocator: Allocator) !std.Io {
-    global_mutex.lock();
-    defer global_mutex.unlock();
-    if (global_state == null) {
-        global_state = try IoContext.init(allocator);
+    globalMutex.lock();
+    defer globalMutex.unlock();
+    if (globalState == null) {
+        globalState = try IoContext.init(allocator);
     }
-    return global_state.?.io;
+    return globalState.?.io;
 }
 
 pub fn globalDeinit() void {
-    global_mutex.lock();
-    defer global_mutex.unlock();
-    if (global_state) |*s| {
+    globalMutex.lock();
+    defer globalMutex.unlock();
+    if (globalState) |*s| {
         s.deinit();
-        global_state = null;
+        globalState = null;
     }
 }
 
 pub fn globalIo() ?std.Io {
-    global_mutex.lock();
-    defer global_mutex.unlock();
-    if (global_state) |s| return s.io;
+    globalMutex.lock();
+    defer globalMutex.unlock();
+    if (globalState) |s| return s.io;
     return null;
 }
 

@@ -1,7 +1,7 @@
 # Multi Page Website
 
 Serve a small website with multiple routes and shared assets. See
-`examples/static_site.zig` (filesystem) and `examples/website/` (embedded
+`examples/staticSite.zig` (filesystem) and `examples/website/` (embedded
 single-file).
 
 ```zig

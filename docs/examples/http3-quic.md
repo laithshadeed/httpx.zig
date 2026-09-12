@@ -1,6 +1,6 @@
 # Example: Http3 Quic
 
-Demonstrates http3_quic.zig using the canonical HTTPX API.
+Demonstrates http3Quic.zig using the canonical HTTPX API.
 
 ## Complete Example
 

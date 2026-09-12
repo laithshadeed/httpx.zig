@@ -1,9 +1,9 @@
 //! Bearer token (RFC 6750) and API-key Authorization helpers.
 
 const std = @import("std");
-const router_mod = @import("../router/router.zig");
+const routerMod = @import("../router/router.zig");
 
-pub const Scheme = enum { bearer, api_key };
+pub const Scheme = enum { bearer, apiKey };
 
 pub const Extracted = struct {
     scheme: Scheme,
@@ -37,7 +37,7 @@ pub fn verifyToken(actual: []const u8, expected: []const u8) bool {
 }
 
 /// Convenience: authorize a request context against one expected Bearer token.
-pub fn authorizeBearer(ctx: *const router_mod.Context, headerName: []const u8, expected: []const u8) bool {
+pub fn authorizeBearer(ctx: *const routerMod.Context, headerName: []const u8, expected: []const u8) bool {
     const hv = ctx.header(headerName) orelse return false;
     const tok = parseBearer(hv) orelse return false;
     return verifyToken(tok, expected);

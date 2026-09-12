@@ -26,4 +26,4 @@ try writer.writeEvent(&out, &[_][]const u8{"payload"}, "message", 1, null);
 return .{ .status = 200, .body = out.items, .contentType = "text/event-stream; charset=utf-8" };
 ```
 
-See `examples/sse_server.zig`.
+See `examples/sseServer.zig`.

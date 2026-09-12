@@ -3,7 +3,7 @@
 //! Layering: lives in net/ because it allocates result lists; tcp.connect
 //! stays a pure numeric-IP primitive that the CLIENT drives with our results.
 //!
-//! Windows: ws2_32.getaddrinfo (no libc needed).
+//! Windows: ws232.getaddrinfo (no libc needed).
 //! POSIX-with-libc: libc getaddrinfo.
 //! Other targets: error.ResolverUnsupported (documented limitation).
 //!
@@ -15,7 +15,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
-const address_mod = @import("address.zig");
+const addressMod = @import("address.zig");
 
 pub const Error = error{
     ResolverUnsupported,
@@ -50,7 +50,7 @@ pub const Resolver = struct {
     /// Uses the `std.Io` networking backend first, falling back to the OS
     /// resolver (or a localhost literal) when the backend cannot serve the
     /// query, so restricted environments still resolve local names.
-    pub fn lookup(self: Resolver, host: []const u8, opts: LookupOptions) Error![]address_mod.Address {
+    pub fn lookup(self: Resolver, host: []const u8, opts: LookupOptions) Error![]addressMod.Address {
         const port = opts.port;
         const addrs = lookupIoImpl(self.allocator, self.io, host, port) catch |err| switch (err) {
             error.HostNotFound, error.NoAddresses => return lookupImpl(self.allocator, host, port) catch return err,
@@ -60,22 +60,22 @@ pub const Resolver = struct {
     }
 };
 
-fn lookupIoImpl(allocator: Allocator, io: std.Io, host: []const u8, port: u16) Error![]address_mod.Address {
+fn lookupIoImpl(allocator: Allocator, io: std.Io, host: []const u8, port: u16) Error![]addressMod.Address {
     const hostname = std.Io.net.HostName.init(host) catch return error.HostNotFound;
     // Bounded queue: std guarantees lookup() never needs more than 16
     // outstanding slots; 128 total bounds memory for pathological answers.
-    var queue_buffer: [128]std.Io.net.HostName.LookupResult = undefined;
-    var queue: std.Io.Queue(std.Io.net.HostName.LookupResult) = .init(&queue_buffer);
+    var queueBuffer: [128]std.Io.net.HostName.LookupResult = undefined;
+    var queue: std.Io.Queue(std.Io.net.HostName.LookupResult) = .init(&queueBuffer);
     defer queue.close(io);
     std.Io.net.HostName.lookup(hostname, io, &queue, .{ .port = port }) catch return error.HostNotFound;
 
-    var out: std.ArrayList(address_mod.Address) = .empty;
+    var out: std.ArrayList(addressMod.Address) = .empty;
     errdefer out.deinit(allocator);
     while (queue.getOneUncancelable(io)) |result| switch (result) {
         .address => |addr| {
             switch (addr) {
                 .ip4 => |v| {
-                    var a = address_mod.Address{ .family = .ip4, .port = v.port };
+                    var a = addressMod.Address{ .family = .ip4, .port = v.port };
                     a.bytes[0..4].* = v.bytes;
                     try out.append(allocator, a);
                 },
@@ -90,13 +90,13 @@ fn lookupIoImpl(allocator: Allocator, io: std.Io, host: []const u8, port: u16) E
     return out.toOwnedSlice(allocator) catch error.OutOfMemory;
 }
 
-fn lookupImpl(allocator: Allocator, host: []const u8, port: u16) Error![]address_mod.Address {
+fn lookupImpl(allocator: Allocator, host: []const u8, port: u16) Error![]addressMod.Address {
     if (builtin.os.tag == .windows) return lookupWindows(allocator, host, port);
-    if (builtin.link_libc) return lookupPosix(allocator, host, port);
+    if (builtin.linkLibc) return lookupPosix(allocator, host, port);
     if (std.mem.eql(u8, host, "localhost")) {
-        var out: std.ArrayList(address_mod.Address) = .empty;
+        var out: std.ArrayList(addressMod.Address) = .empty;
         errdefer out.deinit(allocator);
-        var ip4 = address_mod.Address{ .family = .ip4, .port = port };
+        var ip4 = addressMod.Address{ .family = .ip4, .port = port };
         ip4.bytes[0..4].* = [_]u8{ 127, 0, 0, 1 };
         out.append(allocator, ip4) catch return error.OutOfMemory;
         return out.toOwnedSlice(allocator) catch error.OutOfMemory;
@@ -105,7 +105,7 @@ fn lookupImpl(allocator: Allocator, host: []const u8, port: u16) Error![]address
 }
 
 // Wire structs kept local so we don't depend on platform sockaddr exports.
-// Layouts follow the C definitions exactly (x86_64 & x86 safe: natural
+// Layouts follow the C definitions exactly (x8664 & x86 safe: natural
 // alignment of all members is <= pointer size and no implicit padding beyond
 // what these explicit fields produce).
 
@@ -129,15 +129,15 @@ const GenericSockaddr = extern struct {
     data: [126]u8 = [_]u8{0} ** 126,
 };
 
-fn decodeIn(sa: *const GenericSockaddr) address_mod.Address {
+fn decodeIn(sa: *const GenericSockaddr) addressMod.Address {
     const in: *const SockaddrIn = @ptrCast(@alignCast(sa));
-    var a = address_mod.Address{ .family = .ip4, .port = 0 };
+    var a = addressMod.Address{ .family = .ip4, .port = 0 };
     a.bytes[0..4].* = in.addr;
     a.port = std.mem.bigToNative(u16, in.port);
     return a;
 }
 
-fn decodeIn6(sa: *const GenericSockaddr) address_mod.Address {
+fn decodeIn6(sa: *const GenericSockaddr) addressMod.Address {
     const in6: *const SockaddrIn6 = @ptrCast(@alignCast(sa));
     return .{
         .family = .ip6,
@@ -149,7 +149,7 @@ fn decodeIn6(sa: *const GenericSockaddr) address_mod.Address {
 
 fn appendDecoded(
     allocator: Allocator,
-    out: *std.ArrayList(address_mod.Address),
+    out: *std.ArrayList(addressMod.Address),
     saFamily: u16,
     sa: *const GenericSockaddr,
     afInet: u16,
@@ -170,7 +170,7 @@ fn copyHostZ(host: []const u8, buf: *[256]u8) Error!void {
 
 // Windows
 
-// Wire ABI for ws2_32 GetAddrInfoW.
+// Wire ABI for ws232 GetAddrInfoW.
 const WinAddrinfoW = extern struct {
     flags: i32,
     family: i32,
@@ -191,7 +191,7 @@ const WinHints = extern struct {
     addr: ?*GenericSockaddr = null,
     next: ?*WinAddrinfoW = null,
 };
-const ws2_ffi = struct {
+const ws2Ffi = struct {
     extern "ws2_32" fn GetAddrInfoW(
         nodename: [*:0]const u16,
         service: [*:0]const u16,
@@ -222,7 +222,7 @@ const PosixHints = extern struct {
     addr: ?*GenericSockaddr = null,
     next: ?*PosixAddrinfo = null,
 };
-const posix_ffi = struct {
+const posixFfi = struct {
     extern "c" fn getaddrinfo(
         node: [*:0]const u8,
         service: [*:0]const u8,
@@ -231,32 +231,32 @@ const posix_ffi = struct {
     ) callconv(.c) i32;
     extern "c" fn freeaddrinfo(res: *PosixAddrinfo) callconv(.c) void;
 };
-fn lookupWindows(allocator: Allocator, host: []const u8, port: u16) Error![]address_mod.Address {
+fn lookupWindows(allocator: Allocator, host: []const u8, port: u16) Error![]addressMod.Address {
     const tcp = @import("../sockets/tcp.zig");
     tcp.initWinsock();
 
-    var host_wide: [256]u16 = undefined;
-    const host_wlen = std.unicode.utf8ToUtf16Le(host_wide[0..255], host) catch return error.HostNotFound;
-    host_wide[host_wlen] = 0;
+    var hostWide: [256]u16 = undefined;
+    const hostWlen = std.unicode.utf8ToUtf16Le(hostWide[0..255], host) catch return error.HostNotFound;
+    hostWide[hostWlen] = 0;
 
-    var port_buf: [8]u8 = undefined;
-    const port_str = std.fmt.bufPrint(&port_buf, "{d}", .{port}) catch return error.HostNotFound;
-    var port_wide: [8]u16 = undefined;
-    const port_wlen = std.unicode.utf8ToUtf16Le(port_wide[0..7], port_str) catch return error.HostNotFound;
-    port_wide[port_wlen] = 0;
+    var portBuf: [8]u8 = undefined;
+    const portStr = std.fmt.bufPrint(&portBuf, "{d}", .{port}) catch return error.HostNotFound;
+    var portWide: [8]u16 = undefined;
+    const portWlen = std.unicode.utf8ToUtf16Le(portWide[0..7], portStr) catch return error.HostNotFound;
+    portWide[portWlen] = 0;
 
     var hints = WinHints{};
     var result: ?*WinAddrinfoW = null;
-    const rc = ws2_ffi.GetAddrInfoW(@ptrCast(&host_wide), @ptrCast(&port_wide), &hints, &result);
+    const rc = ws2Ffi.GetAddrInfoW(@ptrCast(&hostWide), @ptrCast(&portWide), &hints, &result);
     if (rc != 0) {
         return switch (rc) {
             11001, 11002 => error.HostNotFound, // WSAHOST_NOT_FOUND / TRY_AGAIN
             else => error.TemporaryFailure,
         };
     }
-    defer if (result) |r| ws2_ffi.FreeAddrInfoW(r);
+    defer if (result) |r| ws2Ffi.FreeAddrInfoW(r);
 
-    var out: std.ArrayList(address_mod.Address) = .empty;
+    var out: std.ArrayList(addressMod.Address) = .empty;
     errdefer out.deinit(allocator);
     var it: ?*WinAddrinfoW = result;
     while (it) |ai| : (it = ai.next) {
@@ -267,23 +267,23 @@ fn lookupWindows(allocator: Allocator, host: []const u8, port: u16) Error![]addr
     if (out.items.len == 0) return error.NoAddresses;
     return out.toOwnedSlice(allocator) catch error.OutOfMemory;
 }
-fn lookupPosix(allocator: Allocator, host: []const u8, port: u16) Error![]address_mod.Address {
+fn lookupPosix(allocator: Allocator, host: []const u8, port: u16) Error![]addressMod.Address {
     const afInet: u16 = 2;
     const afInet6: u16 = if (builtin.os.tag == .linux) 10 else 30;
 
-    var host_z: [256]u8 = undefined;
-    try copyHostZ(host, &host_z);
-    var port_buf: [8]u8 = undefined;
-    const port_str = std.fmt.bufPrint(&port_buf, "{d}", .{port}) catch return error.HostNotFound;
-    port_buf[port_str.len] = 0;
+    var hostZ: [256]u8 = undefined;
+    try copyHostZ(host, &hostZ);
+    var portBuf: [8]u8 = undefined;
+    const portStr = std.fmt.bufPrint(&portBuf, "{d}", .{port}) catch return error.HostNotFound;
+    portBuf[portStr.len] = 0;
 
     var hints = PosixHints{};
     var result: ?*PosixAddrinfo = null;
-    if (posix_ffi.getaddrinfo(@ptrCast(&host_z), @ptrCast(&port_buf), &hints, &result) != 0)
+    if (posixFfi.getaddrinfo(@ptrCast(&hostZ), @ptrCast(&portBuf), &hints, &result) != 0)
         return error.HostNotFound;
-    defer if (result) |r| posix_ffi.freeaddrinfo(r);
+    defer if (result) |r| posixFfi.freeaddrinfo(r);
 
-    var out: std.ArrayList(address_mod.Address) = .empty;
+    var out: std.ArrayList(addressMod.Address) = .empty;
     errdefer out.deinit(allocator);
     var it: ?*PosixAddrinfo = result;
     while (it) |ai| : (it = ai.next) {

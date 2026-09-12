@@ -1,7 +1,7 @@
 # HTTP/3 Client Runtime Example
 
 End-to-end HTTP/3 with the high-level client runtime (`.http3 = true`).
-See `examples/http3_client.zig`.
+See `examples/http3Client.zig`.
 
 ```zig
 var client = httpx.Client.init(allocator, io, .{

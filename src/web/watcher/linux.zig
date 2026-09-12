@@ -38,7 +38,7 @@ pub const RawEvent = struct {
     name: []u8,
     kind: RawKind,
     cookie: u32 = 0,
-    is_dir: bool = false,
+    isDir: bool = false,
 
     pub fn deinit(self: *RawEvent, allocator: Allocator) void {
         allocator.free(self.dir);
@@ -51,8 +51,8 @@ pub const RawKind = enum {
     deleted,
     modified,
     attrib,
-    moved_from,
-    moved_to,
+    movedFrom,
+    movedTo,
     overflow,
     ignored,
 };
@@ -62,7 +62,7 @@ pub const RawKind = enum {
 /// a failure. Never @intCast blindly: a missed error would abort the
 /// process with "integer does not fit in destination type" instead of
 /// surfacing a catchable WatchInitFailed.
-fn syscallFd(rc: usize) !std.posix.fd_t {
+fn syscallFd(rc: usize) !std.posix.fdT {
     const signed: isize = @bitCast(rc);
     if (signed < 0) return error.WatchInitFailed;
     return @intCast(signed);
@@ -71,7 +71,7 @@ fn syscallFd(rc: usize) !std.posix.fd_t {
 pub const Backend = struct {
     allocator: Allocator,
     io: std.Io,
-    fd: std.posix.fd_t = -1,
+    fd: std.posix.fdT = -1,
     /// wd -> watched directory path (owned).
     watches: std.AutoHashMap(i32, []u8),
     root: []u8 = &.{},
@@ -84,7 +84,7 @@ pub const Backend = struct {
             .watches = std.AutoHashMap(i32, []u8).init(allocator),
         };
         errdefer self.deinit();
-        self.fd = try syscallFd(linux.inotify_init1(IN_NONBLOCK | IN_CLOEXEC));
+        self.fd = try syscallFd(linux.inotifyInit1(IN_NONBLOCK | IN_CLOEXEC));
         self.root = try allocator.dupe(u8, root);
         try self.watchRecursive(root);
         return self;
@@ -106,7 +106,7 @@ pub const Backend = struct {
     fn watchDir(self: *Backend, path: []const u8) void {
         const cpath = self.allocator.dupeZ(u8, path) catch return;
         defer self.allocator.free(cpath);
-        const wd: i32 = syscallFd(linux.inotify_add_watch(self.fd, cpath, WATCH_MASK | IN_ONLYDIR)) catch return;
+        const wd: i32 = syscallFd(linux.inotifyAddWatch(self.fd, cpath, WATCH_MASK | IN_ONLYDIR)) catch return;
         if (self.watches.getPtr(wd)) |old| {
             self.allocator.free(old.*);
             old.* = self.allocator.dupe(u8, path) catch return;
@@ -134,9 +134,9 @@ pub const Backend = struct {
         }
     }
 
-    /// Blocks up to timeout_ms for events; returns owned events.
+    /// Blocks up to timeoutMs for events; returns owned events.
     /// Sets `dirty` when the kernel reports overflow or ignored watches.
-    pub fn poll(self: *Backend, allocator: Allocator, timeout_ms: i32) ![]RawEvent {
+    pub fn poll(self: *Backend, allocator: Allocator, timeoutMs: i32) ![]RawEvent {
         var out = std.ArrayList(RawEvent).empty;
         errdefer {
             for (out.items) |*e| e.deinit(allocator);
@@ -148,7 +148,7 @@ pub const Backend = struct {
             .events = std.posix.POLL.IN,
             .revents = 0,
         }};
-        const ready = std.posix.poll(&pfd, timeout_ms) catch return out.toOwnedSlice(allocator);
+        const ready = std.posix.poll(&pfd, timeoutMs) catch return out.toOwnedSlice(allocator);
         if (ready == 0) return out.toOwnedSlice(allocator);
         var buf: [65536]u8 = undefined;
         while (true) {
@@ -158,14 +158,14 @@ pub const Backend = struct {
             };
             if (n == 0) break;
             var off: usize = 0;
-            while (off + @sizeOf(linux.inotify_event) <= n) {
-                const ev: *const linux.inotify_event = @ptrCast(@alignCast(&buf[off]));
-                const name_len: usize = ev.len;
-                const name = if (name_len > 0 and off + @sizeOf(linux.inotify_event) + name_len <= n)
-                    std.mem.span(@as([*:0]const u8, @ptrCast(&buf[off + @sizeOf(linux.inotify_event)])))
+            while (off + @sizeOf(linux.inotifyEvent) <= n) {
+                const ev: *const linux.inotifyEvent = @ptrCast(@alignCast(&buf[off]));
+                const nameLen: usize = ev.len;
+                const name = if (nameLen > 0 and off + @sizeOf(linux.inotifyEvent) + nameLen <= n)
+                    std.mem.span(@as([*:0]const u8, @ptrCast(&buf[off + @sizeOf(linux.inotifyEvent)])))
                 else
                     "";
-                off += @sizeOf(linux.inotify_event) + name_len;
+                off += @sizeOf(linux.inotifyEvent) + nameLen;
                 try self.translate(allocator, &out, ev, name);
                 if (self.dirty) break;
             }
@@ -174,7 +174,7 @@ pub const Backend = struct {
         return out.toOwnedSlice(allocator);
     }
 
-    fn translate(self: *Backend, allocator: Allocator, out: *std.ArrayList(RawEvent), ev: *const linux.inotify_event, name: []const u8) !void {
+    fn translate(self: *Backend, allocator: Allocator, out: *std.ArrayList(RawEvent), ev: *const linux.inotifyEvent, name: []const u8) !void {
         const mask = ev.mask;
         const dir = if (self.watches.get(ev.wd)) |d| d else return;
         if (mask & IN_Q_OVERFLOW != 0) {
@@ -183,7 +183,7 @@ pub const Backend = struct {
                 .dir = try allocator.dupe(u8, dir),
                 .name = try allocator.dupe(u8, ""),
                 .kind = .overflow,
-                .is_dir = false,
+                .isDir = false,
             });
             return;
         }
@@ -194,11 +194,11 @@ pub const Backend = struct {
             self.dirty = true;
             return;
         }
-        const is_dir = mask & IN_ISDIR != 0;
-        const base_kind: ?RawKind = if (mask & IN_MOVED_FROM != 0)
-            .moved_from
+        const isDir = mask & IN_ISDIR != 0;
+        const baseKind: ?RawKind = if (mask & IN_MOVED_FROM != 0)
+            .movedFrom
         else if (mask & IN_MOVED_TO != 0)
-            .moved_to
+            .movedTo
         else if (mask & IN_CREATE != 0)
             .created
         else if (mask & IN_DELETE != 0)
@@ -211,8 +211,8 @@ pub const Backend = struct {
             .deleted
         else
             null;
-        const kind = base_kind orelse return;
-        if (kind == .created and is_dir) {
+        const kind = baseKind orelse return;
+        if (kind == .created and isDir) {
             var buf: [1024]u8 = undefined;
             if (std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir, name }) catch null) |full| {
                 self.watchDir(full);
@@ -223,7 +223,7 @@ pub const Backend = struct {
             .name = try allocator.dupe(u8, name),
             .kind = kind,
             .cookie = ev.cookie,
-            .is_dir = is_dir,
+            .isDir = isDir,
         });
     }
 };
@@ -232,12 +232,12 @@ test "inotify backend watches and reports a write" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
     const a = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const fs_mod = @import("../../utils/fs.zig");
+    const fsMod = @import("../../utils/fs.zig");
     const root = ".zig-cache/tmp-inotify-probe";
     {
         const cwd: std.Io.Dir = .cwd();
-        cwd.createDir(io, ".zig-cache", .default_dir) catch {};
-        cwd.createDir(io, root, .default_dir) catch {};
+        cwd.createDir(io, ".zig-cache", .defaultDir) catch {};
+        cwd.createDir(io, root, .defaultDir) catch {};
     }
     defer {
         const cwd: std.Io.Dir = .cwd();
@@ -247,7 +247,7 @@ test "inotify backend watches and reports a write" {
     defer backend.deinit();
     const fpath = try std.fmt.allocPrint(a, "{s}/w.txt", .{root});
     defer a.free(fpath);
-    try fs_mod.writeFile(fpath, "hello");
+    try fsMod.writeFile(fpath, "hello");
     const evs = try backend.poll(a, 2000);
     defer {
         for (evs) |*e| {

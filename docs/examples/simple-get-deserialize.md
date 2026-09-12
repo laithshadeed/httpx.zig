@@ -1,7 +1,7 @@
 # Simple Get Deserialize
 
 Parse JSON responses into typed Zig structs with `Response.json(T)`.
-See `examples/post_json.zig`.
+See `examples/postJson.zig`.
 
 ```zig
 const User = struct { id: u64, name: []const u8, email: []const u8 };

@@ -78,7 +78,7 @@ const cFs = struct {
             if (h == INVALID_HANDLE_VALUE) return null;
             return h;
         } else {
-            const fd = std.c.open(&buf, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
+            const fd = std.c.open(&buf, .{ .ACCMODE = .RDONLY }, @as(std.c.modeT, 0));
             if (fd < 0) return null;
             return fd;
         }
@@ -100,7 +100,7 @@ const cFs = struct {
                 .CREAT = true,
                 .TRUNC = true,
             };
-            const fd = std.c.open(&buf, flags, @as(std.c.mode_t, 0o666));
+            const fd = std.c.open(&buf, flags, @as(std.c.modeT, 0o666));
             if (fd < 0) return null;
             return fd;
         }
@@ -121,23 +121,23 @@ pub fn writeFile(path: []const u8, content: []const u8) !void {
         const h = cFs.openWrite(path) orelse return error.WriteFailed;
         defer cFs.close(h);
 
-        var total_written: usize = 0;
-        while (total_written < content.len) {
+        var totalWritten: usize = 0;
+        while (totalWritten < content.len) {
             var bytesWritten: u32 = 0;
-            const to_write: u32 = @intCast(@min(content.len - total_written, std.math.maxInt(u32)));
-            if (cFs.WriteFile(h, content[total_written..].ptr, to_write, &bytesWritten, null) == .FALSE) return error.WriteFailed;
+            const toWrite: u32 = @intCast(@min(content.len - totalWritten, std.math.maxInt(u32)));
+            if (cFs.WriteFile(h, content[totalWritten..].ptr, toWrite, &bytesWritten, null) == .FALSE) return error.WriteFailed;
             if (bytesWritten == 0) return error.WriteFailed;
-            total_written += bytesWritten;
+            totalWritten += bytesWritten;
         }
     } else {
         const fd = cFs.openWrite(path) orelse return error.WriteFailed;
         defer cFs.close(fd);
 
-        var total_written: usize = 0;
-        while (total_written < content.len) {
-            const rc = std.c.write(fd, content[total_written..].ptr, content.len - total_written);
+        var totalWritten: usize = 0;
+        while (totalWritten < content.len) {
+            const rc = std.c.write(fd, content[totalWritten..].ptr, content.len - totalWritten);
             if (rc <= 0) return error.WriteFailed;
-            total_written += @intCast(rc);
+            totalWritten += @intCast(rc);
         }
     }
 }
@@ -158,11 +158,11 @@ pub fn readFileLimited(allocator: Allocator, path: []const u8, maxBytes: usize) 
 
         var totalRead: usize = 0;
         while (totalRead < buf.len) {
-            var bytes_read: u32 = 0;
-            const to_read: u32 = @intCast(@min(buf.len - totalRead, std.math.maxInt(u32)));
-            if (cFs.ReadFile(h, buf[totalRead..].ptr, to_read, &bytes_read, null) == .FALSE) return error.ReadFailed;
-            if (bytes_read == 0) break;
-            totalRead += bytes_read;
+            var bytesRead: u32 = 0;
+            const toRead: u32 = @intCast(@min(buf.len - totalRead, std.math.maxInt(u32)));
+            if (cFs.ReadFile(h, buf[totalRead..].ptr, toRead, &bytesRead, null) == .FALSE) return error.ReadFailed;
+            if (bytesRead == 0) break;
+            totalRead += bytesRead;
         }
         if (totalRead < buf.len) return error.UnexpectedEof;
     } else {
@@ -220,9 +220,9 @@ pub fn statPath(io: ?std.Io, path: []const u8) ?Stat {
         var ft: std.os.windows.FILETIME = undefined;
         if (cFs.GetFileTime(h, null, null, &ft) == .FALSE) return null;
 
-        const ft_u64: u64 = (@as(u64, ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
-        const windows_epoch_diff: i128 = 116444736000000000;
-        const mtimeNs = (@as(i128, ft_u64) - windows_epoch_diff) * 100;
+        const ftU64: u64 = (@as(u64, ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+        const windowsEpochDiff: i128 = 116444736000000000;
+        const mtimeNs = (@as(i128, ftU64) - windowsEpochDiff) * 100;
 
         return Stat{
             .size = @intCast(@max(0, size)),
@@ -230,12 +230,12 @@ pub fn statPath(io: ?std.Io, path: []const u8) ?Stat {
             .isDir = false,
         };
     } else if (builtin.os.tag == .linux) {
-        var null_term: [1024:0]u8 = undefined;
-        if (path.len >= null_term.len) return null;
-        @memcpy(null_term[0..path.len], path);
-        null_term[path.len] = 0;
+        var nullTerm: [1024:0]u8 = undefined;
+        if (path.len >= nullTerm.len) return null;
+        @memcpy(nullTerm[0..path.len], path);
+        nullTerm[path.len] = 0;
 
-        var statx_buf: std.os.linux.Statx = undefined;
+        var statxBuf: std.os.linux.Statx = undefined;
         const mask: std.os.linux.STATX = .{
             .TYPE = true,
             .SIZE = true,
@@ -243,29 +243,29 @@ pub fn statPath(io: ?std.Io, path: []const u8) ?Stat {
         };
         const rc = std.os.linux.statx(
             std.posix.AT.FDCWD,
-            &null_term,
+            &nullTerm,
             0,
             mask,
-            &statx_buf,
+            &statxBuf,
         );
         if (@as(isize, @bitCast(rc)) < 0) return null;
-        const isDirectory = (statx_buf.mode & std.os.linux.S.IFMT) == std.os.linux.S.IFDIR;
+        const isDirectory = (statxBuf.mode & std.os.linux.S.IFMT) == std.os.linux.S.IFDIR;
 
-        const mtimeNs = @as(i128, statx_buf.mtime.sec) * std.time.ns_per_s + @as(i128, statx_buf.mtime.nsec);
+        const mtimeNs = @as(i128, statxBuf.mtime.sec) * std.time.nsPerS + @as(i128, statxBuf.mtime.nsec);
         return Stat{
-            .size = statx_buf.size,
+            .size = statxBuf.size,
             .mtimeNs = mtimeNs,
             .isDir = isDirectory,
         };
     } else {
-        var null_term: [1024:0]u8 = undefined;
-        if (path.len >= null_term.len) return null;
-        @memcpy(null_term[0..path.len], path);
-        null_term[path.len] = 0;
+        var nullTerm: [1024:0]u8 = undefined;
+        if (path.len >= nullTerm.len) return null;
+        @memcpy(nullTerm[0..path.len], path);
+        nullTerm[path.len] = 0;
 
-        const stat_fn = switch (builtin.os.tag) {
+        const statFn = switch (builtin.os.tag) {
             .driverkit, .ios, .maccatalyst, .macos, .tvos, .visionos, .watchos => switch (builtin.cpu.arch) {
-                .x86_64 => struct {
+                .x8664 => struct {
                     extern "c" fn @"stat$INODE64"(noalias p: [*:0]const u8, noalias b: *std.c.Stat) c_int;
                 }.@"stat$INODE64",
                 else => struct {
@@ -278,12 +278,12 @@ pub fn statPath(io: ?std.Io, path: []const u8) ?Stat {
         };
 
         var st: std.c.Stat = undefined;
-        if (stat_fn(&null_term, &st) != 0) return null;
+        if (statFn(&nullTerm, &st) != 0) return null;
         const isDirectory = std.c.S.ISDIR(st.mode);
 
         return Stat{
             .size = @intCast(@max(0, st.size)),
-            .mtimeNs = @as(i128, st.mtime().sec) * std.time.ns_per_s + @as(i128, st.mtime().nsec),
+            .mtimeNs = @as(i128, st.mtime().sec) * std.time.nsPerS + @as(i128, st.mtime().nsec),
             .isDir = isDirectory,
         };
     }
@@ -310,21 +310,21 @@ pub fn deleteFile(path: []const u8) !void {
 
 test "fs write, read, stat, delete" {
     const a = std.testing.allocator;
-    const test_path = "test_canonical_fs.tmp";
-    defer deleteFile(test_path) catch {};
+    const testPath = "test_canonical_fs.tmp";
+    defer deleteFile(testPath) catch {};
 
-    try writeFile(test_path, "Hello Canonical FS!");
-    try std.testing.expect(fileExists(test_path));
+    try writeFile(testPath, "Hello Canonical FS!");
+    try std.testing.expect(fileExists(testPath));
 
-    const st = statPath(null, test_path);
+    const st = statPath(null, testPath);
     try std.testing.expect(st != null);
     try std.testing.expectEqual(@as(u64, 19), st.?.size);
     try std.testing.expect(!st.?.isDir);
 
-    const content = try readFileAlloc(a, test_path);
+    const content = try readFileAlloc(a, testPath);
     defer a.free(content);
     try std.testing.expectEqualStrings("Hello Canonical FS!", content);
 
-    try deleteFile(test_path);
-    try std.testing.expect(!fileExists(test_path));
+    try deleteFile(testPath);
+    try std.testing.expect(!fileExists(testPath));
 }

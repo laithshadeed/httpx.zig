@@ -10,44 +10,44 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const tls = std.crypto.tls;
 const x25519 = std.crypto.dh.X25519;
-const Aes128Gcm = std.crypto.aead.aes_gcm.Aes128Gcm;
+const Aes128Gcm = std.crypto.aead.aesGcm.Aes128Gcm;
 const HkdfSha256 = std.crypto.kdf.hkdf.HkdfSha256;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
-const record_mod = @import("record.zig");
-const handshake_mod = @import("handshake.zig");
-const Transcript = handshake_mod.Transcript;
-const HashLen = handshake_mod.HashLen;
+const recordMod = @import("record.zig");
+const handshakeMod = @import("handshake.zig");
+const Transcript = handshakeMod.Transcript;
+const HashLen = handshakeMod.HashLen;
 const EcdsaP256 = std.crypto.sign.ecdsa.EcdsaP256Sha256;
 const P256 = std.crypto.ecc.P256;
 const certMod = @import("certificate.zig");
-const verify_mod = @import("verify.zig");
+const verifyMod = @import("verify.zig");
 const trustStoreMod = @import("trustStore.zig");
-const clock_mod = @import("../../common/clock.zig");
+const clockMod = @import("../../common/clock.zig");
 
-const alpn_mod = @import("alpn.zig");
-const session_mod = @import("session.zig");
+const alpnMod = @import("alpn.zig");
+const sessionMod = @import("session.zig");
 
 // Random helper — OS CSPRNG when available, otherwise deterministic PRNG
 
-var random_counter: u64 = 0x9E3779B97F4A7C15;
+var randomCounter: u64 = 0x9E3779B97F4A7C15;
 
 fn fillRandom(buf: []u8) void {
     if (@hasDecl(std.posix, "getrandom")) {
         std.posix.getrandom(buf) catch {
-            random_counter +%= 1;
-            var prng = std.Random.DefaultPrng.init(random_counter ^ 0x123456789ABCDEF0);
+            randomCounter +%= 1;
+            var prng = std.Random.DefaultPrng.init(randomCounter ^ 0x123456789ABCDEF0);
             prng.random().bytes(buf);
         };
         return;
     }
-    random_counter +%= 1;
-    var prng = std.Random.DefaultPrng.init(random_counter ^ 0x123456789ABCDEF0);
+    randomCounter +%= 1;
+    var prng = std.Random.DefaultPrng.init(randomCounter ^ 0x123456789ABCDEF0);
     prng.random().bytes(buf);
 }
 
 // HKDF-Expand-Label (RFC 8446 Section 7.1)
-// info = uint16(len) || uint8(6 + label.len) || "tls13 " || label || uint8(context_len) || context
+// info = uint16(len) || uint8(6 + label.len) || "tls13 " || label || uint8(contextLen) || context
 // For Derive-Secret, context is the transcript hash; for key/iv expansion, context is empty.
 pub fn hkdfExpandLabel(prk: [32]u8, comptime label: []const u8, out: []u8) void {
     hkdfExpandLabelWithContext(prk, label, &.{}, out);
@@ -55,28 +55,28 @@ pub fn hkdfExpandLabel(prk: [32]u8, comptime label: []const u8, out: []u8) void 
 
 pub fn hkdfExpandLabelWithContext(prk: [32]u8, comptime label: []const u8, context: []const u8, out: []u8) void {
     const fullLabel = "tls13 " ++ label;
-    var info_buf: [2 + 1 + 64 + 1 + 32]u8 = undefined;
+    var infoBuf: [2 + 1 + 64 + 1 + 32]u8 = undefined;
     const total: u16 = @intCast(out.len);
     var w: usize = 0;
-    info_buf[w] = @intCast(total >> 8);
-    info_buf[w + 1] = @intCast(total & 0xFF);
+    infoBuf[w] = @intCast(total >> 8);
+    infoBuf[w + 1] = @intCast(total & 0xFF);
     w += 2;
-    info_buf[w] = @intCast(fullLabel.len);
+    infoBuf[w] = @intCast(fullLabel.len);
     w += 1;
-    @memcpy(info_buf[w..][0..fullLabel.len], fullLabel);
+    @memcpy(infoBuf[w..][0..fullLabel.len], fullLabel);
     w += fullLabel.len;
-    info_buf[w] = @intCast(context.len);
+    infoBuf[w] = @intCast(context.len);
     w += 1;
     if (context.len > 0) {
-        @memcpy(info_buf[w..][0..context.len], context);
+        @memcpy(infoBuf[w..][0..context.len], context);
         w += context.len;
     }
-    HkdfSha256.expand(out, info_buf[0..w], prk);
+    HkdfSha256.expand(out, infoBuf[0..w], prk);
 }
 
-fn deriveSecret(prk: [32]u8, comptime label: []const u8, transcript_hash: [32]u8) [32]u8 {
+fn deriveSecret(prk: [32]u8, comptime label: []const u8, transcriptHash: [32]u8) [32]u8 {
     var out: [32]u8 = undefined;
-    hkdfExpandLabelWithContext(prk, label, &transcript_hash, &out);
+    hkdfExpandLabelWithContext(prk, label, &transcriptHash, &out);
     return out;
 }
 
@@ -112,8 +112,8 @@ pub const Callbacks = struct {
     onHandshakeData: *const fn (ctx: ?*anyopaque, level: EncryptionLevel, data: []const u8) void = struct {
         fn noOp(_: ?*anyopaque, _: EncryptionLevel, _: []const u8) void {}
     }.noOp,
-    onAlert: *const fn (ctx: ?*anyopaque, alert: handshake_mod.Alert) void = struct {
-        fn noOp(_: ?*anyopaque, _: handshake_mod.Alert) void {}
+    onAlert: *const fn (ctx: ?*anyopaque, alert: handshakeMod.Alert) void = struct {
+        fn noOp(_: ?*anyopaque, _: handshakeMod.Alert) void {}
     }.noOp,
 };
 
@@ -126,7 +126,7 @@ pub const DerivedKeys = struct {
     serverKey: [32]u8 = undefined,
     serverKeyLen: u8 = 16,
     serverIv: [12]u8 = undefined,
-    cipher: record_mod.RecordCipher = .aes_128_gcm,
+    cipher: recordMod.RecordCipher = .aes128Gcm,
 
     pub fn clientKeySlice(self: *const DerivedKeys) []const u8 {
         return self.clientKey[0..self.clientKeyLen];
@@ -176,12 +176,12 @@ pub const Engine = struct {
     pskSuite: ?tls.CipherSuite = null,
     /// Server-side ticket keys for issuing/verifying NST tickets. When
     /// null the server never selects PSK (silent full-handshake fallback).
-    ticketKeys: ?session_mod.TicketKeys = null,
+    ticketKeys: ?sessionMod.TicketKeys = null,
     /// HelloRetryRequest already seen (client) — a second one aborts.
     hrrSeen: bool = false,
     /// Set by `processServerHello` when it consumed a HelloRetryRequest:
     /// the selected group the retry ClientHello must share.
-    hrrPendingGroup: ?handshake_mod.NamedGroup = null,
+    hrrPendingGroup: ?handshakeMod.NamedGroup = null,
     /// HelloRetryRequest already sent (server) — never send twice.
     hrrSent: bool = false,
 
@@ -213,18 +213,18 @@ pub const Engine = struct {
 
     pub const State = enum {
         start,
-        client_hello_sent,
-        server_hello_received,
-        handshake_keys_derived,
-        encrypted_extensions_received,
+        clientHelloSent,
+        serverHelloReceived,
+        handshakeKeysDerived,
+        encryptedExtensionsReceived,
         certificateReceived,
-        certificate_verify_received,
+        certificateVerifyReceived,
         finishedReceived,
         handshakeComplete,
         // Server states
-        client_hello_received,
-        server_hello_sent,
-        server_finished_sent,
+        clientHelloReceived,
+        serverHelloSent,
+        serverFinishedSent,
     };
 
     pub fn initClient(allocator: Allocator, cbs: Callbacks) Engine {
@@ -263,7 +263,7 @@ pub const Engine = struct {
     /// True for cipher suites our SHA-256-only schedule can resume with.
     /// Canonical policy lives in `session.zig` (single definition).
     pub fn suiteSupportsResumption(suite: tls.CipherSuite) bool {
-        return session_mod.suiteSupportsResumption(suite);
+        return sessionMod.suiteSupportsResumption(suite);
     }
 
     /// Derive the handshake secret from the ECDHE shared secret.
@@ -275,31 +275,24 @@ pub const Engine = struct {
         const ss = self.sharedSecret orelse return;
         const zero: [32]u8 = .{0} ** 32;
         const psk = self.resumptionPsk orelse zero;
-        const early_secret = HkdfSha256.extract(&zero, &psk);
+        const earlySecret = HkdfSha256.extract(&zero, &psk);
         // Derive-Secret(., "derived", "") hashes the EMPTY transcript, not
         // an empty context string (RFC 8446 Section 7.1).
-        var empty_copy = Transcript.init();
-        const empty_hash = empty_copy.finish();
+        var emptyCopy = Transcript.init();
+        const emptyHash = emptyCopy.finish();
         var derived: [32]u8 = undefined;
-        hkdfExpandLabelWithContext(early_secret, "derived", &empty_hash, &derived);
+        hkdfExpandLabelWithContext(earlySecret, "derived", &emptyHash, &derived);
         self.handshakeSecret = HkdfSha256.extract(&derived, &ss);
     }
 
     // Client-side handshake
 
     /// Produces the ClientHello message and generates the ephemeral keypair.
+    /// Pass null serverName/quicTransportParams for plain TCP TLS.
     pub fn produceClientHello(
         self: *Engine,
         alpnProtocols: []const []const u8,
-        signatureAlgorithms: []const handshake_mod.SignatureScheme,
-    ) ![]u8 {
-        return self.produceClientHelloWithSni(alpnProtocols, signatureAlgorithms, null, null);
-    }
-
-    pub fn produceClientHelloWithSni(
-        self: *Engine,
-        alpnProtocols: []const []const u8,
-        signatureAlgorithms: []const handshake_mod.SignatureScheme,
+        signatureAlgorithms: []const handshakeMod.SignatureScheme,
         serverName: ?[]const u8,
         quicTransportParams: ?[]const u8,
     ) ![]u8 {
@@ -309,7 +302,7 @@ pub const Engine = struct {
         self.localKeypair = try x25519.KeyPair.generateDeterministic(seed);
         const pubkey = self.localKeypair.public_key;
 
-        const ch = handshake_mod.ClientHello{
+        const ch = handshakeMod.ClientHello{
             .random = blk: {
                 var r: [32]u8 = undefined;
                 fillRandom(&r);
@@ -334,7 +327,7 @@ pub const Engine = struct {
 
         // Feed entire ClientHello to transcript hash
         self.transcript.feed(encoded);
-        self.state = .client_hello_sent;
+        self.state = .clientHelloSent;
 
         // Notify transport layer
         self.cbs.onHandshakeData(self.cbs.ctx, .initial, encoded);
@@ -343,7 +336,7 @@ pub const Engine = struct {
     }
 
     /// Produces a ClientHello offering one resumption PSK (RFC 8446
-    /// 4.2.11) alongside a fresh (EC)DHE share (psk_dhe_ke). The session
+    /// 4.2.11) alongside a fresh (EC)DHE share (pskDheKe). The session
     /// must be usable for `serverName` (host binding is checked by the
     /// caller via `ClientSession.isUsable`).
     ///
@@ -354,9 +347,9 @@ pub const Engine = struct {
     pub fn produceClientHelloResumption(
         self: *Engine,
         alpnProtocols: []const []const u8,
-        signatureAlgorithms: []const handshake_mod.SignatureScheme,
+        signatureAlgorithms: []const handshakeMod.SignatureScheme,
         serverName: ?[]const u8,
-        session: *const session_mod.ClientSession,
+        session: *const sessionMod.ClientSession,
         nowMs: u64,
     ) ![]u8 {
         var seed: [32]u8 = undefined;
@@ -364,7 +357,7 @@ pub const Engine = struct {
         self.localKeypair = try x25519.KeyPair.generateDeterministic(seed);
         const pubkey = self.localKeypair.public_key;
 
-        const ch = handshake_mod.ClientHello{
+        const ch = handshakeMod.ClientHello{
             .random = blk: {
                 var r: [32]u8 = undefined;
                 fillRandom(&r);
@@ -389,16 +382,16 @@ pub const Engine = struct {
 
         // Patch the obfuscated age, then hash the truncated message and
         // patch the binder. Both spans are validated by the codec.
-        var age_span = try handshake_mod.pskAgeSpan(encoded, 0);
-        std.mem.writeInt(u32, age_span[0..], session.obfuscatedAge(nowMs), .big);
+        var ageSpan = try handshakeMod.pskAgeSpan(encoded, 0);
+        std.mem.writeInt(u32, ageSpan[0..], session.obfuscatedAge(nowMs), .big);
         const binder = computeResumptionBinder(self.transcript.state, encoded, session.psk);
-        const binder_span = try handshake_mod.pskBinderSpan(encoded);
-        if (binder_span.len != HashLen) return error.ProtocolViolation;
-        @memcpy(binder_span[0..HashLen], &binder);
+        const binderSpan = try handshakeMod.pskBinderSpan(encoded);
+        if (binderSpan.len != HashLen) return error.ProtocolViolation;
+        @memcpy(binderSpan[0..HashLen], &binder);
 
         self.offeredPsk = session.psk;
         self.transcript.feed(encoded);
-        self.state = .client_hello_sent;
+        self.state = .clientHelloSent;
         self.cbs.onHandshakeData(self.cbs.ctx, .initial, encoded);
         return encoded;
     }
@@ -408,26 +401,26 @@ pub const Engine = struct {
     /// binder", ""). The client passes its pre-CH transcript state as
     /// `prefix` (empty, or the HRR splice); the server passes a fresh
     /// hash (the received CH is the whole input). Nothing is fed here.
-    fn computeResumptionBinder(prefix: handshake_mod.TranscriptHash, chZeroed: []const u8, psk: [32]u8) [HashLen]u8 {
+    fn computeResumptionBinder(prefix: handshakeMod.TranscriptHash, chZeroed: []const u8, psk: [32]u8) [HashLen]u8 {
         const zero: [32]u8 = .{0} ** 32;
         const early = HkdfSha256.extract(&zero, &psk);
-        var empty_copy = Transcript.init();
-        const empty_hash = empty_copy.finish();
-        var binder_key: [32]u8 = undefined;
-        hkdfExpandLabelWithContext(early, "res binder", &empty_hash, &binder_key);
+        var emptyCopy = Transcript.init();
+        const emptyHash = emptyCopy.finish();
+        var binderKey: [32]u8 = undefined;
+        hkdfExpandLabelWithContext(early, "res binder", &emptyHash, &binderKey);
         var copy = prefix;
         copy.update(chZeroed);
         const hash = copy.finalResult();
         var out: [HashLen]u8 = undefined;
-        std.crypto.auth.hmac.Hmac(Sha256).create(&out, &hash, &binder_key);
-        std.crypto.secureZero(u8, &binder_key);
+        std.crypto.auth.hmac.Hmac(Sha256).create(&out, &hash, &binderKey);
+        std.crypto.secureZero(u8, &binderKey);
         return out;
     }
 
     /// Splices a HelloRetryRequest into the transcript (RFC 8446 4.4.1):
-    /// Transcript-Hash restarts as Hash(message_hash || HRR) where
-    /// message_hash = 0xFE || 0x00 0x00 0x20 || Hash(ClientHello1).
-    fn spliceHelloRetryRequest(self: *Engine, hrr_msg: []const u8) void {
+    /// Transcript-Hash restarts as Hash(messageHash || HRR) where
+    /// messageHash = 0xFE || 0x00 0x00 0x20 || Hash(ClientHello1).
+    fn spliceHelloRetryRequest(self: *Engine, hrrMsg: []const u8) void {
         const h1 = self.transcript.finish();
         self.transcript = Transcript.init();
         var pre: [4 + HashLen]u8 = undefined;
@@ -437,7 +430,7 @@ pub const Engine = struct {
         pre[3] = HashLen;
         @memcpy(pre[4..], &h1);
         self.transcript.feed(&pre);
-        self.transcript.feed(hrr_msg);
+        self.transcript.feed(hrrMsg);
     }
 
     /// Processes a ServerHello message received from the wire (full
@@ -451,18 +444,18 @@ pub const Engine = struct {
     /// the offer (silent full-handshake fallback).
     pub fn processServerHello(self: *Engine, msg: []const u8) !void {
         if (msg.len < 4) return error.ProtocolViolation;
-        if (handshake_mod.isHelloRetryRequest(msg[4..])) {
+        if (handshakeMod.isHelloRetryRequest(msg[4..])) {
             if (self.hrrSeen) return error.HandshakeFailed;
             self.hrrSeen = true;
-            const sh = try handshake_mod.ServerHello.decode(msg[4..]);
+            const sh = try handshakeMod.ServerHello.decode(msg[4..]);
             const group = sh.hrrGroup orelse return error.ProtocolViolation;
             if (group != .x25519) return error.UnsupportedCipherSuite;
             self.spliceHelloRetryRequest(msg);
             self.hrrPendingGroup = group;
-            self.state = .client_hello_sent;
+            self.state = .clientHelloSent;
             return;
         }
-        const sh = try handshake_mod.ServerHello.decode(msg[4..]);
+        const sh = try handshakeMod.ServerHello.decode(msg[4..]);
         if (sh.selectedPskIdentity) |idx| {
             if (idx != 0) return error.HandshakeFailed;
             if (self.offeredPsk == null) return error.HandshakeFailed;
@@ -480,31 +473,31 @@ pub const Engine = struct {
         const ks = sh.keyShare orelse return error.InvalidKeyShare;
         if (ks.group != .x25519) return error.UnsupportedCipherSuite;
 
-        var peer_pub: [32]u8 = undefined;
+        var peerPub: [32]u8 = undefined;
         if (ks.keyExchange.len != 32) return error.InvalidKeyShare;
-        @memcpy(&peer_pub, ks.keyExchange);
+        @memcpy(&peerPub, ks.keyExchange);
 
-        // ECDHE: sharedSecret = X25519(client_secret, server_public)
-        self.sharedSecret = try x25519.scalarmult(self.localKeypair.secret_key, peer_pub);
-        self.state = .server_hello_received;
+        // ECDHE: sharedSecret = X25519(clientSecret, serverPublic)
+        self.sharedSecret = try x25519.scalarmult(self.localKeypair.secret_key, peerPub);
+        self.state = .serverHelloReceived;
 
         // Derive handshake traffic secrets (RFC 8446 Section 7.1)
         self.deriveHandshakeKeys();
-        self.state = .handshake_keys_derived;
+        self.state = .handshakeKeysDerived;
     }
 
     /// Processes EncryptedExtensions (full message with header).
     pub fn processEncryptedExtensions(self: *Engine, msg: []const u8) !void {
         if (msg.len < 4) return error.ProtocolViolation;
         self.transcript.feed(msg);
-        const ee = try handshake_mod.EncryptedExtensions.decode(msg[4..]);
+        const ee = try handshakeMod.EncryptedExtensions.decode(msg[4..]);
         // Own the selection: callers often parse from reusable reassembly
         // buffers whose bytes shift as later messages arrive.
         if (self.negotiatedAlpn) |old| self.allocator.free(old);
         self.negotiatedAlpn = if (ee.alpnProtocol) |wire| try self.allocator.dupe(u8, wire) else null;
         if (self.peerQuicTransportParams) |old| self.allocator.free(old);
         self.peerQuicTransportParams = if (ee.quicTransportParams) |tp| try self.allocator.dupe(u8, tp) else null;
-        self.state = .encrypted_extensions_received;
+        self.state = .encryptedExtensionsReceived;
     }
 
     /// Processes Certificate (full message with header).
@@ -517,8 +510,8 @@ pub const Engine = struct {
     pub fn processCertificateVerify(self: *Engine, msg: []const u8) !void {
         self.transcript.feed(msg);
         if (msg.len < 4) return error.ProtocolViolation;
-        _ = try handshake_mod.CertificateVerify.decode(msg[4..]);
-        self.state = .certificate_verify_received;
+        _ = try handshakeMod.CertificateVerify.decode(msg[4..]);
+        self.state = .certificateVerifyReceived;
     }
 
     /// Processes and verifies Finished from server (full message with
@@ -526,14 +519,14 @@ pub const Engine = struct {
     /// the transcript *before* this message, then feeds on success.
     pub fn processFinished(self: *Engine, msg: []const u8) !void {
         if (msg.len != 4 + HashLen) return error.ProtocolViolation;
-        if (msg[0] != @intFromEnum(handshake_mod.HandshakeType.finished)) return error.ProtocolViolation;
-        const s_hs = self.serverHsTrafficSecret orelse return error.HandshakeFailed;
-        var finished_key: [HashLen]u8 = undefined;
-        hkdfExpandLabel(s_hs, "finished", &finished_key);
+        if (msg[0] != @intFromEnum(handshakeMod.HandshakeType.finished)) return error.ProtocolViolation;
+        const sHs = self.serverHsTrafficSecret orelse return error.HandshakeFailed;
+        var finishedKey: [HashLen]u8 = undefined;
+        hkdfExpandLabel(sHs, "finished", &finishedKey);
         var copy = self.transcript.state;
         const hash = copy.finalResult();
         var expect: [HashLen]u8 = undefined;
-        std.crypto.auth.hmac.Hmac(Sha256).create(&expect, &hash, &finished_key);
+        std.crypto.auth.hmac.Hmac(Sha256).create(&expect, &hash, &finishedKey);
         var diff: u8 = 0;
         for (expect, msg[4..][0..HashLen]) |a, b| diff |= a ^ b;
         if (diff != 0) return error.HandshakeFailed;
@@ -552,30 +545,30 @@ pub const Engine = struct {
         if (chBody.len < 34) return false;
         var pos: usize = 34;
         if (pos + 1 > chBody.len) return false;
-        pos += 1 + chBody[pos]; // legacy_session_id
+        pos += 1 + chBody[pos]; // legacySessionId
         if (pos + 2 > chBody.len) return false;
-        const cs_len: usize = (@as(usize, chBody[pos]) << 8) | chBody[pos + 1];
-        pos += 2 + cs_len; // cipher suites
+        const csLen: usize = (@as(usize, chBody[pos]) << 8) | chBody[pos + 1];
+        pos += 2 + csLen; // cipher suites
         if (pos + 1 > chBody.len) return false;
         pos += 1 + chBody[pos]; // compression methods
         if (pos + 2 > chBody.len) return false;
-        const ext_len: usize = (@as(usize, chBody[pos]) << 8) | chBody[pos + 1];
+        const extLen: usize = (@as(usize, chBody[pos]) << 8) | chBody[pos + 1];
         pos += 2;
-        const ext_end = @min(chBody.len, pos + ext_len);
-        while (pos + 4 <= ext_end) {
+        const extEnd = @min(chBody.len, pos + extLen);
+        while (pos + 4 <= extEnd) {
             const t = std.mem.readInt(u16, chBody[pos..][0..2], .big);
             const l: usize = (@as(usize, chBody[pos + 2]) << 8) | chBody[pos + 3];
             pos += 4;
-            if (pos + l > ext_end) return false;
-            if (t == @intFromEnum(handshake_mod.ExtensionType.key_share)) {
+            if (pos + l > extEnd) return false;
+            if (t == @intFromEnum(handshakeMod.ExtensionType.key_share)) {
                 var kp: usize = 2;
                 if (l >= 2) {
-                    const list_len: usize = (@as(usize, chBody[pos]) << 8) | chBody[pos + 1];
-                    const list_end = @min(l, 2 + list_len);
-                    while (kp + 4 <= list_end) {
+                    const listLen: usize = (@as(usize, chBody[pos]) << 8) | chBody[pos + 1];
+                    const listEnd = @min(l, 2 + listLen);
+                    while (kp + 4 <= listEnd) {
                         const group = std.mem.readInt(u16, chBody[pos + kp ..][0..2], .big);
                         const slen: usize = (@as(usize, chBody[pos + kp + 2]) << 8) | chBody[pos + kp + 3];
-                        if (group == @intFromEnum(handshake_mod.NamedGroup.x25519) and slen == 32) return true;
+                        if (group == @intFromEnum(handshakeMod.NamedGroup.x25519) and slen == 32) return true;
                         kp += 4 + slen;
                     }
                 }
@@ -593,21 +586,21 @@ pub const Engine = struct {
     /// ticket, suite mismatch, binder mismatch) clears the selection and
     /// returns false: the server silently falls back to a full handshake
     /// per RFC 8446 Section 4.2.11.2. Never errors for PSK reasons.
-    pub fn selectPsk(self: *Engine, full_ch: []const u8, nowMs: u64) bool {
+    pub fn selectPsk(self: *Engine, fullCh: []const u8, nowMs: u64) bool {
         self.resumptionPsk = null;
         self.pskSuite = null;
         const keys = self.ticketKeys orelse return false;
-        const offer = handshake_mod.parsePskFirst(full_ch) catch return false;
+        const offer = handshakeMod.parsePskFirst(fullCh) catch return false;
         const o = offer orelse return false;
         if (o.binders.len < HashLen) return false;
         const opened = keys.open(o.ticket, nowMs) catch return false;
         if (!suiteSupportsResumption(opened.suite)) return false;
         // Binder check over the received bytes with binder bytes zeroed.
-        const zu8 = self.allocator.dupe(u8, full_ch) catch return false;
+        const zu8 = self.allocator.dupe(u8, fullCh) catch return false;
         defer self.allocator.free(zu8);
-        const span = handshake_mod.pskBinderSpan(zu8) catch return false;
+        const span = handshakeMod.pskBinderSpan(zu8) catch return false;
         @memset(span, 0);
-        const fresh = handshake_mod.TranscriptHash.init(.{});
+        const fresh = handshakeMod.TranscriptHash.init(.{});
         const binder = computeResumptionBinder(fresh, zu8, opened.psk);
         var diff: u8 = 0;
         for (binder, o.binders[0..HashLen]) |a, b| diff |= a ^ b;
@@ -622,7 +615,7 @@ pub const Engine = struct {
 
     /// Produces a HelloRetryRequest (RFC 8446 Section 4.1.4) requesting
     /// an x25519 share, for a ClientHello that offered none. Splices the
-    /// transcript (message_hash construction) and marks `hrrSent` so a
+    /// transcript (messageHash construction) and marks `hrrSent` so a
     /// second shareless hello fails instead of looping.
     pub fn produceHelloRetryRequest(self: *Engine) ![]u8 {
         if (self.hrrSent) return error.HandshakeFailed;
@@ -630,7 +623,7 @@ pub const Engine = struct {
         var body = std.ArrayList(u8).empty;
         defer body.deinit(self.allocator);
         try body.appendSlice(self.allocator, &.{ 0x03, 0x03 });
-        try body.appendSlice(self.allocator, &handshake_mod.hello_retry_magic);
+        try body.appendSlice(self.allocator, &handshakeMod.helloRetryMagic);
         try body.appendSlice(self.allocator, &.{self.legacySessionIdLen});
         if (self.legacySessionIdLen > 0) {
             try body.appendSlice(self.allocator, self.legacySessionIdBuf[0..self.legacySessionIdLen]);
@@ -639,26 +632,26 @@ pub const Engine = struct {
         try body.append(self.allocator, 0x00);
         var exts = std.ArrayList(u8).empty;
         defer exts.deinit(self.allocator);
-        // supported_versions: TLS 1.3 only.
-        try exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshake_mod.ExtensionType.supported_versions))));
+        // supportedVersions: TLS 1.3 only.
+        try exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshakeMod.ExtensionType.supported_versions))));
         try exts.appendSlice(self.allocator, &.{ 0x00, 0x02, 0x03, 0x04 });
-        // key_share: selected group only, no key_exchange bytes.
-        try exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshake_mod.ExtensionType.key_share))));
+        // keyShare: selected group only, no keyExchange bytes.
+        try exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshakeMod.ExtensionType.key_share))));
         try exts.appendSlice(self.allocator, &.{ 0x00, 0x02 });
-        try exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshake_mod.NamedGroup.x25519))));
+        try exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshakeMod.NamedGroup.x25519))));
         try body.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(exts.items.len))));
         try body.appendSlice(self.allocator, exts.items);
 
         var msg = std.ArrayList(u8).empty;
         errdefer msg.deinit(self.allocator);
-        try msg.append(self.allocator, @intFromEnum(handshake_mod.HandshakeType.server_hello));
-        const body_len: u24 = @intCast(body.items.len);
-        try msg.append(self.allocator, @intCast((body_len >> 16) & 0xFF));
-        try msg.append(self.allocator, @intCast((body_len >> 8) & 0xFF));
-        try msg.append(self.allocator, @intCast(body_len & 0xFF));
+        try msg.append(self.allocator, @intFromEnum(handshakeMod.HandshakeType.server_hello));
+        const bodyLen: u24 = @intCast(body.items.len);
+        try msg.append(self.allocator, @intCast((bodyLen >> 16) & 0xFF));
+        try msg.append(self.allocator, @intCast((bodyLen >> 8) & 0xFF));
+        try msg.append(self.allocator, @intCast(bodyLen & 0xFF));
         try msg.appendSlice(self.allocator, body.items);
         self.spliceHelloRetryRequest(msg.items);
-        self.state = .server_hello_sent;
+        self.state = .serverHelloSent;
         return msg.toOwnedSlice(self.allocator);
     }
 
@@ -676,77 +669,77 @@ pub const Engine = struct {
         self.peerOffersEcdsa = false;
         var pos: usize = 0;
         if (chBody.len < 34) return error.ProtocolViolation;
-        pos = 34; // skip client_version(2) + random(32)
+        pos = 34; // skip clientVersion(2) + random(32)
 
-        // legacy_session_id
+        // legacySessionId
         if (pos + 1 > chBody.len) return error.ProtocolViolation;
         pos += 1 + chBody[pos];
 
         // cipherSuites
         if (pos + 2 > chBody.len) return error.ProtocolViolation;
-        const cs_len: usize = (@as(usize, chBody[pos]) << 8) | chBody[pos + 1];
+        const csLen: usize = (@as(usize, chBody[pos]) << 8) | chBody[pos + 1];
         pos += 2;
-        if (pos + cs_len > chBody.len) return error.ProtocolViolation;
-        const cs_end = pos + cs_len;
-        var offers_aes = false;
-        var offers_chacha = false;
+        if (pos + csLen > chBody.len) return error.ProtocolViolation;
+        const csEnd = pos + csLen;
+        var offersAes = false;
+        var offersChacha = false;
         var p: usize = pos;
-        while (p + 2 <= cs_end) : (p += 2) {
+        while (p + 2 <= csEnd) : (p += 2) {
             const suite: tls.CipherSuite = @enumFromInt((@as(u16, chBody[p]) << 8) | chBody[p + 1]);
             switch (suite) {
-                .AES_128_GCM_SHA256 => offers_aes = true,
-                .CHACHA20_POLY1305_SHA256 => offers_chacha = true,
+                .AES_128_GCM_SHA256 => offersAes = true,
+                .CHACHA20_POLY1305_SHA256 => offersChacha = true,
                 else => {},
             }
         }
-        pos = cs_end;
+        pos = csEnd;
 
-        // legacy_compression_methods
+        // legacyCompressionMethods
         if (pos + 1 > chBody.len) return error.ProtocolViolation;
         pos += 1 + chBody[pos];
 
         // extensions
         if (pos + 2 > chBody.len) return error.ProtocolViolation;
-        const ext_len: usize = (@as(usize, chBody[pos]) << 8) | chBody[pos + 1];
+        const extLen: usize = (@as(usize, chBody[pos]) << 8) | chBody[pos + 1];
         pos += 2;
-        const ext_end = std.math.add(usize, pos, ext_len) catch return error.ProtocolViolation;
-        if (ext_end > chBody.len) return error.ProtocolViolation;
+        const extEnd = std.math.add(usize, pos, extLen) catch return error.ProtocolViolation;
+        if (extEnd > chBody.len) return error.ProtocolViolation;
 
-        var peer_share: ?[32]u8 = null;
-        while (pos + 4 <= ext_end) {
-            const ext_type = std.mem.readInt(u16, chBody[pos..][0..2], .big);
-            const ext_data_len: usize = (@as(usize, chBody[pos + 2]) << 8) | chBody[pos + 3];
+        var peerShare: ?[32]u8 = null;
+        while (pos + 4 <= extEnd) {
+            const extType = std.mem.readInt(u16, chBody[pos..][0..2], .big);
+            const extDataLen: usize = (@as(usize, chBody[pos + 2]) << 8) | chBody[pos + 3];
             pos += 4;
-            const dataEnd = std.math.add(usize, pos, ext_data_len) catch return error.ProtocolViolation;
-            if (dataEnd > ext_end) return error.ProtocolViolation;
+            const dataEnd = std.math.add(usize, pos, extDataLen) catch return error.ProtocolViolation;
+            if (dataEnd > extEnd) return error.ProtocolViolation;
             const data = chBody[pos..dataEnd];
 
-            if (ext_type == @intFromEnum(handshake_mod.ExtensionType.key_share)) {
-                // KeyShareClientHello: client_shares = vector< KeyShareEntry >.
+            if (extType == @intFromEnum(handshakeMod.ExtensionType.key_share)) {
+                // KeyShareClientHello: clientShares = vector< KeyShareEntry >.
                 var kp: usize = 2; // skip vector length
                 if (data.len >= 2) {
-                    const list_len: usize = (@as(usize, data[0]) << 8) | data[1];
-                    const list_end = @min(data.len, 2 + list_len);
-                    while (kp + 4 <= list_end) {
+                    const listLen: usize = (@as(usize, data[0]) << 8) | data[1];
+                    const listEnd = @min(data.len, 2 + listLen);
+                    while (kp + 4 <= listEnd) {
                         const group = std.mem.readInt(u16, data[kp..][0..2], .big);
-                        const share_len: usize = (@as(usize, data[kp + 2]) << 8) | data[kp + 3];
+                        const shareLen: usize = (@as(usize, data[kp + 2]) << 8) | data[kp + 3];
                         kp += 4;
-                        if (kp + share_len > list_end) break;
-                        if (group == @intFromEnum(handshake_mod.NamedGroup.x25519) and share_len == 32) {
-                            if (peer_share == null) peer_share = data[kp..][0..32].*;
+                        if (kp + shareLen > listEnd) break;
+                        if (group == @intFromEnum(handshakeMod.NamedGroup.x25519) and shareLen == 32) {
+                            if (peerShare == null) peerShare = data[kp..][0..32].*;
                         }
-                        kp += share_len;
+                        kp += shareLen;
                     }
                 }
-            } else if (ext_type == @intFromEnum(handshake_mod.ExtensionType.signature_algorithms)) {
+            } else if (extType == @intFromEnum(handshakeMod.ExtensionType.signature_algorithms)) {
                 // SignatureSchemeList: vector<u16>; 0x0403 = ecdsa_secp256r1_sha256.
                 if (data.len >= 2) {
-                    const list_len: usize = (@as(usize, data[0]) << 8) | data[1];
-                    const list_end = @min(data.len, 2 + list_len);
+                    const listLen: usize = (@as(usize, data[0]) << 8) | data[1];
+                    const listEnd = @min(data.len, 2 + listLen);
                     var sp: usize = 2;
-                    while (sp + 2 <= list_end) : (sp += 2) {
+                    while (sp + 2 <= listEnd) : (sp += 2) {
                         const scheme = std.mem.readInt(u16, data[sp..][0..2], .big);
-                        if (scheme == @intFromEnum(handshake_mod.SignatureScheme.ecdsa_secp256r1_sha256)) {
+                        if (scheme == @intFromEnum(handshakeMod.SignatureScheme.ecdsa_secp256r1_sha256)) {
                             self.peerOffersEcdsa = true;
                         }
                     }
@@ -758,8 +751,8 @@ pub const Engine = struct {
         }
 
         // Server preference: AES_128_GCM_SHA256 first, CHACHA20 fallback.
-        const suite: tls.CipherSuite = if (offers_aes) .AES_128_GCM_SHA256 else if (offers_chacha) .CHACHA20_POLY1305_SHA256 else return error.UnsupportedCipherSuite;
-        const share = peer_share orelse return error.InvalidKeyShare;
+        const suite: tls.CipherSuite = if (offersAes) .AES_128_GCM_SHA256 else if (offersChacha) .CHACHA20_POLY1305_SHA256 else return error.UnsupportedCipherSuite;
+        const share = peerShare orelse return error.InvalidKeyShare;
         self.selectedSuite = suite;
         self.sharedSecret = x25519.scalarmult(self.localKeypair.secret_key, share) catch
             return error.InvalidKeyShare;
@@ -769,14 +762,14 @@ pub const Engine = struct {
     /// against the current transcript and feeds it on success.
     pub fn verifyClientFinished(self: *Engine, msg: []const u8) !void {
         if (msg.len != 4 + HashLen) return error.ProtocolViolation;
-        if (msg[0] != @intFromEnum(handshake_mod.HandshakeType.finished)) return error.ProtocolViolation;
-        const c_hs = self.clientHsTrafficSecret orelse return error.HandshakeFailed;
-        var finished_key: [HashLen]u8 = undefined;
-        hkdfExpandLabel(c_hs, "finished", &finished_key);
+        if (msg[0] != @intFromEnum(handshakeMod.HandshakeType.finished)) return error.ProtocolViolation;
+        const cHs = self.clientHsTrafficSecret orelse return error.HandshakeFailed;
+        var finishedKey: [HashLen]u8 = undefined;
+        hkdfExpandLabel(cHs, "finished", &finishedKey);
         var copy = self.transcript.state;
         const hash = copy.finalResult();
         var expect: [HashLen]u8 = undefined;
-        std.crypto.auth.hmac.Hmac(Sha256).create(&expect, &hash, &finished_key);
+        std.crypto.auth.hmac.Hmac(Sha256).create(&expect, &hash, &finishedKey);
         var diff: u8 = 0;
         for (expect, msg[4..][0..HashLen]) |a, b| diff |= a ^ b;
         if (diff != 0) return error.HandshakeFailed;
@@ -790,7 +783,7 @@ pub const Engine = struct {
     pub fn produceCertificateRequest(self: *Engine) ![]u8 {
         var out = std.ArrayList(u8).empty;
         errdefer out.deinit(self.allocator);
-        try out.append(self.allocator, @intFromEnum(handshake_mod.HandshakeType.certificate_request));
+        try out.append(self.allocator, @intFromEnum(handshakeMod.HandshakeType.certificate_request));
         // u24 length = 3: context len (0x00) + extensions len (0x0000).
         try out.appendSlice(self.allocator, &.{ 0x00, 0x00, 0x03, 0x00, 0x00, 0x00 });
         self.transcript.feed(out.items);
@@ -802,7 +795,7 @@ pub const Engine = struct {
     /// request the server emits is accepted.
     pub fn processCertificateRequest(self: *Engine, msg: []const u8) !void {
         if (msg.len != 7) return error.ProtocolViolation;
-        if (msg[0] != @intFromEnum(handshake_mod.HandshakeType.certificate_request)) return error.ProtocolViolation;
+        if (msg[0] != @intFromEnum(handshakeMod.HandshakeType.certificate_request)) return error.ProtocolViolation;
         self.transcript.feed(msg);
     }
 
@@ -812,30 +805,30 @@ pub const Engine = struct {
     pub fn produceClientCertificate(self: *Engine, ders: []const []const u8) ![]u8 {
         var body = std.ArrayList(u8).empty;
         errdefer body.deinit(self.allocator);
-        try body.append(self.allocator, 0x00); // request_context length 0
-        var list_buf = std.ArrayList(u8).empty;
-        defer list_buf.deinit(self.allocator);
+        try body.append(self.allocator, 0x00); // requestContext length 0
+        var listBuf = std.ArrayList(u8).empty;
+        defer listBuf.deinit(self.allocator);
         for (ders) |der| {
             const len: u24 = @intCast(der.len);
-            try list_buf.append(self.allocator, @intCast((len >> 16) & 0xFF));
-            try list_buf.append(self.allocator, @intCast((len >> 8) & 0xFF));
-            try list_buf.append(self.allocator, @intCast(len & 0xFF));
-            try list_buf.appendSlice(self.allocator, der);
-            try list_buf.appendSlice(self.allocator, &.{ 0x00, 0x00 }); // empty extensions
+            try listBuf.append(self.allocator, @intCast((len >> 16) & 0xFF));
+            try listBuf.append(self.allocator, @intCast((len >> 8) & 0xFF));
+            try listBuf.append(self.allocator, @intCast(len & 0xFF));
+            try listBuf.appendSlice(self.allocator, der);
+            try listBuf.appendSlice(self.allocator, &.{ 0x00, 0x00 }); // empty extensions
         }
-        const total: u24 = @intCast(list_buf.items.len);
+        const total: u24 = @intCast(listBuf.items.len);
         try body.append(self.allocator, @intCast((total >> 16) & 0xFF));
         try body.append(self.allocator, @intCast((total >> 8) & 0xFF));
         try body.append(self.allocator, @intCast(total & 0xFF));
-        try body.appendSlice(self.allocator, list_buf.items);
+        try body.appendSlice(self.allocator, listBuf.items);
 
         var msg = std.ArrayList(u8).empty;
         errdefer msg.deinit(self.allocator);
-        try msg.append(self.allocator, @intFromEnum(handshake_mod.HandshakeType.certificate));
-        const body_len: u24 = @intCast(body.items.len);
-        try msg.append(self.allocator, @intCast((body_len >> 16) & 0xFF));
-        try msg.append(self.allocator, @intCast((body_len >> 8) & 0xFF));
-        try msg.append(self.allocator, @intCast(body_len & 0xFF));
+        try msg.append(self.allocator, @intFromEnum(handshakeMod.HandshakeType.certificate));
+        const bodyLen: u24 = @intCast(body.items.len);
+        try msg.append(self.allocator, @intCast((bodyLen >> 16) & 0xFF));
+        try msg.append(self.allocator, @intCast((bodyLen >> 8) & 0xFF));
+        try msg.append(self.allocator, @intCast(bodyLen & 0xFF));
         try msg.appendSlice(self.allocator, body.items);
         body.deinit(self.allocator);
 
@@ -859,43 +852,43 @@ pub const Engine = struct {
     /// is returned (not an error); the caller enforces required/optional.
     pub fn processClientCertificate(self: *Engine, msg: []const u8) !ClientCertificate {
         if (msg.len < 4) return error.ProtocolViolation;
-        if (msg[0] != @intFromEnum(handshake_mod.HandshakeType.certificate)) return error.ProtocolViolation;
-        const body_len: usize = (@as(usize, msg[1]) << 16) | (@as(usize, msg[2]) << 8) | msg[3];
-        if (4 + body_len != msg.len) return error.ProtocolViolation;
+        if (msg[0] != @intFromEnum(handshakeMod.HandshakeType.certificate)) return error.ProtocolViolation;
+        const bodyLen: usize = (@as(usize, msg[1]) << 16) | (@as(usize, msg[2]) << 8) | msg[3];
+        if (4 + bodyLen != msg.len) return error.ProtocolViolation;
         var pos: usize = 4;
         if (pos + 1 > msg.len) return error.ProtocolViolation;
-        const ctx_len: usize = msg[pos];
+        const ctxLen: usize = msg[pos];
         pos += 1;
-        if (pos + ctx_len > msg.len) return error.ProtocolViolation;
-        pos += ctx_len;
+        if (pos + ctxLen > msg.len) return error.ProtocolViolation;
+        pos += ctxLen;
         if (pos + 3 > msg.len) return error.ProtocolViolation;
-        const list_len: usize = (@as(usize, msg[pos]) << 16) | (@as(usize, msg[pos + 1]) << 8) | msg[pos + 2];
+        const listLen: usize = (@as(usize, msg[pos]) << 16) | (@as(usize, msg[pos + 1]) << 8) | msg[pos + 2];
         pos += 3;
-        if (pos + list_len != msg.len) return error.ProtocolViolation;
-        const list_end = pos + list_len;
+        if (pos + listLen != msg.len) return error.ProtocolViolation;
+        const listEnd = pos + listLen;
 
         var ders = std.ArrayList([]u8).empty;
         errdefer {
             for (ders.items) |d| self.allocator.free(d);
             ders.deinit(self.allocator);
         }
-        while (pos < list_end) {
-            if (pos + 3 > list_end) return error.ProtocolViolation;
-            const cert_len: usize = (@as(usize, msg[pos]) << 16) | (@as(usize, msg[pos + 1]) << 8) | msg[pos + 2];
+        while (pos < listEnd) {
+            if (pos + 3 > listEnd) return error.ProtocolViolation;
+            const certLen: usize = (@as(usize, msg[pos]) << 16) | (@as(usize, msg[pos + 1]) << 8) | msg[pos + 2];
             pos += 3;
-            if (cert_len == 0 or pos + cert_len > list_end) return error.ProtocolViolation;
+            if (certLen == 0 or pos + certLen > listEnd) return error.ProtocolViolation;
             // Structural guard before any X.509 parsing: truncated DER must
             // fail here, never as an out-of-bounds panic downstream.
-            if (!certMod.checkDerStructure(msg[pos .. pos + cert_len])) return error.ProtocolViolation;
-            const der = try self.allocator.dupe(u8, msg[pos .. pos + cert_len]);
+            if (!certMod.checkDerStructure(msg[pos .. pos + certLen])) return error.ProtocolViolation;
+            const der = try self.allocator.dupe(u8, msg[pos .. pos + certLen]);
             errdefer self.allocator.free(der);
             try ders.append(self.allocator, der);
-            pos += cert_len;
-            if (pos + 2 > list_end) return error.ProtocolViolation;
-            const ext_len: usize = (@as(usize, msg[pos]) << 8) | msg[pos + 1];
+            pos += certLen;
+            if (pos + 2 > listEnd) return error.ProtocolViolation;
+            const extLen: usize = (@as(usize, msg[pos]) << 8) | msg[pos + 1];
             pos += 2;
-            if (pos + ext_len > list_end) return error.ProtocolViolation;
-            pos += ext_len;
+            if (pos + extLen > listEnd) return error.ProtocolViolation;
+            pos += extLen;
         }
         self.transcript.feed(msg);
         return .{ .allocator = self.allocator, .ders = try ders.toOwnedSlice(self.allocator) };
@@ -914,46 +907,46 @@ pub const Engine = struct {
         comptime {
             if (label.len != 33) @compileError("client CV label must be 33 bytes");
         }
-        const ec_scalar = try parseEcPrivateScalar(self.allocator, privateKeyDer);
-        const ec_pub_point = try P256.basePoint.mul(ec_scalar, .big);
-        const ec_keypair = EcdsaP256.KeyPair{
-            .secret_key = try EcdsaP256.SecretKey.fromBytes(ec_scalar),
-            .public_key = .{ .p = ec_pub_point },
+        const ecScalar = try parseEcPrivateScalar(self.allocator, privateKeyDer);
+        const ecPubPoint = try P256.basePoint.mul(ecScalar, .big);
+        const ecKeypair = EcdsaP256.KeyPair{
+            .secret_key = try EcdsaP256.SecretKey.fromBytes(ecScalar),
+            .public_key = .{ .p = ecPubPoint },
         };
-        var cv_content: [64 + 33 + 1 + HashLen]u8 = undefined;
-        @memset(cv_content[0..64], 0x20);
-        @memcpy(cv_content[64..][0..33], label);
-        cv_content[64 + 33] = 0x00;
-        var hs_copy = self.transcript.state;
-        const hs_hash = hs_copy.finalResult();
-        @memcpy(cv_content[64 + 33 + 1 ..], &hs_hash);
-        var cv_noise: [EcdsaP256.noise_length]u8 = undefined;
-        fillRandom(&cv_noise);
-        const ec_sig = try ec_keypair.sign(&cv_content, cv_noise);
+        var cvContent: [64 + 33 + 1 + HashLen]u8 = undefined;
+        @memset(cvContent[0..64], 0x20);
+        @memcpy(cvContent[64..][0..33], label);
+        cvContent[64 + 33] = 0x00;
+        var hsCopy = self.transcript.state;
+        const hsHash = hsCopy.finalResult();
+        @memcpy(cvContent[64 + 33 + 1 ..], &hsHash);
+        var cvNoise: [EcdsaP256.noise_length]u8 = undefined;
+        fillRandom(&cvNoise);
+        const ecSig = try ecKeypair.sign(&cvContent, cvNoise);
         var out: ClientSignature = undefined;
-        const sig_slice = ec_sig.toDer(&out.der);
-        out.len = sig_slice.len;
+        const sigSlice = ecSig.toDer(&out.der);
+        out.len = sigSlice.len;
         return out;
     }
 
     /// Builds client CertificateVerify (type 15) and feeds the transcript.
     pub fn produceClientCertificateVerify(self: *Engine, privateKeyDer: []const u8) ![]u8 {
         const signed = try self.signClientCertificateVerify(privateKeyDer);
-        const sig_der = signed.der;
-        const sig_len = signed.len;
+        const sigDer = signed.der;
+        const sigLen = signed.len;
         var body = std.ArrayList(u8).empty;
         errdefer body.deinit(self.allocator);
-        try body.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshake_mod.SignatureScheme.ecdsa_secp256r1_sha256))));
-        try body.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(sig_len))));
-        try body.appendSlice(self.allocator, sig_der[0..sig_len]);
+        try body.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshakeMod.SignatureScheme.ecdsa_secp256r1_sha256))));
+        try body.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(sigLen))));
+        try body.appendSlice(self.allocator, sigDer[0..sigLen]);
 
         var msg = std.ArrayList(u8).empty;
         errdefer msg.deinit(self.allocator);
-        try msg.append(self.allocator, @intFromEnum(handshake_mod.HandshakeType.certificate_verify));
-        const body_len: u24 = @intCast(body.items.len);
-        try msg.append(self.allocator, @intCast((body_len >> 16) & 0xFF));
-        try msg.append(self.allocator, @intCast((body_len >> 8) & 0xFF));
-        try msg.append(self.allocator, @intCast(body_len & 0xFF));
+        try msg.append(self.allocator, @intFromEnum(handshakeMod.HandshakeType.certificate_verify));
+        const bodyLen: u24 = @intCast(body.items.len);
+        try msg.append(self.allocator, @intCast((bodyLen >> 16) & 0xFF));
+        try msg.append(self.allocator, @intCast((bodyLen >> 8) & 0xFF));
+        try msg.append(self.allocator, @intCast(bodyLen & 0xFF));
         try msg.appendSlice(self.allocator, body.items);
         body.deinit(self.allocator);
 
@@ -961,23 +954,23 @@ pub const Engine = struct {
         return msg.toOwnedSlice(self.allocator);
     }
 
-    /// Builds client Finished: HMAC(client_finished_key, transcript hash).
+    /// Builds client Finished: HMAC(clientFinishedKey, transcript hash).
     /// Feeds the transcript. Application keys were already derived when the
     /// server Finished was processed.
     pub fn produceClientFinished(self: *Engine) ![]u8 {
-        const c_hs = self.clientHsTrafficSecret orelse return error.HandshakeFailed;
-        var finished_key: [HashLen]u8 = undefined;
-        hkdfExpandLabel(c_hs, "finished", &finished_key);
+        const cHs = self.clientHsTrafficSecret orelse return error.HandshakeFailed;
+        var finishedKey: [HashLen]u8 = undefined;
+        hkdfExpandLabel(cHs, "finished", &finishedKey);
         var copy = self.transcript.state;
         const hash = copy.finalResult();
-        var verify_data: [HashLen]u8 = undefined;
-        std.crypto.auth.hmac.Hmac(Sha256).create(&verify_data, &hash, &finished_key);
+        var verifyData: [HashLen]u8 = undefined;
+        std.crypto.auth.hmac.Hmac(Sha256).create(&verifyData, &hash, &finishedKey);
 
         var msg = std.ArrayList(u8).empty;
         errdefer msg.deinit(self.allocator);
-        try msg.append(self.allocator, @intFromEnum(handshake_mod.HandshakeType.finished));
+        try msg.append(self.allocator, @intFromEnum(handshakeMod.HandshakeType.finished));
         try msg.appendSlice(self.allocator, &.{ 0x00, 0x00, @as(u8, HashLen) });
-        try msg.appendSlice(self.allocator, &verify_data);
+        try msg.appendSlice(self.allocator, &verifyData);
         self.transcript.feed(msg.items);
         return msg.toOwnedSlice(self.allocator);
     }
@@ -987,8 +980,8 @@ pub const Engine = struct {
     /// context. Feeds the transcript on success.
     pub fn processClientCertificateVerify(self: *Engine, msg: []const u8, leafDer: []const u8) !void {
         if (msg.len < 4) return error.ProtocolViolation;
-        if (msg[0] != @intFromEnum(handshake_mod.HandshakeType.certificate_verify)) return error.ProtocolViolation;
-        const cv = handshake_mod.CertificateVerify.decode(msg[4..]) catch return error.ProtocolViolation;
+        if (msg[0] != @intFromEnum(handshakeMod.HandshakeType.certificate_verify)) return error.ProtocolViolation;
+        const cv = handshakeMod.CertificateVerify.decode(msg[4..]) catch return error.ProtocolViolation;
         if (cv.algorithm != .ecdsa_secp256r1_sha256) return error.UnsupportedSignatureScheme;
 
         const leaf = certMod.X509Certificate.parseDer(leafDer) catch return error.CertificateSignatureInvalid;
@@ -1001,14 +994,14 @@ pub const Engine = struct {
         const sig = EcdsaP256.Signature.fromDer(cv.signature) catch return error.CertificateSignatureInvalid;
 
         const label = "TLS 1.3, client CertificateVerify";
-        var cv_content: [64 + 33 + 1 + HashLen]u8 = undefined;
-        @memset(cv_content[0..64], 0x20);
-        @memcpy(cv_content[64..][0..33], label);
-        cv_content[64 + 33] = 0x00;
-        var hs_copy = self.transcript.state;
-        const hs_hash = hs_copy.finalResult();
-        @memcpy(cv_content[64 + 33 + 1 ..], &hs_hash);
-        sig.verify(&cv_content, pubkey) catch return error.CertificateSignatureInvalid;
+        var cvContent: [64 + 33 + 1 + HashLen]u8 = undefined;
+        @memset(cvContent[0..64], 0x20);
+        @memcpy(cvContent[64..][0..33], label);
+        cvContent[64 + 33] = 0x00;
+        var hsCopy = self.transcript.state;
+        const hsHash = hsCopy.finalResult();
+        @memcpy(cvContent[64 + 33 + 1 ..], &hsHash);
+        sig.verify(&cvContent, pubkey) catch return error.CertificateSignatureInvalid;
         self.transcript.feed(msg);
     }
 
@@ -1020,8 +1013,8 @@ pub const Engine = struct {
     /// the transcript to the leaf key.
     pub fn processServerCertificateVerify(self: *Engine, msg: []const u8, leafDer: []const u8) !void {
         if (msg.len < 4) return error.ProtocolViolation;
-        if (msg[0] != @intFromEnum(handshake_mod.HandshakeType.certificate_verify)) return error.ProtocolViolation;
-        const cv = handshake_mod.CertificateVerify.decode(msg[4..]) catch return error.ProtocolViolation;
+        if (msg[0] != @intFromEnum(handshakeMod.HandshakeType.certificate_verify)) return error.ProtocolViolation;
+        const cv = handshakeMod.CertificateVerify.decode(msg[4..]) catch return error.ProtocolViolation;
         if (cv.algorithm != .ecdsa_secp256r1_sha256) return error.UnsupportedSignatureScheme;
 
         const leaf = certMod.X509Certificate.parseDer(leafDer) catch return error.CertificateSignatureInvalid;
@@ -1034,16 +1027,16 @@ pub const Engine = struct {
         const sig = EcdsaP256.Signature.fromDer(cv.signature) catch return error.CertificateSignatureInvalid;
 
         const label = "TLS 1.3, server CertificateVerify";
-        var cv_content: [64 + 33 + 1 + HashLen]u8 = undefined;
-        @memset(cv_content[0..64], 0x20);
-        @memcpy(cv_content[64..][0..33], label);
-        cv_content[64 + 33] = 0x00;
-        var hs_copy = self.transcript.state;
-        const hs_hash = hs_copy.finalResult();
-        @memcpy(cv_content[64 + 33 + 1 ..], &hs_hash);
-        sig.verify(&cv_content, pubkey) catch return error.CertificateSignatureInvalid;
+        var cvContent: [64 + 33 + 1 + HashLen]u8 = undefined;
+        @memset(cvContent[0..64], 0x20);
+        @memcpy(cvContent[64..][0..33], label);
+        cvContent[64 + 33] = 0x00;
+        var hsCopy = self.transcript.state;
+        const hsHash = hsCopy.finalResult();
+        @memcpy(cvContent[64 + 33 + 1 ..], &hsHash);
+        sig.verify(&cvContent, pubkey) catch return error.CertificateSignatureInvalid;
         self.transcript.feed(msg);
-        self.state = .certificate_verify_received;
+        self.state = .certificateVerifyReceived;
     }
 
     /// Minimal DER reader: tag + short/long-form length.
@@ -1109,8 +1102,8 @@ pub const Engine = struct {
         const alg = try derTlv(pkcs8, pos);
         if (alg.tag != 0x30) return error.UnsupportedSignatureScheme;
         // ecPublicKey OID 1.2.840.10045.2.1 must appear in the algorithm id.
-        const ec_oid = [_]u8{ 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01 };
-        if (std.mem.indexOf(u8, pkcs8[pos + alg.hdr ..][0..alg.len], &ec_oid) == null) {
+        const ecOid = [_]u8{ 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01 };
+        if (std.mem.indexOf(u8, pkcs8[pos + alg.hdr ..][0..alg.len], &ecOid) == null) {
             return error.UnsupportedSignatureScheme;
         }
         pos += alg.hdr + alg.len;
@@ -1142,11 +1135,11 @@ pub const Engine = struct {
         self.transcript.feed(msg);
         if (msg.len < 4) return;
         const body = msg[4..];
-        // Extract legacy_session_id and SNI from ClientHello body:
-        //   [0..2]   client_version (0x0303)
+        // Extract legacySessionId and SNI from ClientHello body:
+        //   [0..2]   clientVersion (0x0303)
         //   [2..34]  random (32 bytes)
-        //   [34]     legacy_session_id_length (u8)
-        //   [35..]   legacy_session_id
+        //   [34]     legacySessionIdLength (u8)
+        //   [35..]   legacySessionId
         if (body.len > 34) {
             const sidLen = body[34];
             if (sidLen <= 32 and 35 + @as(usize, sidLen) <= body.len) {
@@ -1156,25 +1149,25 @@ pub const Engine = struct {
 
             var pos: usize = 35 + @as(usize, sidLen);
             if (pos + 2 <= body.len) {
-                const cs_len: usize = (@as(usize, body[pos]) << 8) | body[pos + 1];
-                pos += 2 + cs_len;
+                const csLen: usize = (@as(usize, body[pos]) << 8) | body[pos + 1];
+                pos += 2 + csLen;
                 if (pos < body.len) {
-                    const comp_len = body[pos];
-                    pos += 1 + comp_len;
+                    const compLen = body[pos];
+                    pos += 1 + compLen;
                     if (pos + 2 <= body.len) {
-                        const ext_len: usize = (@as(usize, body[pos]) << 8) | body[pos + 1];
+                        const extLen: usize = (@as(usize, body[pos]) << 8) | body[pos + 1];
                         pos += 2;
-                        const ext_end = @min(body.len, pos + ext_len);
-                        while (pos + 4 <= ext_end) {
-                            const ext_type = std.mem.readInt(u16, body[pos..][0..2], .big);
-                            const ext_data_len: usize = (@as(usize, body[pos + 2]) << 8) | body[pos + 3];
+                        const extEnd = @min(body.len, pos + extLen);
+                        while (pos + 4 <= extEnd) {
+                            const extType = std.mem.readInt(u16, body[pos..][0..2], .big);
+                            const extDataLen: usize = (@as(usize, body[pos + 2]) << 8) | body[pos + 3];
                             pos += 4;
-                            if (pos + ext_data_len > ext_end) break;
-                            if (ext_type == 0 and ext_data_len >= 5) {
-                                const list_len: usize = (@as(usize, body[pos]) << 8) | body[pos + 1];
-                                if (list_len >= 3 and pos + 2 + list_len <= pos + ext_data_len) {
-                                    const name_type = body[pos + 2];
-                                    if (name_type == 0) {
+                            if (pos + extDataLen > extEnd) break;
+                            if (extType == 0 and extDataLen >= 5) {
+                                const listLen: usize = (@as(usize, body[pos]) << 8) | body[pos + 1];
+                                if (listLen >= 3 and pos + 2 + listLen <= pos + extDataLen) {
+                                    const nameType = body[pos + 2];
+                                    if (nameType == 0) {
                                         const nameLen: usize = (@as(usize, body[pos + 3]) << 8) | body[pos + 4];
                                         if (pos + 5 + nameLen <= body.len) {
                                             const sni = body[pos + 5 ..][0..nameLen];
@@ -1186,17 +1179,17 @@ pub const Engine = struct {
                                     }
                                 }
                             }
-                            if (ext_type == handshake_mod.QUIC_TRANSPORT_PARAMETERS_ID) {
+                            if (extType == handshakeMod.QUIC_TRANSPORT_PARAMETERS_ID) {
                                 if (self.peerQuicTransportParams) |old| self.allocator.free(old);
-                                self.peerQuicTransportParams = self.allocator.dupe(u8, body[pos..][0..ext_data_len]) catch null;
+                                self.peerQuicTransportParams = self.allocator.dupe(u8, body[pos..][0..extDataLen]) catch null;
                             }
-                            pos += ext_data_len;
+                            pos += extDataLen;
                         }
                     }
                 }
             }
         }
-        self.state = .client_hello_received;
+        self.state = .clientHelloReceived;
     }
 
     /// Produces the full server flight: ServerHello + EncryptedExtensions +
@@ -1211,7 +1204,7 @@ pub const Engine = struct {
         clientHelloBody: []const u8,
         certChainPem: []const u8,
         privateKeyDer: []const u8,
-        alpnPreference: []const alpn_mod.Protocol,
+        alpnPreference: []const alpnMod.Protocol,
         clientAlpnWire: []const []const u8,
         quicTransportParams: ?[]const u8,
     ) !ServerFlight {
@@ -1225,7 +1218,7 @@ pub const Engine = struct {
         // PSK resumption requires the negotiated suite to match the
         // ticket's suite (binder hash binding). Anything else silently
         // falls back to the full handshake — never a fatal alert.
-        const use_psk = if (self.resumptionPsk != null and self.pskSuite != null) blk: {
+        const usePsk = if (self.resumptionPsk != null and self.pskSuite != null) blk: {
             if (self.pskSuite.? != self.selectedSuite) {
                 self.resumptionPsk = null;
                 self.pskSuite = null;
@@ -1240,52 +1233,52 @@ pub const Engine = struct {
         const pubkey = self.localKeypair.public_key;
 
         // ServerHello (RFC 8446 Section 4.1.3):
-        //   legacy_version: 0x0303 (TLS 1.2)
+        //   legacyVersion: 0x0303 (TLS 1.2)
         //   random: 32 bytes
-        //   legacy_session_id_echo: 1 byte len + echo bytes
+        //   legacySessionIdEcho: 1 byte len + echo bytes
         //   cipherSuite: 2 bytes
-        //   legacy_compression_method: 0x00 (1 byte)
+        //   legacyCompressionMethod: 0x00 (1 byte)
         //   extensions: 2 bytes len + extensions
-        var sh_body = std.ArrayList(u8).empty;
-        defer sh_body.deinit(self.allocator);
+        var shBody = std.ArrayList(u8).empty;
+        defer shBody.deinit(self.allocator);
 
-        // legacy_version (0x0303)
-        try sh_body.appendSlice(self.allocator, &.{ 0x03, 0x03 });
+        // legacyVersion (0x0303)
+        try shBody.appendSlice(self.allocator, &.{ 0x03, 0x03 });
 
-        // server_random (32 bytes)
-        var server_random: [32]u8 = undefined;
-        fillRandom(&server_random);
-        try sh_body.appendSlice(self.allocator, &server_random);
+        // serverRandom (32 bytes)
+        var serverRandom: [32]u8 = undefined;
+        fillRandom(&serverRandom);
+        try shBody.appendSlice(self.allocator, &serverRandom);
 
-        // legacy_session_id_echo
-        try sh_body.append(self.allocator, self.legacySessionIdLen);
+        // legacySessionIdEcho
+        try shBody.append(self.allocator, self.legacySessionIdLen);
         if (self.legacySessionIdLen > 0) {
-            try sh_body.appendSlice(self.allocator, self.legacySessionIdBuf[0..self.legacySessionIdLen]);
+            try shBody.appendSlice(self.allocator, self.legacySessionIdBuf[0..self.legacySessionIdLen]);
         }
 
         // cipherSuite
-        try sh_body.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(self.selectedSuite))));
+        try shBody.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(self.selectedSuite))));
 
-        // legacy_compression_method (0x00)
-        try sh_body.append(self.allocator, 0x00);
+        // legacyCompressionMethod (0x00)
+        try shBody.append(self.allocator, 0x00);
 
         // extensions
         var exts = std.ArrayList(u8).empty;
         defer exts.deinit(self.allocator);
 
         // keyShare extension
-        var ks_body = std.ArrayList(u8).empty;
-        defer ks_body.deinit(self.allocator);
-        try ks_body.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshake_mod.NamedGroup.x25519))));
-        try ks_body.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, 32)));
-        try ks_body.appendSlice(self.allocator, &pubkey);
+        var ksBody = std.ArrayList(u8).empty;
+        defer ksBody.deinit(self.allocator);
+        try ksBody.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshakeMod.NamedGroup.x25519))));
+        try ksBody.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, 32)));
+        try ksBody.appendSlice(self.allocator, &pubkey);
 
-        try exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshake_mod.ExtensionType.key_share))));
-        try exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(ks_body.items.len))));
-        try exts.appendSlice(self.allocator, ks_body.items);
+        try exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshakeMod.ExtensionType.key_share))));
+        try exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(ksBody.items.len))));
+        try exts.appendSlice(self.allocator, ksBody.items);
 
         // supportedVersions (TLS 1.3 = 0x0304)
-        try exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshake_mod.ExtensionType.supported_versions))));
+        try exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshakeMod.ExtensionType.supported_versions))));
         try exts.appendSlice(self.allocator, &.{ 0x00, 0x02 });
         try exts.appendSlice(self.allocator, &.{ 0x03, 0x04 });
 
@@ -1293,34 +1286,34 @@ pub const Engine = struct {
         // unsolicited ack violates RFC 8446 Section 4.2 and aborts strict
         // clients (e.g. IP-literal handshakes carry no SNI).
         if (self.sniHostname != null) {
-            try exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshake_mod.ExtensionType.server_name))));
+            try exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshakeMod.ExtensionType.server_name))));
             try exts.appendSlice(self.allocator, &.{ 0x00, 0x00 });
         }
 
-        // pre_shared_key ack: selected_identity 0 (we accept only the
+        // preSharedKey ack: selectedIdentity 0 (we accept only the
         // first offered identity). Present only on the abbreviated flight.
-        if (use_psk) {
-            try exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshake_mod.ExtensionType.pre_shared_key))));
+        if (usePsk) {
+            try exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshakeMod.ExtensionType.pre_shared_key))));
             try exts.appendSlice(self.allocator, &.{ 0x00, 0x02, 0x00, 0x00 });
         }
 
-        try sh_body.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(exts.items.len))));
-        try sh_body.appendSlice(self.allocator, exts.items);
+        try shBody.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(exts.items.len))));
+        try shBody.appendSlice(self.allocator, exts.items);
 
         // ServerHello with handshake header
-        var sh_msg = std.ArrayList(u8).empty;
-        errdefer sh_msg.deinit(self.allocator);
-        try sh_msg.append(self.allocator, @intFromEnum(handshake_mod.HandshakeType.server_hello));
-        const sh_body_len: u24 = @intCast(sh_body.items.len);
-        try sh_msg.append(self.allocator, @intCast((sh_body_len >> 16) & 0xFF));
-        try sh_msg.append(self.allocator, @intCast((sh_body_len >> 8) & 0xFF));
-        try sh_msg.append(self.allocator, @intCast(sh_body_len & 0xFF));
-        try sh_msg.appendSlice(self.allocator, sh_body.items);
+        var shMsg = std.ArrayList(u8).empty;
+        errdefer shMsg.deinit(self.allocator);
+        try shMsg.append(self.allocator, @intFromEnum(handshakeMod.HandshakeType.server_hello));
+        const shBodyLen: u24 = @intCast(shBody.items.len);
+        try shMsg.append(self.allocator, @intCast((shBodyLen >> 16) & 0xFF));
+        try shMsg.append(self.allocator, @intCast((shBodyLen >> 8) & 0xFF));
+        try shMsg.append(self.allocator, @intCast(shBodyLen & 0xFF));
+        try shMsg.appendSlice(self.allocator, shBody.items);
 
-        self.transcript.feed(sh_msg.items);
+        self.transcript.feed(shMsg.items);
 
         // Snapshot for QUIC: handshake traffic secrets hash CH..SH.
-        const hs_transcript_hash = self.transcript.finish();
+        const hsTranscriptHash = self.transcript.finish();
 
         // Handshake traffic secrets hash CH..SH (RFC 8446 Section 7.1), so
         // they can only be derived once ServerHello is in the transcript.
@@ -1329,83 +1322,83 @@ pub const Engine = struct {
         }
 
         // EncryptedExtensions
-        var ee_body = std.ArrayList(u8).empty;
-        defer ee_body.deinit(self.allocator);
-        var ee_exts = std.ArrayList(u8).empty;
-        defer ee_exts.deinit(self.allocator);
+        var eeBody = std.ArrayList(u8).empty;
+        defer eeBody.deinit(self.allocator);
+        var eeExts = std.ArrayList(u8).empty;
+        defer eeExts.deinit(self.allocator);
 
         // ALPN extension — per RFC 8446 Section 4.3.1 must be in EncryptedExtensions.
         // Only sent when the client actually offered ALPN: an unsolicited
         // selection breaks clients without an ALPN hook (e.g. IP-literal
         // handshakes), which then speak HTTP/1.1 by default.
         if (alpnPreference.len > 0 and clientAlpnWire.len > 0) {
-            const selected_opt = alpn_mod.negotiateServer(alpnPreference, clientAlpnWire);
-            if (selected_opt) |selected| {
+            const selectedOpt = alpnMod.negotiateServer(alpnPreference, clientAlpnWire);
+            if (selectedOpt) |selected| {
                 const wire = selected.wireName();
                 if (self.negotiatedAlpn) |old| self.allocator.free(old);
                 self.negotiatedAlpn = try self.allocator.dupe(u8, wire);
 
-                var alpn_list = std.ArrayList(u8).empty;
-                defer alpn_list.deinit(self.allocator);
-                try alpn_list.append(self.allocator, @intCast(wire.len));
-                try alpn_list.appendSlice(self.allocator, wire);
+                var alpnList = std.ArrayList(u8).empty;
+                defer alpnList.deinit(self.allocator);
+                try alpnList.append(self.allocator, @intCast(wire.len));
+                try alpnList.appendSlice(self.allocator, wire);
 
-                var alpn_ext_body = std.ArrayList(u8).empty;
-                defer alpn_ext_body.deinit(self.allocator);
-                try alpn_ext_body.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(alpn_list.items.len))));
-                try alpn_ext_body.appendSlice(self.allocator, alpn_list.items);
+                var alpnExtBody = std.ArrayList(u8).empty;
+                defer alpnExtBody.deinit(self.allocator);
+                try alpnExtBody.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(alpnList.items.len))));
+                try alpnExtBody.appendSlice(self.allocator, alpnList.items);
 
-                try ee_exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshake_mod.ExtensionType.application_layer_protocol_negotiation))));
-                try ee_exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(alpn_ext_body.items.len))));
-                try ee_exts.appendSlice(self.allocator, alpn_ext_body.items);
+                try eeExts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshakeMod.ExtensionType.application_layer_protocol_negotiation))));
+                try eeExts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(alpnExtBody.items.len))));
+                try eeExts.appendSlice(self.allocator, alpnExtBody.items);
             }
         }
 
         // QUIC transport parameters (RFC 9001 Section 7.4, ext 57):
         // opaque block, QUIC paths only (null on TCP).
         if (quicTransportParams) |tp| {
-            try ee_exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, handshake_mod.QUIC_TRANSPORT_PARAMETERS_ID)));
-            try ee_exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(tp.len))));
-            try ee_exts.appendSlice(self.allocator, tp);
+            try eeExts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, handshakeMod.QUIC_TRANSPORT_PARAMETERS_ID)));
+            try eeExts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(tp.len))));
+            try eeExts.appendSlice(self.allocator, tp);
         }
 
-        try ee_body.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(ee_exts.items.len))));
-        try ee_body.appendSlice(self.allocator, ee_exts.items);
+        try eeBody.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(eeExts.items.len))));
+        try eeBody.appendSlice(self.allocator, eeExts.items);
 
-        var ee_msg = std.ArrayList(u8).empty;
-        errdefer ee_msg.deinit(self.allocator);
-        try ee_msg.append(self.allocator, @intFromEnum(handshake_mod.HandshakeType.encrypted_extensions));
-        const ee_body_len: u24 = @intCast(ee_body.items.len);
-        try ee_msg.append(self.allocator, @intCast((ee_body_len >> 16) & 0xFF));
-        try ee_msg.append(self.allocator, @intCast((ee_body_len >> 8) & 0xFF));
-        try ee_msg.append(self.allocator, @intCast(ee_body_len & 0xFF));
-        try ee_msg.appendSlice(self.allocator, ee_body.items);
+        var eeMsg = std.ArrayList(u8).empty;
+        errdefer eeMsg.deinit(self.allocator);
+        try eeMsg.append(self.allocator, @intFromEnum(handshakeMod.HandshakeType.encrypted_extensions));
+        const eeBodyLen: u24 = @intCast(eeBody.items.len);
+        try eeMsg.append(self.allocator, @intCast((eeBodyLen >> 16) & 0xFF));
+        try eeMsg.append(self.allocator, @intCast((eeBodyLen >> 8) & 0xFF));
+        try eeMsg.append(self.allocator, @intCast(eeBodyLen & 0xFF));
+        try eeMsg.appendSlice(self.allocator, eeBody.items);
 
-        self.transcript.feed(ee_msg.items);
+        self.transcript.feed(eeMsg.items);
 
         // Mutual TLS: CertificateRequest goes here (EE..CR..Cert), so the
         // transcript order matches what the client observes. Enabled via
         // `requestClientCert`; never sent on an abbreviated (PSK) flight,
         // where authentication rides the binder instead of certificates.
-        var cr_msg: ?[]u8 = null;
-        errdefer if (cr_msg) |m| self.allocator.free(m);
-        if (self.requestClientCert and !use_psk) {
-            cr_msg = try self.produceCertificateRequest();
+        var crMsg: ?[]u8 = null;
+        errdefer if (crMsg) |m| self.allocator.free(m);
+        if (self.requestClientCert and !usePsk) {
+            crMsg = try self.produceCertificateRequest();
         }
 
         // Certificate + CertificateVerify are omitted on abbreviated
         // (PSK) flights: authentication rides the binder, and the
         // transcript skips exactly what is not sent. Empty owned slices
         // mark the omission (verified freeable, even zero-length).
-        var cert_msg = std.ArrayList(u8).empty;
-        errdefer cert_msg.deinit(self.allocator);
-        var cv_msg = std.ArrayList(u8).empty;
-        errdefer cv_msg.deinit(self.allocator);
-        if (!use_psk) {
+        var certMsg = std.ArrayList(u8).empty;
+        errdefer certMsg.deinit(self.allocator);
+        var cvMsg = std.ArrayList(u8).empty;
+        errdefer cvMsg.deinit(self.allocator);
+        if (!usePsk) {
             // Certificate
-            var cert_body = std.ArrayList(u8).empty;
-            defer cert_body.deinit(self.allocator);
-            try cert_body.append(self.allocator, 0x00); // request_context length 0
+            var certBody = std.ArrayList(u8).empty;
+            defer certBody.deinit(self.allocator);
+            try certBody.append(self.allocator, 0x00); // requestContext length 0
             if (certChainPem.len > 0) {
                 // Attempt to parse PEM and encode each cert; fallback to empty on parse failure
                 // to keep tests with empty strings passing.
@@ -1422,8 +1415,8 @@ pub const Engine = struct {
                     var clean = std.ArrayList(u8).empty;
                     defer clean.deinit(self.allocator);
                     for (b64) |c| if (c != '\n' and c != '\r' and c != ' ' and c != '\t') try clean.append(self.allocator, c);
-                    const der_len = std.base64.standard.Decoder.calcSizeForSlice(clean.items) catch break;
-                    const der = self.allocator.alloc(u8, der_len) catch break;
+                    const derLen = std.base64.standard.Decoder.calcSizeForSlice(clean.items) catch break;
+                    const der = self.allocator.alloc(u8, derLen) catch break;
                     std.base64.standard.Decoder.decode(der, clean.items) catch {
                         self.allocator.free(der);
                         break;
@@ -1433,122 +1426,122 @@ pub const Engine = struct {
                     if (certs.items.len >= 8) break;
                 }
                 if (certs.items.len > 0) {
-                    var list_buf = std.ArrayList(u8).empty;
-                    defer list_buf.deinit(self.allocator);
+                    var listBuf = std.ArrayList(u8).empty;
+                    defer listBuf.deinit(self.allocator);
                     for (certs.items) |der| {
                         const len: u24 = @intCast(der.len);
-                        try list_buf.append(self.allocator, @intCast((len >> 16) & 0xFF));
-                        try list_buf.append(self.allocator, @intCast((len >> 8) & 0xFF));
-                        try list_buf.append(self.allocator, @intCast(len & 0xFF));
-                        try list_buf.appendSlice(self.allocator, der);
-                        try list_buf.appendSlice(self.allocator, &.{ 0x00, 0x00 }); // empty extensions
+                        try listBuf.append(self.allocator, @intCast((len >> 16) & 0xFF));
+                        try listBuf.append(self.allocator, @intCast((len >> 8) & 0xFF));
+                        try listBuf.append(self.allocator, @intCast(len & 0xFF));
+                        try listBuf.appendSlice(self.allocator, der);
+                        try listBuf.appendSlice(self.allocator, &.{ 0x00, 0x00 }); // empty extensions
                     }
-                    const total: u24 = @intCast(list_buf.items.len);
-                    try cert_body.append(self.allocator, @intCast((total >> 16) & 0xFF));
-                    try cert_body.append(self.allocator, @intCast((total >> 8) & 0xFF));
-                    try cert_body.append(self.allocator, @intCast(total & 0xFF));
-                    try cert_body.appendSlice(self.allocator, list_buf.items);
+                    const total: u24 = @intCast(listBuf.items.len);
+                    try certBody.append(self.allocator, @intCast((total >> 16) & 0xFF));
+                    try certBody.append(self.allocator, @intCast((total >> 8) & 0xFF));
+                    try certBody.append(self.allocator, @intCast(total & 0xFF));
+                    try certBody.appendSlice(self.allocator, listBuf.items);
                 } else {
-                    try cert_body.appendSlice(self.allocator, &.{ 0x00, 0x00 });
+                    try certBody.appendSlice(self.allocator, &.{ 0x00, 0x00 });
                 }
             } else {
-                try cert_body.appendSlice(self.allocator, &.{ 0x00, 0x00 });
+                try certBody.appendSlice(self.allocator, &.{ 0x00, 0x00 });
             }
 
-            try cert_msg.append(self.allocator, @intFromEnum(handshake_mod.HandshakeType.certificate));
-            const cert_body_len: u24 = @intCast(cert_body.items.len);
-            try cert_msg.append(self.allocator, @intCast((cert_body_len >> 16) & 0xFF));
-            try cert_msg.append(self.allocator, @intCast((cert_body_len >> 8) & 0xFF));
-            try cert_msg.append(self.allocator, @intCast(cert_body_len & 0xFF));
-            try cert_msg.appendSlice(self.allocator, cert_body.items);
+            try certMsg.append(self.allocator, @intFromEnum(handshakeMod.HandshakeType.certificate));
+            const certBodyLen: u24 = @intCast(certBody.items.len);
+            try certMsg.append(self.allocator, @intCast((certBodyLen >> 16) & 0xFF));
+            try certMsg.append(self.allocator, @intCast((certBodyLen >> 8) & 0xFF));
+            try certMsg.append(self.allocator, @intCast(certBodyLen & 0xFF));
+            try certMsg.appendSlice(self.allocator, certBody.items);
 
-            self.transcript.feed(cert_msg.items);
+            self.transcript.feed(certMsg.items);
 
             // CertificateVerify (RFC 8446 Section 4.4.3): ECDSA P-256 over
             // 64x 0x20 ++ "TLS 1.3, server CertificateVerify" ++ 0x00 ++ transcript hash.
             // RSA and other key types fail loudly: an empty signature would break
             // every verifying client, so never emit one.
             if (!self.peerOffersEcdsa) return error.UnsupportedSignatureScheme;
-            const ec_scalar = try parseEcPrivateScalar(self.allocator, privateKeyDer);
-            const ec_pub_point = try P256.basePoint.mul(ec_scalar, .big);
-            const ec_keypair = EcdsaP256.KeyPair{
-                .secret_key = try EcdsaP256.SecretKey.fromBytes(ec_scalar),
-                .public_key = .{ .p = ec_pub_point },
+            const ecScalar = try parseEcPrivateScalar(self.allocator, privateKeyDer);
+            const ecPubPoint = try P256.basePoint.mul(ecScalar, .big);
+            const ecKeypair = EcdsaP256.KeyPair{
+                .secret_key = try EcdsaP256.SecretKey.fromBytes(ecScalar),
+                .public_key = .{ .p = ecPubPoint },
             };
-            var cv_content: [64 + 33 + 1 + HashLen]u8 = undefined;
-            @memset(cv_content[0..64], 0x20);
-            @memcpy(cv_content[64..][0..33], "TLS 1.3, server CertificateVerify");
-            cv_content[64 + 33] = 0x00;
+            var cvContent: [64 + 33 + 1 + HashLen]u8 = undefined;
+            @memset(cvContent[0..64], 0x20);
+            @memcpy(cvContent[64..][0..33], "TLS 1.3, server CertificateVerify");
+            cvContent[64 + 33] = 0x00;
             {
-                var hs_copy = self.transcript.state;
-                const hs_hash = hs_copy.finalResult();
-                @memcpy(cv_content[64 + 33 + 1 ..], &hs_hash);
+                var hsCopy = self.transcript.state;
+                const hsHash = hsCopy.finalResult();
+                @memcpy(cvContent[64 + 33 + 1 ..], &hsHash);
             }
-            var cv_noise: [EcdsaP256.noise_length]u8 = undefined;
-            fillRandom(&cv_noise);
-            const ec_sig = try ec_keypair.sign(&cv_content, cv_noise);
-            var sig_der: [EcdsaP256.Signature.der_encoded_length_max]u8 = undefined;
-            const sig_der_slice = ec_sig.toDer(&sig_der);
+            var cvNoise: [EcdsaP256.noise_length]u8 = undefined;
+            fillRandom(&cvNoise);
+            const ecSig = try ecKeypair.sign(&cvContent, cvNoise);
+            var sigDer: [EcdsaP256.Signature.der_encoded_length_max]u8 = undefined;
+            const sigDerSlice = ecSig.toDer(&sigDer);
 
-            var cv_body = std.ArrayList(u8).empty;
-            defer cv_body.deinit(self.allocator);
-            try cv_body.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshake_mod.SignatureScheme.ecdsa_secp256r1_sha256))));
-            try cv_body.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(sig_der_slice.len))));
-            try cv_body.appendSlice(self.allocator, sig_der_slice);
+            var cvBody = std.ArrayList(u8).empty;
+            defer cvBody.deinit(self.allocator);
+            try cvBody.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshakeMod.SignatureScheme.ecdsa_secp256r1_sha256))));
+            try cvBody.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(sigDerSlice.len))));
+            try cvBody.appendSlice(self.allocator, sigDerSlice);
 
-            try cv_msg.append(self.allocator, @intFromEnum(handshake_mod.HandshakeType.certificate_verify));
-            const cv_body_len: u24 = @intCast(cv_body.items.len);
-            try cv_msg.append(self.allocator, @intCast((cv_body_len >> 16) & 0xFF));
-            try cv_msg.append(self.allocator, @intCast((cv_body_len >> 8) & 0xFF));
-            try cv_msg.append(self.allocator, @intCast(cv_body_len & 0xFF));
-            try cv_msg.appendSlice(self.allocator, cv_body.items);
+            try cvMsg.append(self.allocator, @intFromEnum(handshakeMod.HandshakeType.certificate_verify));
+            const cvBodyLen: u24 = @intCast(cvBody.items.len);
+            try cvMsg.append(self.allocator, @intCast((cvBodyLen >> 16) & 0xFF));
+            try cvMsg.append(self.allocator, @intCast((cvBodyLen >> 8) & 0xFF));
+            try cvMsg.append(self.allocator, @intCast(cvBodyLen & 0xFF));
+            try cvMsg.appendSlice(self.allocator, cvBody.items);
 
-            self.transcript.feed(cv_msg.items);
-        } // end if (!use_psk): abbreviated flights omit Cert/CV entirely
+            self.transcript.feed(cvMsg.items);
+        } // end if (!usePsk): abbreviated flights omit Cert/CV entirely
 
         // Finished
-        // verifyData = HMAC(server_finished_key, Hash(Transcript))
-        // server_finished_key = HKDF-Expand-Label(server_handshake_traffic_secret, "finished", "", HashLen)
-        const hs_hash = self.transcript.finish();
-        const s_hs = self.serverHsTrafficSecret orelse return error.HandshakeFailed;
-        var server_finished_key: [HashLen]u8 = undefined;
-        hkdfExpandLabel(s_hs, "finished", &server_finished_key);
+        // verifyData = HMAC(serverFinishedKey, Hash(Transcript))
+        // serverFinishedKey = HKDF-Expand-Label(serverHandshakeTrafficSecret, "finished", "", HashLen)
+        const hsHash = self.transcript.finish();
+        const sHs = self.serverHsTrafficSecret orelse return error.HandshakeFailed;
+        var serverFinishedKey: [HashLen]u8 = undefined;
+        hkdfExpandLabel(sHs, "finished", &serverFinishedKey);
 
-        var finished_verify: [HashLen]u8 = undefined;
-        std.crypto.auth.hmac.Hmac(Sha256).create(&finished_verify, &hs_hash, &server_finished_key);
+        var finishedVerify: [HashLen]u8 = undefined;
+        std.crypto.auth.hmac.Hmac(Sha256).create(&finishedVerify, &hsHash, &serverFinishedKey);
 
-        var fin_body = std.ArrayList(u8).empty;
-        defer fin_body.deinit(self.allocator);
-        try fin_body.appendSlice(self.allocator, &finished_verify);
+        var finBody = std.ArrayList(u8).empty;
+        defer finBody.deinit(self.allocator);
+        try finBody.appendSlice(self.allocator, &finishedVerify);
 
-        var fin_msg = std.ArrayList(u8).empty;
-        errdefer fin_msg.deinit(self.allocator);
-        try fin_msg.append(self.allocator, @intFromEnum(handshake_mod.HandshakeType.finished));
-        const fin_body_len: u24 = @intCast(fin_body.items.len);
-        try fin_msg.append(self.allocator, @intCast((fin_body_len >> 16) & 0xFF));
-        try fin_msg.append(self.allocator, @intCast((fin_body_len >> 8) & 0xFF));
-        try fin_msg.append(self.allocator, @intCast(fin_body_len & 0xFF));
-        try fin_msg.appendSlice(self.allocator, fin_body.items);
+        var finMsg = std.ArrayList(u8).empty;
+        errdefer finMsg.deinit(self.allocator);
+        try finMsg.append(self.allocator, @intFromEnum(handshakeMod.HandshakeType.finished));
+        const finBodyLen: u24 = @intCast(finBody.items.len);
+        try finMsg.append(self.allocator, @intCast((finBodyLen >> 16) & 0xFF));
+        try finMsg.append(self.allocator, @intCast((finBodyLen >> 8) & 0xFF));
+        try finMsg.append(self.allocator, @intCast(finBodyLen & 0xFF));
+        try finMsg.appendSlice(self.allocator, finBody.items);
 
-        self.transcript.feed(fin_msg.items);
+        self.transcript.feed(finMsg.items);
 
         // Snapshot for QUIC: application traffic secrets hash CH..Fin.
-        const sf_transcript_hash = self.transcript.finish();
+        const sfTranscriptHash = self.transcript.finish();
 
         // Compute application traffic secrets for server side
         self.deriveApplicationKeys();
-        self.state = .server_finished_sent;
+        self.state = .serverFinishedSent;
 
         // Return owned slices
         return .{
-            .serverHello = try sh_msg.toOwnedSlice(self.allocator),
-            .encryptedExtensions = try ee_msg.toOwnedSlice(self.allocator),
-            .certificateRequest = cr_msg,
-            .certificate = try cert_msg.toOwnedSlice(self.allocator),
-            .certificateVerify = try cv_msg.toOwnedSlice(self.allocator),
-            .finished = try fin_msg.toOwnedSlice(self.allocator),
-            .hsHash = hs_transcript_hash,
-            .sfHash = sf_transcript_hash,
+            .serverHello = try shMsg.toOwnedSlice(self.allocator),
+            .encryptedExtensions = try eeMsg.toOwnedSlice(self.allocator),
+            .certificateRequest = crMsg,
+            .certificate = try certMsg.toOwnedSlice(self.allocator),
+            .certificateVerify = try cvMsg.toOwnedSlice(self.allocator),
+            .finished = try finMsg.toOwnedSlice(self.allocator),
+            .hsHash = hsTranscriptHash,
+            .sfHash = sfTranscriptHash,
         };
     }
 
@@ -1571,13 +1564,13 @@ pub const Engine = struct {
         var psk: [32]u8 = undefined;
         hkdfExpandLabelWithContext(resumptionMaster, "resumption", &nonce, &psk);
         defer std.crypto.secureZero(u8, &psk);
-        var age_add: [4]u8 = undefined;
-        fillRandom(&age_add);
-        const age_add_v = std.mem.readInt(u32, &age_add, .big);
-        const blob = keys.seal(psk, suite, nowMs, lifetimeSecs, age_add_v);
-        const nst = handshake_mod.NewSessionTicket{
+        var ageAdd: [4]u8 = undefined;
+        fillRandom(&ageAdd);
+        const ageAddV = std.mem.readInt(u32, &ageAdd, .big);
+        const blob = keys.seal(psk, suite, nowMs, lifetimeSecs, ageAddV);
+        const nst = handshakeMod.NewSessionTicket{
             .lifetimeSecs = lifetimeSecs,
-            .ageAdd = age_add_v,
+            .ageAdd = ageAddV,
             .nonce = &nonce,
             .ticket = &blob,
         };
@@ -1605,11 +1598,11 @@ pub const Engine = struct {
         resumptionMaster: [32]u8,
         host: []const u8,
         nowMs: u64,
-    ) !session_mod.ClientSession {
+    ) !sessionMod.ClientSession {
         if (msg.len < 4) return error.ProtocolViolation;
-        if (msg[0] != @intFromEnum(handshake_mod.HandshakeType.new_session_ticket)) return error.ProtocolViolation;
-        const nst = try handshake_mod.NewSessionTicket.decode(msg[4..]);
-        return session_mod.clientSessionFromTicket(
+        if (msg[0] != @intFromEnum(handshakeMod.HandshakeType.new_session_ticket)) return error.ProtocolViolation;
+        const nst = try handshakeMod.NewSessionTicket.decode(msg[4..]);
+        return sessionMod.clientSessionFromTicket(
             self.allocator,
             nst,
             resumptionMaster,
@@ -1621,7 +1614,7 @@ pub const Engine = struct {
 
     // Key derivation — RFC 8446 Section 7.1
     //
-    // key_schedule:
+    // keySchedule:
     //   0. PSK or (zero) -> Early Secret
     //   1. Early Secret --"derived"--> Handshake Secret
     //   2. Handshake Secret --"derived"--> Master Secret
@@ -1639,17 +1632,17 @@ pub const Engine = struct {
         var copy = self.transcript.state;
         const hash = copy.finalResult();
 
-        var c_hs: [32]u8 = undefined;
-        hkdfExpandLabelWithContext(hsSecret, "c hs traffic", &hash, &c_hs);
+        var cHs: [32]u8 = undefined;
+        hkdfExpandLabelWithContext(hsSecret, "c hs traffic", &hash, &cHs);
 
-        var s_hs: [32]u8 = undefined;
-        hkdfExpandLabelWithContext(hsSecret, "s hs traffic", &hash, &s_hs);
+        var sHs: [32]u8 = undefined;
+        hkdfExpandLabelWithContext(hsSecret, "s hs traffic", &hash, &sHs);
 
         // Store for Finished verification
-        self.serverHsTrafficSecret = s_hs;
-        self.clientHsTrafficSecret = c_hs;
+        self.serverHsTrafficSecret = sHs;
+        self.clientHsTrafficSecret = cHs;
 
-        self.hsKeys = deriveAeadKeys(c_hs, s_hs, self.recordCipher());
+        self.hsKeys = deriveAeadKeys(cHs, sHs, self.recordCipher());
 
         const k = self.hsKeys.?;
         self.cbs.onKeys(self.cbs.ctx, .handshake, k);
@@ -1663,55 +1656,55 @@ pub const Engine = struct {
         // secret above, the empty transcript hashes to Hash(""), never to a
         // zero-length context (RFC 8446 Section 7.1). Transcript binding for
         // application traffic enters at the "c/s ap traffic" step below.
-        var empty_copy = Transcript.init();
-        const empty_hash = empty_copy.finish();
+        var emptyCopy = Transcript.init();
+        const emptyHash = emptyCopy.finish();
         var derived: [32]u8 = undefined;
-        hkdfExpandLabelWithContext(hsSecret, "derived", &empty_hash, &derived);
+        hkdfExpandLabelWithContext(hsSecret, "derived", &emptyHash, &derived);
 
         // With an accepted PSK the Master Secret mixes it in; otherwise
         // zeros exactly as before. (EC)DHE is always performed alongside
-        // (psk_dhe_ke), so forward secrecy holds either way.
+        // (pskDheKe), so forward secrecy holds either way.
         const zero: [32]u8 = .{0} ** 32;
-        const psk_ikm = self.resumptionPsk orelse zero;
-        const master = HkdfSha256.extract(&derived, &psk_ikm);
+        const pskIkm = self.resumptionPsk orelse zero;
+        const master = HkdfSha256.extract(&derived, &pskIkm);
         self.masterSecret = master;
 
         var copy = self.transcript.state;
         const hash = copy.finalResult();
 
-        var c_ap: [32]u8 = undefined;
-        hkdfExpandLabelWithContext(master, "c ap traffic", &hash, &c_ap);
+        var cAp: [32]u8 = undefined;
+        hkdfExpandLabelWithContext(master, "c ap traffic", &hash, &cAp);
 
-        var s_ap: [32]u8 = undefined;
-        hkdfExpandLabelWithContext(master, "s ap traffic", &hash, &s_ap);
+        var sAp: [32]u8 = undefined;
+        hkdfExpandLabelWithContext(master, "s ap traffic", &hash, &sAp);
 
-        self.apKeys = deriveAeadKeys(c_ap, s_ap, self.recordCipher());
+        self.apKeys = deriveAeadKeys(cAp, sAp, self.recordCipher());
 
         const k = self.apKeys.?;
         self.cbs.onKeys(self.cbs.ctx, .application, k);
     }
 
     /// Maps the selected cipher suite to a RecordCipher.
-    fn recordCipher(self: *const Engine) record_mod.RecordCipher {
+    fn recordCipher(self: *const Engine) recordMod.RecordCipher {
         return switch (self.selectedSuite) {
-            .AES_128_GCM_SHA256 => .aes_128_gcm,
-            .AES_256_GCM_SHA384 => .aes_256_gcm,
-            .CHACHA20_POLY1305_SHA256 => .chacha20_poly1305,
-            else => .aes_128_gcm,
+            .AES_128_GCM_SHA256 => .aes128Gcm,
+            .AES_256_GCM_SHA384 => .aes256Gcm,
+            .CHACHA20_POLY1305_SHA256 => .chacha20Poly1305,
+            else => .aes128Gcm,
         };
     }
 
     /// Derive AEAD key + IV from a traffic secret using TLS 1.3 key/IV labels.
-    fn deriveAeadKeys(client_secret: [32]u8, server_secret: [32]u8, cipher: record_mod.RecordCipher) DerivedKeys {
+    fn deriveAeadKeys(clientSecret: [32]u8, serverSecret: [32]u8, cipher: recordMod.RecordCipher) DerivedKeys {
         const keyLen: usize = cipher.keyLen();
         var ck: [32]u8 = undefined;
         var ci: [12]u8 = undefined;
         var sk: [32]u8 = undefined;
         var si: [12]u8 = undefined;
-        hkdfExpandLabel(client_secret, "key", ck[0..keyLen]);
-        hkdfExpandLabel(client_secret, "iv", &ci);
-        hkdfExpandLabel(server_secret, "key", sk[0..keyLen]);
-        hkdfExpandLabel(server_secret, "iv", &si);
+        hkdfExpandLabel(clientSecret, "key", ck[0..keyLen]);
+        hkdfExpandLabel(clientSecret, "iv", &ci);
+        hkdfExpandLabel(serverSecret, "key", sk[0..keyLen]);
+        hkdfExpandLabel(serverSecret, "iv", &si);
         return .{
             .clientKey = ck,
             .clientKeyLen = @intCast(keyLen),
@@ -1757,10 +1750,10 @@ test "client produces valid ClientHello" {
     const a = std.testing.allocator;
     var engine = Engine.initClient(a, .{});
 
-    const ch = try engine.produceClientHello(&.{"h2"}, &.{});
+    const ch = try engine.produceClientHello(&.{"h2"}, &.{}, null, null);
     defer a.free(ch);
 
-    // Starts with handshake type client_hello (0x01)
+    // Starts with handshake type clientHello (0x01)
     try std.testing.expectEqual(@as(u8, 0x01), ch[0]);
     // Body length matches the u24 in header
     const bodyLen: u24 = @as(u24, @intCast(ch[1])) << 16 | @as(u24, @intCast(ch[2])) << 8 | @as(u24, @intCast(ch[3]));
@@ -1774,15 +1767,15 @@ test "handshake engine client-server key exchange" {
     var server = Engine.initServer(a, .{});
 
     // Client produces ClientHello
-    const ch = try client.produceClientHello(&.{"h2"}, &.{});
+    const ch = try client.produceClientHello(&.{"h2"}, &.{}, null, null);
     defer a.free(ch);
 
     // Server processes ClientHello
     try server.processClientHello(ch);
 
     // Deterministic P-256 identity for CertificateVerify signing (SEC1 DER).
-    const ec_kp = try EcdsaP256.KeyPair.generateDeterministic([_]u8{0x42} ** 32);
-    const ec_sec = ec_kp.secret_key.toBytes();
+    const ecKp = try EcdsaP256.KeyPair.generateDeterministic([_]u8{0x42} ** 32);
+    const ecSec = ecKp.secret_key.toBytes();
     var sec1: [39]u8 = undefined;
     sec1[0] = 0x30;
     sec1[1] = 0x25;
@@ -1791,7 +1784,7 @@ test "handshake engine client-server key exchange" {
     sec1[4] = 0x01;
     sec1[5] = 0x04;
     sec1[6] = 0x20;
-    @memcpy(sec1[7..], &ec_sec);
+    @memcpy(sec1[7..], &ecSec);
 
     // Server produces flight: negotiates suite/share from the real
     // ClientHello, derives keys, and signs CertificateVerify.
@@ -1802,18 +1795,18 @@ test "handshake engine client-server key exchange" {
     try std.testing.expect(server.sharedSecret != null);
     try std.testing.expect(server.peerOffersEcdsa);
 
-    try std.testing.expectEqual(Engine.State.server_finished_sent, server.state);
+    try std.testing.expectEqual(Engine.State.serverFinishedSent, server.state);
     try std.testing.expect(server.hsKeys != null);
     try std.testing.expect(server.apKeys != null);
 
     // Client processes ServerHello — derives shared secret and handshake keys
     try client.processServerHello(flight.serverHello);
     try std.testing.expect(client.sharedSecret != null);
-    try std.testing.expectEqual(Engine.State.handshake_keys_derived, client.state);
+    try std.testing.expectEqual(Engine.State.handshakeKeysDerived, client.state);
 
     // Client processes EncryptedExtensions
     try client.processEncryptedExtensions(flight.encryptedExtensions);
-    try std.testing.expectEqual(Engine.State.encrypted_extensions_received, client.state);
+    try std.testing.expectEqual(Engine.State.encryptedExtensionsReceived, client.state);
 
     // Client processes Certificate
     try client.processCertificate(flight.certificate);
@@ -1821,7 +1814,7 @@ test "handshake engine client-server key exchange" {
 
     // Client processes CertificateVerify
     try client.processCertificateVerify(flight.certificateVerify);
-    try std.testing.expectEqual(Engine.State.certificate_verify_received, client.state);
+    try std.testing.expectEqual(Engine.State.certificateVerifyReceived, client.state);
 
     // Client processes Finished
     try client.processFinished(flight.finished);
@@ -1836,21 +1829,21 @@ test "mutual TLS client certificate round trip" {
     const a = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    const client_cert_pem = @embedFile("testdata/localhost_cert.pem");
-    const client_key_pem = @embedFile("testdata/localhost_key.pem");
-    const now_sec: i64 = @divFloor(clock_mod.millisNow(), 1000);
+    const clientCertPem = @embedFile("testdata/localhostCert.pem");
+    const clientKeyPem = @embedFile("testdata/localhostKey.pem");
+    const nowSec: i64 = @divFloor(clockMod.millisNow(), 1000);
 
     var client = Engine.initClient(a, .{});
     var server = Engine.initServer(a, .{});
     server.requestClientCert = true;
 
-    const ch = try client.produceClientHello(&.{}, &.{});
+    const ch = try client.produceClientHello(&.{}, &.{}, null, null);
     defer a.free(ch);
     try server.processClientHello(ch);
 
     // Deterministic P-256 server identity for its own CertificateVerify.
-    const ec_kp = try EcdsaP256.KeyPair.generateDeterministic([_]u8{0x42} ** 32);
-    const ec_sec = ec_kp.secret_key.toBytes();
+    const ecKp = try EcdsaP256.KeyPair.generateDeterministic([_]u8{0x42} ** 32);
+    const ecSec = ecKp.secret_key.toBytes();
     var sec1: [39]u8 = undefined;
     sec1[0] = 0x30;
     sec1[1] = 0x25;
@@ -1859,7 +1852,7 @@ test "mutual TLS client certificate round trip" {
     sec1[4] = 0x01;
     sec1[5] = 0x04;
     sec1[6] = 0x20;
-    @memcpy(sec1[7..], &ec_sec);
+    @memcpy(sec1[7..], &ecSec);
 
     var flight = try server.produceServerFlight(ch[4..], "", sec1[0..], &.{}, &.{}, null);
     defer flight.deinit(a);
@@ -1874,10 +1867,10 @@ test "mutual TLS client certificate round trip" {
     try std.testing.expectEqual(Engine.State.handshakeComplete, client.state);
 
     // Client identity from the committed test certificate + key.
-    var chain = try certMod.parseCertificateChainPem(a, client_cert_pem);
+    var chain = try certMod.parseCertificateChainPem(a, clientCertPem);
     defer chain.deinit();
     try std.testing.expect(chain.count() >= 1);
-    const leaf_der = chain.leaf().?.rawDer();
+    const leafDer = chain.leaf().?.rawDer();
 
     var ders = std.ArrayList([]const u8).empty;
     defer ders.deinit(a);
@@ -1885,42 +1878,42 @@ test "mutual TLS client certificate round trip" {
     while (chain.get(ci)) |c| : (ci += 1) {
         try ders.append(a, c.rawDer());
     }
-    const client_cert = try client.produceClientCertificate(ders.items);
-    defer a.free(client_cert);
-    const client_cv = try client.produceClientCertificateVerify(client_key_pem);
-    defer a.free(client_cv);
-    const client_fin = try client.produceClientFinished();
-    defer a.free(client_fin);
+    const clientCert = try client.produceClientCertificate(ders.items);
+    defer a.free(clientCert);
+    const clientCv = try client.produceClientCertificateVerify(clientKeyPem);
+    defer a.free(clientCv);
+    const clientFin = try client.produceClientFinished();
+    defer a.free(clientFin);
 
     // Server validates: chain anchors in the client CA store, CV
     // signature checks out, Finished MAC binds the full transcript.
     var store = trustStoreMod.TrustStore.init(a, io);
     defer store.deinit();
-    try store.addCertPem(client_cert_pem);
+    try store.addCertPem(clientCertPem);
 
-    var presented = try server.processClientCertificate(client_cert);
+    var presented = try server.processClientCertificate(clientCert);
     defer presented.deinit();
     try std.testing.expectEqual(chain.count(), presented.ders.len);
-    var presented_chain = try certMod.parseCertificateChainPem(a, client_cert_pem);
-    defer presented_chain.deinit();
-    try verify_mod.verifyCertificateChain(presented_chain, &store, null, now_sec);
-    try server.processClientCertificateVerify(client_cv, leaf_der);
-    try server.verifyClientFinished(client_fin);
+    var presentedChain = try certMod.parseCertificateChainPem(a, clientCertPem);
+    defer presentedChain.deinit();
+    try verifyMod.verifyCertificateChain(presentedChain, &store, null, nowSec);
+    try server.processClientCertificateVerify(clientCv, leafDer);
+    try server.verifyClientFinished(clientFin);
 
     // Transcripts agree after the full mutual flight.
-    var c_tr = client.transcript;
-    var s_tr = server.transcript;
-    try std.testing.expectEqualSlices(u8, &c_tr.finish(), &s_tr.finish());
+    var cTr = client.transcript;
+    var sTr = server.transcript;
+    try std.testing.expectEqualSlices(u8, &cTr.finish(), &sTr.finish());
 }
 
 test "mutual TLS rejects untrusted client certificate" {
     const a = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    const client_cert_pem = @embedFile("testdata/localhost_cert.pem");
-    const now_sec: i64 = @divFloor(clock_mod.millisNow(), 1000);
+    const clientCertPem = @embedFile("testdata/localhostCert.pem");
+    const nowSec: i64 = @divFloor(clockMod.millisNow(), 1000);
 
-    var chain = try certMod.parseCertificateChainPem(a, client_cert_pem);
+    var chain = try certMod.parseCertificateChainPem(a, clientCertPem);
     defer chain.deinit();
 
     // Empty trust store: no anchor matches the presented chain.
@@ -1928,7 +1921,7 @@ test "mutual TLS rejects untrusted client certificate" {
     defer store.deinit();
     try std.testing.expectError(
         error.CertificateUntrusted,
-        verify_mod.verifyCertificateChain(chain, &store, null, now_sec),
+        verifyMod.verifyCertificateChain(chain, &store, null, nowSec),
     );
 }
 
@@ -1948,19 +1941,19 @@ test "mutual TLS rejects malformed client Certificate framing" {
 test "mutual TLS rejects forged client CertificateVerify" {
     const a = std.testing.allocator;
 
-    const client_cert_pem = @embedFile("testdata/localhost_cert.pem");
-    const client_key_pem = @embedFile("testdata/localhost_key.pem");
+    const clientCertPem = @embedFile("testdata/localhostCert.pem");
+    const clientKeyPem = @embedFile("testdata/localhostKey.pem");
 
     var client = Engine.initClient(a, .{});
     var server = Engine.initServer(a, .{});
     server.requestClientCert = true;
 
-    const ch = try client.produceClientHello(&.{}, &.{});
+    const ch = try client.produceClientHello(&.{}, &.{}, null, null);
     defer a.free(ch);
     try server.processClientHello(ch);
 
-    const ec_kp = try EcdsaP256.KeyPair.generateDeterministic([_]u8{0x42} ** 32);
-    const ec_sec = ec_kp.secret_key.toBytes();
+    const ecKp = try EcdsaP256.KeyPair.generateDeterministic([_]u8{0x42} ** 32);
+    const ecSec = ecKp.secret_key.toBytes();
     var sec1: [39]u8 = undefined;
     sec1[0] = 0x30;
     sec1[1] = 0x25;
@@ -1969,7 +1962,7 @@ test "mutual TLS rejects forged client CertificateVerify" {
     sec1[4] = 0x01;
     sec1[5] = 0x04;
     sec1[6] = 0x20;
-    @memcpy(sec1[7..], &ec_sec);
+    @memcpy(sec1[7..], &ecSec);
 
     var flight = try server.produceServerFlight(ch[4..], "", sec1[0..], &.{}, &.{}, null);
     defer flight.deinit(a);
@@ -1980,24 +1973,24 @@ test "mutual TLS rejects forged client CertificateVerify" {
     try client.processCertificateVerify(flight.certificateVerify);
     try client.processFinished(flight.finished);
 
-    var chain = try certMod.parseCertificateChainPem(a, client_cert_pem);
+    var chain = try certMod.parseCertificateChainPem(a, clientCertPem);
     defer chain.deinit();
-    const leaf_der = chain.leaf().?.rawDer();
+    const leafDer = chain.leaf().?.rawDer();
     var ders = std.ArrayList([]const u8).empty;
     defer ders.deinit(a);
-    try ders.append(a, leaf_der);
-    const cert_msg = try client.produceClientCertificate(ders.items);
-    defer a.free(cert_msg);
-    var presented = try server.processClientCertificate(cert_msg);
+    try ders.append(a, leafDer);
+    const certMsg = try client.produceClientCertificate(ders.items);
+    defer a.free(certMsg);
+    var presented = try server.processClientCertificate(certMsg);
     defer presented.deinit();
 
-    var cv = try client.produceClientCertificateVerify(client_key_pem);
+    var cv = try client.produceClientCertificateVerify(clientKeyPem);
     defer a.free(cv);
     // Flip a signature byte: verification must fail closed.
     cv[cv.len - 1] ^= 0xFF;
     try std.testing.expectError(
         error.CertificateSignatureInvalid,
-        server.processClientCertificateVerify(cv, leaf_der),
+        server.processClientCertificateVerify(cv, leafDer),
     );
 }
 
@@ -2005,20 +1998,20 @@ test "alpn negotiation through handshake" {
     const a = std.testing.allocator;
     var client = Engine.initClient(a, .{});
 
-    const ch = try client.produceClientHello(&.{ "h2", "http/1.1" }, &.{});
+    const ch = try client.produceClientHello(&.{ "h2", "http/1.1" }, &.{}, null, null);
     defer a.free(ch);
 
     // Verify ALPN extension was encoded (type 0x0010 = 16)
-    var found_alpn = false;
+    var foundAlpn = false;
     var i: usize = 4; // skip handshake header
     while (i + 4 < ch.len) : (i += 1) {
-        const ext_type = std.mem.readInt(u16, ch[i..][0..2], .big);
-        if (ext_type == 0x0010) {
-            found_alpn = true;
+        const extType = std.mem.readInt(u16, ch[i..][0..2], .big);
+        if (extType == 0x0010) {
+            foundAlpn = true;
             break;
         }
     }
-    try std.testing.expect(found_alpn);
+    try std.testing.expect(foundAlpn);
 }
 
 test "server flight carries negotiated alpn selection" {
@@ -2028,12 +2021,12 @@ test "server flight carries negotiated alpn selection" {
     var server = Engine.initServer(a, .{});
     defer server.deinit();
 
-    const ch = try client.produceClientHello(&.{ "h2", "http/1.1" }, &.{});
+    const ch = try client.produceClientHello(&.{ "h2", "http/1.1" }, &.{}, null, null);
     defer a.free(ch);
     try server.processClientHello(ch);
 
-    const ec_kp = try EcdsaP256.KeyPair.generateDeterministic([_]u8{0x42} ** 32);
-    const ec_sec = ec_kp.secret_key.toBytes();
+    const ecKp = try EcdsaP256.KeyPair.generateDeterministic([_]u8{0x42} ** 32);
+    const ecSec = ecKp.secret_key.toBytes();
     var sec1: [39]u8 = undefined;
     sec1[0] = 0x30;
     sec1[1] = 0x25;
@@ -2042,7 +2035,7 @@ test "server flight carries negotiated alpn selection" {
     sec1[4] = 0x01;
     sec1[5] = 0x04;
     sec1[6] = 0x20;
-    @memcpy(sec1[7..], &ec_sec);
+    @memcpy(sec1[7..], &ecSec);
 
     var flight = try server.produceServerFlight(
         ch[4..],
@@ -2058,7 +2051,7 @@ test "server flight carries negotiated alpn selection" {
     try client.processServerHello(flight.serverHello);
     try client.processEncryptedExtensions(flight.encryptedExtensions);
     try std.testing.expectEqualStrings("h2", client.negotiatedAlpn.?);
-    try std.testing.expect(alpn_mod.Protocol.fromWire(client.negotiatedAlpn.?) == .h2);
+    try std.testing.expect(alpnMod.Protocol.fromWire(client.negotiatedAlpn.?) == .h2);
 }
 
 test "psk abbreviated handshake resynchronizes application keys" {
@@ -2070,17 +2063,17 @@ test "psk abbreviated handshake resynchronizes application keys" {
     defer client.deinit();
     var server = Engine.initServer(a, .{});
     defer server.deinit();
-    server.ticketKeys = session_mod.TicketKeys{ .current = [_]u8{0x1A} ** 32 };
+    server.ticketKeys = sessionMod.TicketKeys{ .current = [_]u8{0x1A} ** 32 };
 
-    const ch = try client.produceClientHello(&.{"h2"}, &.{});
+    const ch = try client.produceClientHello(&.{"h2"}, &.{}, null, null);
     defer a.free(ch);
     try server.processClientHello(ch);
 
-    const ec_kp = try EcdsaP256.KeyPair.generateDeterministic([_]u8{0x42} ** 32);
-    const ec_sec = ec_kp.secret_key.toBytes();
+    const ecKp = try EcdsaP256.KeyPair.generateDeterministic([_]u8{0x42} ** 32);
+    const ecSec = ecKp.secret_key.toBytes();
     var sec1: [39]u8 = undefined;
     sec1[0..7].* = .{ 0x30, 0x25, 0x02, 0x01, 0x01, 0x04, 0x20 };
-    @memcpy(sec1[7..], &ec_sec);
+    @memcpy(sec1[7..], &ecSec);
 
     var flight = try server.produceServerFlight(ch[4..], "", sec1[0..], &.{}, &.{}, null);
     defer flight.deinit(a);
@@ -2091,19 +2084,19 @@ test "psk abbreviated handshake resynchronizes application keys" {
     try client.processCertificate(flight.certificate);
     try client.processCertificateVerify(flight.certificateVerify);
     try client.processFinished(flight.finished);
-    const client_fin = try client.produceClientFinished();
-    defer a.free(client_fin);
-    try server.verifyClientFinished(client_fin);
+    const clientFin = try client.produceClientFinished();
+    defer a.free(clientFin);
+    try server.verifyClientFinished(clientFin);
 
     // Both sides derive the SAME resumption master (transcripts match).
-    const master_c = try client.deriveResumptionMaster();
-    const master_s = try server.deriveResumptionMaster();
-    try std.testing.expectEqualSlices(u8, &master_c, &master_s);
+    const masterC = try client.deriveResumptionMaster();
+    const masterS = try server.deriveResumptionMaster();
+    try std.testing.expectEqualSlices(u8, &masterC, &masterS);
 
     // Server issues one ticket; client captures a bound session.
-    const nst = try server.produceNewSessionTicket(master_s, server.selectedSuite, 3600, now);
+    const nst = try server.produceNewSessionTicket(masterS, server.selectedSuite, 3600, now);
     defer a.free(nst);
-    var session = try client.processNewSessionTicket(nst, master_c, "example.com", now);
+    var session = try client.processNewSessionTicket(nst, masterC, "example.com", now);
     defer session.deinit(a);
     try std.testing.expect(session.isUsable("example.com", now + 1000));
     try std.testing.expect(!session.isUsable("other.com", now + 1000));
@@ -2127,9 +2120,9 @@ test "psk abbreviated handshake resynchronizes application keys" {
     try std.testing.expect(client2.resumptionPsk != null);
     try client2.processEncryptedExtensions(flight2.encryptedExtensions);
     try client2.processFinished(flight2.finished);
-    const client2_fin = try client2.produceClientFinished();
-    defer a.free(client2_fin);
-    try server2.verifyClientFinished(client2_fin);
+    const client2Fin = try client2.produceClientFinished();
+    defer a.free(client2Fin);
+    try server2.verifyClientFinished(client2Fin);
     // Same PSK schedule both sides: application keys match exactly.
     // (Compare only the meaningful key bytes: the [32]u8 slots hold
     // 16-byte keys for AES-128, and the tail is uninitialized memory
@@ -2148,12 +2141,12 @@ test "psk abbreviated handshake resynchronizes application keys" {
     // Flip a binder byte: the server must reject the PSK silently.
     const tampered = try a.dupe(u8, ch3);
     defer a.free(tampered);
-    const bspan = try handshake_mod.pskBinderSpan(tampered);
+    const bspan = try handshakeMod.pskBinderSpan(tampered);
     bspan[0] ^= 0xFF;
     try server3.processClientHello(tampered);
     try std.testing.expect(!server3.selectPsk(tampered, now + 3000));
     // Expired tickets also fall back instead of failing.
-    try std.testing.expect(!server3.selectPsk(ch2, now + 3600 * 1000 + session_mod.ticket_skew_ms + 5000));
+    try std.testing.expect(!server3.selectPsk(ch2, now + 3600 * 1000 + sessionMod.ticketSkewMs + 5000));
 }
 
 test "hello retry request completes a full handshake after retry" {
@@ -2164,7 +2157,7 @@ test "hello retry request completes a full handshake after retry" {
 
     // Shareless ClientHello1 (crafted directly: the normal producer
     // always offers x25519). The predicate must spot the gap.
-    const ch1_base = handshake_mod.ClientHello{
+    const ch1Base = handshakeMod.ClientHello{
         .random = [_]u8{0x55} ** 32,
         .cipherSuites = &.{.AES_128_GCM_SHA256},
         .keyShareEntries = &.{},
@@ -2172,7 +2165,7 @@ test "hello retry request completes a full handshake after retry" {
         .alpnProtocols = &.{},
         .serverName = null,
     };
-    const ch1 = try ch1_base.encode(a);
+    const ch1 = try ch1Base.encode(a);
     defer a.free(ch1);
     try std.testing.expect(!Engine.clientHelloHasShare(ch1[4..]));
 
@@ -2185,21 +2178,21 @@ test "hello retry request completes a full handshake after retry" {
 
     try client.processClientHello(ch1);
     try client.processServerHello(hrr);
-    try std.testing.expectEqual(handshake_mod.NamedGroup.x25519, client.hrrPendingGroup.?);
+    try std.testing.expectEqual(handshakeMod.NamedGroup.x25519, client.hrrPendingGroup.?);
     // A second HRR aborts loudly.
     try std.testing.expectError(error.HandshakeFailed, client.processServerHello(hrr));
 
     // Retried hello carries a real share; the predicate agrees.
-    const ch2 = try client.produceClientHello(&.{}, &.{});
+    const ch2 = try client.produceClientHello(&.{}, &.{}, null, null);
     defer a.free(ch2);
     try std.testing.expect(Engine.clientHelloHasShare(ch2[4..]));
     try server.processClientHello(ch2);
 
-    const ec_kp = try EcdsaP256.KeyPair.generateDeterministic([_]u8{0x42} ** 32);
-    const ec_sec = ec_kp.secret_key.toBytes();
+    const ecKp = try EcdsaP256.KeyPair.generateDeterministic([_]u8{0x42} ** 32);
+    const ecSec = ecKp.secret_key.toBytes();
     var sec1: [39]u8 = undefined;
     sec1[0..7].* = .{ 0x30, 0x25, 0x02, 0x01, 0x01, 0x04, 0x20 };
-    @memcpy(sec1[7..], &ec_sec);
+    @memcpy(sec1[7..], &ecSec);
     var flight = try server.produceServerFlight(ch2[4..], "", sec1[0..], &.{}, &.{}, null);
     defer flight.deinit(a);
     try client.processServerHello(flight.serverHello);
@@ -2207,9 +2200,9 @@ test "hello retry request completes a full handshake after retry" {
     try client.processCertificate(flight.certificate);
     try client.processCertificateVerify(flight.certificateVerify);
     try client.processFinished(flight.finished);
-    const client_fin = try client.produceClientFinished();
-    defer a.free(client_fin);
-    try server.verifyClientFinished(client_fin);
+    const clientFin = try client.produceClientFinished();
+    defer a.free(clientFin);
+    try server.verifyClientFinished(clientFin);
     try std.testing.expectEqualSlices(u8, client.apKeys.?.clientKeySlice(), server.apKeys.?.clientKeySlice());
 }
 test "quic transport parameters roundtrip through hello and ee" {
@@ -2219,7 +2212,7 @@ test "quic transport parameters roundtrip through hello and ee" {
     var server = Engine.initServer(a, .{});
     defer server.deinit();
 
-    // Hand-rolled TP block: initial_max_data = 2MiB, max_idle_timeout = 30s.
+    // Hand-rolled TP block: initialMaxData = 2MiB, maxIdleTimeout = 30s.
     var tp = std.ArrayList(u8).empty;
     defer tp.deinit(a);
     try tp.appendSlice(a, &.{ 0x04, 0x08 });
@@ -2230,15 +2223,15 @@ test "quic transport parameters roundtrip through hello and ee" {
     std.mem.writeInt(u64, &v, 30_000, .big);
     try tp.appendSlice(a, &v);
 
-    const ch = try client.produceClientHelloWithSni(&.{"h3"}, &.{}, "example.com", tp.items);
+    const ch = try client.produceClientHello(&.{"h3"}, &.{}, "example.com", tp.items);
     defer a.free(ch);
     try server.processClientHello(ch);
     try std.testing.expect(server.peerQuicTransportParams != null);
     try std.testing.expectEqualSlices(u8, tp.items, server.peerQuicTransportParams.?);
 
     // Deterministic P-256 server identity (same shape as the mTLS test).
-    const ec_kp = try EcdsaP256.KeyPair.generateDeterministic([_]u8{0x42} ** 32);
-    const ec_sec = ec_kp.secret_key.toBytes();
+    const ecKp = try EcdsaP256.KeyPair.generateDeterministic([_]u8{0x42} ** 32);
+    const ecSec = ecKp.secret_key.toBytes();
     var sec1: [39]u8 = undefined;
     sec1[0] = 0x30;
     sec1[1] = 0x25;
@@ -2247,7 +2240,7 @@ test "quic transport parameters roundtrip through hello and ee" {
     sec1[4] = 0x01;
     sec1[5] = 0x04;
     sec1[6] = 0x20;
-    @memcpy(sec1[7..], &ec_sec);
+    @memcpy(sec1[7..], &ecSec);
 
     var flight = try server.produceServerFlight(ch[4..], "", sec1[0..], &.{}, &.{}, tp.items);
     defer flight.deinit(a);
@@ -2260,32 +2253,32 @@ test "quic transport parameters roundtrip through hello and ee" {
 test "server certificate verify binds transcript and rejects tampering" {
     const a = std.testing.allocator;
 
-    const server_cert_pem = @embedFile("testdata/localhost_cert.pem");
-    const server_key_pem = @embedFile("testdata/localhost_key.pem");
+    const serverCertPem = @embedFile("testdata/localhostCert.pem");
+    const serverKeyPem = @embedFile("testdata/localhostKey.pem");
 
     var client = Engine.initClient(a, .{});
     defer client.deinit();
     var server = Engine.initServer(a, .{});
     defer server.deinit();
 
-    const ch = try client.produceClientHelloWithSni(&.{"h3"}, &.{}, "example.com", null);
+    const ch = try client.produceClientHello(&.{"h3"}, &.{}, "example.com", null);
     defer a.free(ch);
     try server.processClientHello(ch);
 
     // Server flight signed with the committed localhost identity.
-    var flight = try server.produceServerFlight(ch[4..], server_cert_pem, server_key_pem, &.{}, &.{}, null);
+    var flight = try server.produceServerFlight(ch[4..], serverCertPem, serverKeyPem, &.{}, &.{}, null);
     defer flight.deinit(a);
 
     try client.processServerHello(flight.serverHello);
     try client.processEncryptedExtensions(flight.encryptedExtensions);
     try client.processCertificate(flight.certificate);
 
-    var chain = try certMod.parseCertificateChainPem(a, server_cert_pem);
+    var chain = try certMod.parseCertificateChainPem(a, serverCertPem);
     defer chain.deinit();
-    const leaf_der = chain.leaf().?.rawDer();
+    const leafDer = chain.leaf().?.rawDer();
 
     // Valid CertificateVerify checks out against the leaf public key.
-    try client.processServerCertificateVerify(flight.certificateVerify, leaf_der);
+    try client.processServerCertificateVerify(flight.certificateVerify, leafDer);
 
     // A flipped signature byte is rejected and the failed check must not
     // feed the handshake transcript (digest identical before/after).
@@ -2295,7 +2288,7 @@ test "server certificate verify binds transcript and rejects tampering" {
     const before = client.transcript.finish();
     try std.testing.expectError(
         error.CertificateSignatureInvalid,
-        client.processServerCertificateVerify(tampered, leaf_der),
+        client.processServerCertificateVerify(tampered, leafDer),
     );
     try std.testing.expectEqual(before, client.transcript.finish());
 }

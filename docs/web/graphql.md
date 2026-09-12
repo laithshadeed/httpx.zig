@@ -48,7 +48,7 @@ pub fn main() !void {
 }
 ```
 
-See `examples/graphql_server.zig` (`zig build run-graphql-server`) for the
+See `examples/graphqlServer.zig` (`zig build run-graphql-server`) for the
 complete runnable version with queries, variables, and verification.
 
 ## Client Execution & Typed Responses

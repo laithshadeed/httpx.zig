@@ -86,17 +86,17 @@ pub fn classifyTarget(method: []const u8, target: []const u8) ?TargetForm {
 pub fn validAuthority(value: []const u8) bool {
     if (value.len == 0 or value.len > 255) return false;
 
-    var host_part = value;
-    var port_part: ?[]const u8 = null;
+    var hostPart = value;
+    var portPart: ?[]const u8 = null;
 
     if (value[0] == '[') {
         const close = std.mem.indexOfScalar(u8, value, ']') orelse return false;
         if (close < 3) return false; // [] minimum
-        host_part = value[0 .. close + 1];
+        hostPart = value[0 .. close + 1];
         const rest = value[close + 1 ..];
         if (rest.len > 0) {
             if (rest[0] != ':') return false;
-            port_part = rest[1..];
+            portPart = rest[1..];
         }
         // Rough IPv6 shape inside brackets: hex digits, colons, dots, %zone.
         const inner = value[1..close];
@@ -109,11 +109,11 @@ pub fn validAuthority(value: []const u8) bool {
         }
     } else {
         if (std.mem.lastIndexOfScalar(u8, value, ':')) |colon| {
-            host_part = value[0..colon];
-            port_part = value[colon + 1 ..];
+            hostPart = value[0..colon];
+            portPart = value[colon + 1 ..];
         }
-        if (host_part.len == 0) return false;
-        for (host_part) |c| {
+        if (hostPart.len == 0) return false;
+        for (hostPart) |c| {
             switch (c) {
                 '-', '.', '_' => {},
                 else => if (!std.ascii.isAlphanumeric(c)) return false,
@@ -121,7 +121,7 @@ pub fn validAuthority(value: []const u8) bool {
         }
     }
 
-    if (port_part) |p| {
+    if (portPart) |p| {
         if (p.len == 0 or p.len > 5) return false;
         for (p) |c| {
             if (!std.ascii.isDigit(c)) return false;
@@ -144,8 +144,8 @@ pub fn connectionDirective(headers: []const @import("../http1/parser.zig").Field
     for (headers) |h| {
         if (!std.ascii.eqlIgnoreCase(h.name, "Connection")) continue;
         var it = std.mem.splitScalar(u8, h.value, ',');
-        while (it.next()) |tok_raw| {
-            const tok = std.mem.trim(u8, tok_raw, " \t");
+        while (it.next()) |tokRaw| {
+            const tok = std.mem.trim(u8, tokRaw, " \t");
             if (std.ascii.eqlIgnoreCase(tok, "keep-alive")) result = .keepAlive;
             if (std.ascii.eqlIgnoreCase(tok, "close")) result = .close;
         }

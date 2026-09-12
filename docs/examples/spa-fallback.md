@@ -1,6 +1,6 @@
 # Example: Spa Fallback
 
-Demonstrates spa_fallback.zig using the canonical HTTPX API.
+Demonstrates spaFallback.zig using the canonical HTTPX API.
 
 ## Complete Example
 

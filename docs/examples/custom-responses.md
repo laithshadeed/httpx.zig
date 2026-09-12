@@ -1,6 +1,6 @@
 # Example: Custom Responses
 
-Demonstrates custom_responses.zig using the canonical HTTPX API.
+Demonstrates customResponses.zig using the canonical HTTPX API.
 
 ## Complete Example
 

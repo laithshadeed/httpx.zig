@@ -1,7 +1,7 @@
 # Concurrent Requests
 
 Execute multiple requests in parallel with `getAll` / `requestAll`.
-See `examples/concurrent_demo.zig` and [Batch Concurrent](/examples/batch-concurrent).
+See `examples/concurrentDemo.zig` and [Batch Concurrent](/examples/batch-concurrent).
 
 ```zig
 var client = httpx.Client.init(allocator, io, .{});

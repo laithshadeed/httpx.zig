@@ -1,7 +1,7 @@
 # Compression
 
 Content encoding negotiation and codecs (`httpx.compression`): gzip,
-deflate, brotli, and zstd. See `examples/compression_demo.zig`.
+deflate, brotli, and zstd. See `examples/compressionDemo.zig`.
 
 ```zig
 // Advertise encodings; the client decodes transparently.

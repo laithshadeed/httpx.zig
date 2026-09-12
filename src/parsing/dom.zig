@@ -141,44 +141,44 @@ pub const Tree = struct {
     /// Attaches `child` as the last child of `parent`.
     pub fn appendChild(self: *Tree, parentIdx: u32, childIdx: u32) void {
         const parent = self.getMut(parentIdx);
-        const prev_last = parent.lastChild;
+        const prevLast = parent.lastChild;
         parent.lastChild = childIdx;
         if (parent.firstChild == NO_NODE) parent.firstChild = childIdx;
 
         const child = self.getMut(childIdx);
         child.parent = parentIdx;
-        child.prevSibling = prev_last;
+        child.prevSibling = prevLast;
         child.nextSibling = NO_NODE;
 
-        if (prev_last != NO_NODE) {
-            self.getMut(prev_last).nextSibling = childIdx;
+        if (prevLast != NO_NODE) {
+            self.getMut(prevLast).nextSibling = childIdx;
         }
     }
 
     /// Attaches `child` as the first child of `parent`.
     pub fn prependChild(self: *Tree, parentIdx: u32, childIdx: u32) void {
         const parent = self.getMut(parentIdx);
-        const old_first = parent.firstChild;
+        const oldFirst = parent.firstChild;
         parent.firstChild = childIdx;
         if (parent.lastChild == NO_NODE) parent.lastChild = childIdx;
 
         const child = self.getMut(childIdx);
         child.parent = parentIdx;
         child.prevSibling = NO_NODE;
-        child.nextSibling = old_first;
+        child.nextSibling = oldFirst;
 
-        if (old_first != NO_NODE) {
-            self.getMut(old_first).prevSibling = childIdx;
+        if (oldFirst != NO_NODE) {
+            self.getMut(oldFirst).prevSibling = childIdx;
         }
     }
 
     /// Removes a child node from its parent.
     pub fn removeChild(self: *Tree, childIdx: u32) void {
         const child = self.getMut(childIdx);
-        const p_idx = child.parent;
-        if (p_idx == NO_NODE) return;
+        const pIdx = child.parent;
+        if (pIdx == NO_NODE) return;
 
-        const parent = self.getMut(p_idx);
+        const parent = self.getMut(pIdx);
         const prev = child.prevSibling;
         const next = child.nextSibling;
 
@@ -201,34 +201,34 @@ pub const Tree = struct {
 
     /// Replaces an existing child node with a new node.
     pub fn replaceChild(self: *Tree, oldChildIdx: u32, newChildIdx: u32) void {
-        const old_child = self.get(oldChildIdx);
-        const p_idx = old_child.parent;
-        if (p_idx == NO_NODE) return;
+        const oldChild = self.get(oldChildIdx);
+        const pIdx = oldChild.parent;
+        if (pIdx == NO_NODE) return;
 
-        const prev = old_child.prevSibling;
-        const next = old_child.nextSibling;
+        const prev = oldChild.prevSibling;
+        const next = oldChild.nextSibling;
 
-        const new_child = self.getMut(newChildIdx);
-        new_child.parent = p_idx;
-        new_child.prevSibling = prev;
-        new_child.nextSibling = next;
+        const newChild = self.getMut(newChildIdx);
+        newChild.parent = pIdx;
+        newChild.prevSibling = prev;
+        newChild.nextSibling = next;
 
         if (prev != NO_NODE) {
             self.getMut(prev).nextSibling = newChildIdx;
         } else {
-            self.getMut(p_idx).firstChild = newChildIdx;
+            self.getMut(pIdx).firstChild = newChildIdx;
         }
 
         if (next != NO_NODE) {
             self.getMut(next).prevSibling = newChildIdx;
         } else {
-            self.getMut(p_idx).lastChild = newChildIdx;
+            self.getMut(pIdx).lastChild = newChildIdx;
         }
 
-        const old_mut = self.getMut(oldChildIdx);
-        old_mut.parent = NO_NODE;
-        old_mut.prevSibling = NO_NODE;
-        old_mut.nextSibling = NO_NODE;
+        const oldMut = self.getMut(oldChildIdx);
+        oldMut.parent = NO_NODE;
+        oldMut.prevSibling = NO_NODE;
+        oldMut.nextSibling = NO_NODE;
     }
 
     /// Sets or adds an attribute on the element node.
@@ -243,10 +243,10 @@ pub const Tree = struct {
             }
         }
 
-        var new_attrs = try allocator.alloc(Attribute, node.attrs.len + 1);
-        @memcpy(new_attrs[0..node.attrs.len], node.attrs);
-        new_attrs[node.attrs.len] = .{ .name = name, .value = value };
-        node.attrs = new_attrs;
+        var newAttrs = try allocator.alloc(Attribute, node.attrs.len + 1);
+        @memcpy(newAttrs[0..node.attrs.len], node.attrs);
+        newAttrs[node.attrs.len] = .{ .name = name, .value = value };
+        node.attrs = newAttrs;
     }
 
     /// Removes an attribute from the element node if present.
@@ -254,18 +254,18 @@ pub const Tree = struct {
         const node = self.getMut(nodeIdx);
         if (node.kind != .element or node.attrs.len == 0) return;
 
-        var found_idx: ?usize = null;
+        var foundIdx: ?usize = null;
         for (node.attrs, 0..) |a, i| {
             if (std.ascii.eqlIgnoreCase(a.name, name)) {
-                found_idx = i;
+                foundIdx = i;
                 break;
             }
         }
-        if (found_idx) |idx| {
-            var new_attrs = try allocator.alloc(Attribute, node.attrs.len - 1);
-            @memcpy(new_attrs[0..idx], node.attrs[0..idx]);
-            @memcpy(new_attrs[idx..], node.attrs[idx + 1 ..]);
-            node.attrs = new_attrs;
+        if (foundIdx) |idx| {
+            var newAttrs = try allocator.alloc(Attribute, node.attrs.len - 1);
+            @memcpy(newAttrs[0..idx], node.attrs[0..idx]);
+            @memcpy(newAttrs[idx..], node.attrs[idx + 1 ..]);
+            node.attrs = newAttrs;
         }
     }
 

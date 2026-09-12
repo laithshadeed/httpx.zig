@@ -90,15 +90,15 @@ pub fn BoundedQueue(comptime T: type) type {
                         self.space.post();
                         return item;
                     }
-                    const is_closed = self.closed;
+                    const closedFlag = self.closed;
                     self.mu.unlock();
-                    if (is_closed) return error.Closed;
+                    if (closedFlag) return error.Closed;
                 }
                 self.mu.lock();
-                const is_closed = self.closed;
-                const is_empty = (self.len == 0);
+                const closedFlag = self.closed;
+                const isEmpty = (self.len == 0);
                 self.mu.unlock();
-                if (is_closed and is_empty) return error.Closed;
+                if (closedFlag and isEmpty) return error.Closed;
                 std.Thread.yield() catch {};
             }
         }
@@ -119,11 +119,11 @@ pub fn BoundedQueue(comptime T: type) type {
         /// Marks the queue as closed and wakes all blocked threads.
         pub fn close(self: *Self) void {
             self.mu.lock();
-            const was_closed = self.closed;
+            const wasClosed = self.closed;
             self.closed = true;
             self.mu.unlock();
 
-            if (!was_closed) {
+            if (!wasClosed) {
                 var i: usize = 0;
                 while (i < self.buf.len + 32) : (i += 1) {
                     self.itemsAvail.post();
@@ -211,30 +211,30 @@ test "queue multi-threaded producer-consumer" {
     defer q.deinit();
 
     const Producer = struct {
-        fn run(queue: *Q, start_val: usize, count_val: usize) void {
+        fn run(queue: *Q, startVal: usize, countVal: usize) void {
             var i: usize = 0;
-            while (i < count_val) : (i += 1) {
-                queue.push(start_val + i) catch return;
+            while (i < countVal) : (i += 1) {
+                queue.push(startVal + i) catch return;
             }
         }
     };
 
     const Consumer = struct {
-        fn run(queue: *Q, total_recv: *std.atomic.Value(usize), expected: usize) void {
-            while (total_recv.load(.monotonic) < expected) {
+        fn run(queue: *Q, totalRecv: *std.atomic.Value(usize), expected: usize) void {
+            while (totalRecv.load(.monotonic) < expected) {
                 _ = queue.pop() catch break;
-                _ = total_recv.fetchAdd(1, .monotonic);
+                _ = totalRecv.fetchAdd(1, .monotonic);
             }
         }
     };
 
-    var total_recv = std.atomic.Value(usize).init(0);
-    const total_items: usize = 50;
+    var totalRecv = std.atomic.Value(usize).init(0);
+    const totalItems: usize = 50;
 
     const t1 = try std.Thread.spawn(.{}, Producer.run, .{ &q, 0, 25 });
     const t2 = try std.Thread.spawn(.{}, Producer.run, .{ &q, 25, 25 });
-    const c1 = try std.Thread.spawn(.{}, Consumer.run, .{ &q, &total_recv, total_items });
-    const c2 = try std.Thread.spawn(.{}, Consumer.run, .{ &q, &total_recv, total_items });
+    const c1 = try std.Thread.spawn(.{}, Consumer.run, .{ &q, &totalRecv, totalItems });
+    const c2 = try std.Thread.spawn(.{}, Consumer.run, .{ &q, &totalRecv, totalItems });
 
     t1.join();
     t2.join();
@@ -242,5 +242,5 @@ test "queue multi-threaded producer-consumer" {
     c1.join();
     c2.join();
 
-    try std.testing.expectEqual(total_items, total_recv.load(.monotonic));
+    try std.testing.expectEqual(totalItems, totalRecv.load(.monotonic));
 }

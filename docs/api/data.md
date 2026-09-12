@@ -37,7 +37,7 @@ const contentType = form.contentType(&ctBuf);
 
 | Method | Description |
 |--------|-------------|
-| `init(allocator)` / `initWithSubtype(allocator, subtype)` | Create a builder (boundary auto-generated; override with `setBoundary`) |
+| `init(allocator, subtype)` | Create a builder (boundary auto-generated; override with `setBoundary`) |
 | `field(name, value)` | Append a text form field part |
 | `file(name, data, .{ .filename, .contentType, ... })` | Append a file upload part |
 | `encodeAlloc()` | Finalize and return the complete body (caller owns) |
@@ -83,7 +83,7 @@ for (fields) |part| {
 ```
 
 Use `httpx.multipart.parser.Limits` (presets `.strict` / `.relaxed`, or
-`Parser.initWithLimits`) to bound parts, header sizes, and body sizes.
+`Parser.init(allocator, limits)`) to bound parts, header sizes, and body sizes.
 
 ### Field
 

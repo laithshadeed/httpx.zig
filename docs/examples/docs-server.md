@@ -1,6 +1,6 @@
 # Example: Docs Server
 
-Demonstrates docs_server.zig using the canonical HTTPX API.
+Demonstrates docsServer.zig using the canonical HTTPX API.
 
 ## Complete Example
 

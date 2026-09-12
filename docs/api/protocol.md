@@ -154,6 +154,6 @@ const v = try httpx.quic.varint.decode(&buf, &off);
 
 ## Complete HTTP/2 Example
 
-See `examples/http2_client.zig` (h2c client + server) and
-`examples/http2_multiplex.zig` (HPACK + multiplexed streams). For HTTP/3,
-see `examples/http3_client.zig` and `examples/http3_quic.zig`.
+See `examples/http2Client.zig` (h2c client + server) and
+`examples/http2Multiplex.zig` (HPACK + multiplexed streams). For HTTP/3,
+see `examples/http3Client.zig` and `examples/http3Quic.zig`.

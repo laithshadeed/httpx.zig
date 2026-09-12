@@ -1,7 +1,7 @@
 # Cookies Demo
 
 Cookie flows with per-request headers and the standalone `httpx.CookieJar`.
-See `examples/cookie_server.zig`.
+See `examples/cookieServer.zig`.
 
 ```zig
 var jar = httpx.CookieJar.init(allocator);

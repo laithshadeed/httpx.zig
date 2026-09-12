@@ -1,6 +1,6 @@
 # Example: Http2 Multiplex
 
-Demonstrates http2_multiplex.zig using the canonical HTTPX API.
+Demonstrates http2Multiplex.zig using the canonical HTTPX API.
 
 ## Complete Example
 

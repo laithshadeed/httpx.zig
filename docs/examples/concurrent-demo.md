@@ -1,6 +1,6 @@
 # Example: Concurrent Demo
 
-Demonstrates concurrent_demo.zig using the canonical HTTPX API.
+Demonstrates concurrentDemo.zig using the canonical HTTPX API.
 
 ## Complete Example
 

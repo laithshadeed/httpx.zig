@@ -26,16 +26,16 @@ pub fn encode(buf: []u8, prefixBits: u3, firstByteHigh: u8, value: u64) Error!us
     std.debug.assert(prefixBits >= 1 and prefixBits <= 7);
     if (buf.len < 1) return Error.BufferTooSmall;
 
-    const max_prefix: u64 = (@as(u64, 1) << prefixBits) - 1;
-    const high_mask: u8 = @intCast((@as(u16, 0xFF) << prefixBits) & 0xFF);
+    const maxPrefix: u64 = (@as(u64, 1) << prefixBits) - 1;
+    const highMask: u8 = @intCast((@as(u16, 0xFF) << prefixBits) & 0xFF);
 
-    if (value < max_prefix) {
-        buf[0] = (firstByteHigh & high_mask) | @as(u8, @intCast(value));
+    if (value < maxPrefix) {
+        buf[0] = (firstByteHigh & highMask) | @as(u8, @intCast(value));
         return 1;
     }
 
-    buf[0] = (firstByteHigh & high_mask) | @as(u8, @intCast(max_prefix));
-    var remaining = value - max_prefix;
+    buf[0] = (firstByteHigh & highMask) | @as(u8, @intCast(maxPrefix));
+    var remaining = value - maxPrefix;
     var pos: usize = 1;
     while (remaining >= 128) {
         if (pos >= buf.len) return Error.BufferTooSmall;
@@ -53,11 +53,11 @@ pub fn encode(buf: []u8, prefixBits: u3, firstByteHigh: u8, value: u64) Error!us
 /// on them beforehand). `offset` advances past the integer.
 pub fn decode(data: []const u8, offset: *usize, prefixBits: u3) Error!u64 {
     if (offset.* >= data.len) return Error.Truncated;
-    const max_prefix: u64 = (@as(u64, 1) << prefixBits) - 1;
+    const maxPrefix: u64 = (@as(u64, 1) << prefixBits) - 1;
 
-    var value: u64 = data[offset.*] & @as(u8, @intCast(max_prefix));
+    var value: u64 = data[offset.*] & @as(u8, @intCast(maxPrefix));
     offset.* += 1;
-    if (value < max_prefix) return value;
+    if (value < maxPrefix) return value;
 
     var shift: u6 = 0;
     var used: usize = 1;
@@ -78,9 +78,9 @@ pub fn decode(data: []const u8, offset: *usize, prefixBits: u3) Error!u64 {
 
 /// Number of bytes `encode` will produce (for sizing buffers).
 pub fn encodedLen(prefixBits: u3, value: u64) usize {
-    const max_prefix: u64 = (@as(u64, 1) << prefixBits) - 1;
-    if (value < max_prefix) return 1;
-    var remaining = value - max_prefix;
+    const maxPrefix: u64 = (@as(u64, 1) << prefixBits) - 1;
+    if (value < maxPrefix) return 1;
+    var remaining = value - maxPrefix;
     var digits: usize = 1;
     while (remaining >= 128) : (digits += 1) remaining /= 128;
     return 1 + digits;
@@ -118,9 +118,9 @@ test "preserves high opcode bits in first byte" {
 }
 
 test "rejects truncated and oversized input" {
-    const long_val: u64 = std.math.maxInt(u64) / 2;
+    const longVal: u64 = std.math.maxInt(u64) / 2;
     var buf: [16]u8 = undefined;
-    const n = try encode(&buf, 7, 0, long_val);
+    const n = try encode(&buf, 7, 0, longVal);
     // Every truncation must fail cleanly, never misparse.
     var i: usize = 0;
     while (i < n) : (i += 1) {

@@ -9,16 +9,16 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const router_mod = @import("../router/router.zig");
-const Context = router_mod.Context;
-const Response = router_mod.Response;
-const schema_mod = @import("schema.zig");
-pub const Schema = schema_mod.Schema;
-pub const SchemaConfig = schema_mod.SchemaConfig;
-pub const ObjectTypeDef = schema_mod.ObjectTypeDef;
-pub const FieldDef = schema_mod.FieldDef;
-pub const ResolverContext = schema_mod.ResolverContext;
-pub const FieldResolver = schema_mod.FieldResolver;
+const routerMod = @import("../router/router.zig");
+const Context = routerMod.Context;
+const Response = routerMod.Response;
+const schemaMod = @import("schema.zig");
+pub const Schema = schemaMod.Schema;
+pub const SchemaConfig = schemaMod.SchemaConfig;
+pub const ObjectTypeDef = schemaMod.ObjectTypeDef;
+pub const FieldDef = schemaMod.FieldDef;
+pub const ResolverContext = schemaMod.ResolverContext;
+pub const FieldResolver = schemaMod.FieldResolver;
 
 pub const RequestPayload = struct {
     query: []const u8 = "",
@@ -45,7 +45,7 @@ fn getState(ctx: *Context) !*ServerState {
 /// Pre-checks all three methods atomically; on partial failure any routes
 /// already added are removed and the allocated state is freed.
 /// Caller must call `unmount` before router.deinit to free the state.
-pub fn mount(router: *router_mod.Router, schema: Schema, cfg: HandlerConfig) !void {
+pub fn mount(router: *routerMod.Router, schema: Schema, cfg: HandlerConfig) !void {
     if (router.hasConflict(.POST, cfg.endpoint) or
         router.hasConflict(.GET, cfg.endpoint) or
         router.hasConflict(.OPTIONS, cfg.endpoint))
@@ -64,12 +64,12 @@ pub fn mount(router: *router_mod.Router, schema: Schema, cfg: HandlerConfig) !vo
 }
 
 /// Removes the GraphQL routes and frees the associated ServerState.
-pub fn unmount(router: *router_mod.Router, cfg: HandlerConfig) void {
-    var state_to_free: ?*ServerState = null;
+pub fn unmount(router: *routerMod.Router, cfg: HandlerConfig) void {
+    var stateToFree: ?*ServerState = null;
     for (router.routes.items) |entry| {
         if (entry.userData) |ud| {
             if (entry.handler == &handleGraphQLPost or entry.handler == &handleGraphQLGet or entry.handler == &handleGraphQLOptions) {
-                state_to_free = @ptrCast(@alignCast(ud));
+                stateToFree = @ptrCast(@alignCast(ud));
                 break;
             }
         }
@@ -77,7 +77,7 @@ pub fn unmount(router: *router_mod.Router, cfg: HandlerConfig) void {
     _ = router.remove(.POST, cfg.endpoint);
     _ = router.remove(.GET, cfg.endpoint);
     _ = router.remove(.OPTIONS, cfg.endpoint);
-    if (state_to_free) |st| {
+    if (stateToFree) |st| {
         router.allocator.destroy(st);
     }
 }
@@ -100,22 +100,22 @@ fn handleGraphQLGet(ctx: *Context) anyerror!Response {
     const s = st.schema;
 
     // Parse query from query string
-    var query_str: ?[]const u8 = null;
-    var vars_str: ?[]const u8 = null;
+    var queryStr: ?[]const u8 = null;
+    var varsStr: ?[]const u8 = null;
 
-    if (std.mem.indexOfScalar(u8, ctx.path, '?')) |q_idx| {
-        const query_part = ctx.path[q_idx + 1 ..];
-        var it = std.mem.splitScalar(u8, query_part, '&');
+    if (std.mem.indexOfScalar(u8, ctx.path, '?')) |qIdx| {
+        const queryPart = ctx.path[qIdx + 1 ..];
+        var it = std.mem.splitScalar(u8, queryPart, '&');
         while (it.next()) |pair| {
             if (std.mem.startsWith(u8, pair, "query=")) {
-                query_str = pair[6..];
+                queryStr = pair[6..];
             } else if (std.mem.startsWith(u8, pair, "variables=")) {
-                vars_str = pair[10..];
+                varsStr = pair[10..];
             }
         }
     }
 
-    if (query_str == null or query_str.?.len == 0) {
+    if (queryStr == null or queryStr.?.len == 0) {
         return .{
             .status = 400,
             .contentType = "application/json; charset=utf-8",
@@ -124,7 +124,7 @@ fn handleGraphQLGet(ctx: *Context) anyerror!Response {
     }
 
     // Decode URL-encoded query if needed
-    const result = try s.execute(ctx.allocator, query_str.?, vars_str, null);
+    const result = try s.execute(ctx.allocator, queryStr.?, varsStr, null);
     return .{
         .status = 200,
         .contentType = "application/json; charset=utf-8",
@@ -170,7 +170,7 @@ fn handleGraphQLPost(ctx: *Context) anyerror!Response {
         };
     }
 
-    const query_val = parsed.value.object.get("query") orelse {
+    const queryVal = parsed.value.object.get("query") orelse {
         return .{
             .status = 400,
             .contentType = "application/json; charset=utf-8",
@@ -178,7 +178,7 @@ fn handleGraphQLPost(ctx: *Context) anyerror!Response {
         };
     };
 
-    if (query_val != .string or query_val.string.len == 0) {
+    if (queryVal != .string or queryVal.string.len == 0) {
         return .{
             .status = 400,
             .contentType = "application/json; charset=utf-8",
@@ -186,14 +186,14 @@ fn handleGraphQLPost(ctx: *Context) anyerror!Response {
         };
     }
 
-    var vars_buf: ?[]const u8 = null;
-    if (parsed.value.object.get("variables")) |v_val| {
-        var out_v: std.Io.Writer.Allocating = .init(ctx.allocator);
-        try std.json.fmt(v_val, .{}).format(&out_v.writer);
-        vars_buf = try out_v.toOwnedSlice();
+    var varsBuf: ?[]const u8 = null;
+    if (parsed.value.object.get("variables")) |vVal| {
+        var outV: std.Io.Writer.Allocating = .init(ctx.allocator);
+        try std.json.fmt(vVal, .{}).format(&outV.writer);
+        varsBuf = try outV.toOwnedSlice();
     }
 
-    const result = try s.execute(ctx.allocator, query_val.string, vars_buf, null);
+    const result = try s.execute(ctx.allocator, queryVal.string, varsBuf, null);
 
     return .{
         .status = 200,

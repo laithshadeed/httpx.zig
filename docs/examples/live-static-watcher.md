@@ -1,6 +1,6 @@
 # Example: Live Static Watcher
 
-Demonstrates live_static_watcher.zig using the canonical HTTPX API.
+Demonstrates liveStaticWatcher.zig using the canonical HTTPX API.
 
 ## Complete Example
 

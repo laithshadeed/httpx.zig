@@ -34,13 +34,13 @@ pub const status = @import("common/status.zig");
 pub const headers = @import("common/headers.zig");
 pub const uri = @import("common/uri.zig");
 pub const method = @import("common/method.zig");
-pub const httpVersion = @import("common/http_version.zig");
+pub const httpVersion = @import("common/httpVersion.zig");
 pub const HttpVersion = httpVersion.HttpVersion;
 pub const common = struct {
     pub const clock = @import("common/clock.zig");
     pub const sync = @import("common/sync.zig");
     pub const version = @import("common/version.zig");
-    pub const httpVersion = @import("common/http_version.zig");
+    pub const httpVersion = @import("common/httpVersion.zig");
     pub const io = @import("common/io.zig");
 };
 pub const clock = common.clock;
@@ -48,9 +48,9 @@ pub const sync = common.sync;
 pub const concurrency = struct {
     pub const queue = @import("concurrency/queue.zig");
     pub const Queue = @import("concurrency/queue.zig").BoundedQueue;
-    pub const workerPool = @import("concurrency/worker_pool.zig");
-    pub const WorkerPool = @import("concurrency/worker_pool.zig").Pool;
-    pub const Pool = @import("concurrency/worker_pool.zig").Pool;
+    pub const workerPool = @import("concurrency/workerPool.zig");
+    pub const WorkerPool = @import("concurrency/workerPool.zig").Pool;
+    pub const Pool = @import("concurrency/workerPool.zig").Pool;
 };
 pub const workerPool = concurrency.workerPool;
 pub const WorkerPool = concurrency.WorkerPool;
@@ -116,7 +116,7 @@ pub const quic = struct {
     pub const Stream = stream.Stream;
     pub const connection = @import("protocols/quic/connection.zig");
     pub const Connection = connection.Connection;
-    pub const connectionId = @import("protocols/quic/connection_id.zig");
+    pub const connectionId = @import("protocols/quic/connectionId.zig");
     pub const path = @import("protocols/quic/path.zig");
     pub const transport = @import("protocols/quic/transport.zig");
     pub const Endpoint = transport.Endpoint;
@@ -409,11 +409,11 @@ pub const TlsConfig = tls.ServerConfig;
 pub const TlsClientConfig = tls.ClientConfig;
 
 // Concurrency & Utilities
-pub const WorkerPoolConfig = @import("concurrency/worker_pool.zig").Config;
-pub const RateLimiter = @import("web/middleware/rate_limit.zig").RateLimiter;
-pub const RateLimitPolicy = @import("web/middleware/rate_limit.zig").RateLimitPolicy;
-pub const RateLimitResult = @import("web/middleware/rate_limit.zig").RateLimitResult;
-pub const RateLimitDimension = @import("web/middleware/rate_limit.zig").RateLimitDimension;
+pub const WorkerPoolConfig = @import("concurrency/workerPool.zig").Config;
+pub const RateLimiter = @import("web/middleware/rateLimit.zig").RateLimiter;
+pub const RateLimitPolicy = @import("web/middleware/rateLimit.zig").RateLimitPolicy;
+pub const RateLimitResult = @import("web/middleware/rateLimit.zig").RateLimitResult;
+pub const RateLimitDimension = @import("web/middleware/rateLimit.zig").RateLimitDimension;
 pub const Metrics = metrics.Registry;
 pub const Counter = metrics.Counter;
 pub const Gauge = metrics.Gauge;
@@ -463,11 +463,11 @@ test {
     _ = @import("common/uri.zig");
     _ = @import("common/method.zig");
     _ = @import("common/version.zig");
-    _ = @import("common/http_version.zig");
+    _ = @import("common/httpVersion.zig");
     _ = @import("common/io.zig");
     _ = @import("common/sync.zig");
     _ = @import("concurrency/queue.zig");
-    _ = @import("concurrency/worker_pool.zig");
+    _ = @import("concurrency/workerPool.zig");
     _ = @import("common/logging.zig");
     _ = @import("sockets/tcp.zig");
     _ = @import("sockets/sys.zig");
@@ -486,7 +486,7 @@ test {
     _ = @import("protocols/http1/fuzz.zig");
     _ = @import("protocols/common/integer.zig");
     _ = @import("protocols/common/huffman.zig");
-    _ = @import("protocols/common/huffman_table.zig");
+    _ = @import("protocols/common/huffmanTable.zig");
     _ = @import("protocols/http2/frame.zig");
     _ = @import("protocols/http2/hpack.zig");
     _ = @import("protocols/http2/stream.zig");
@@ -502,7 +502,7 @@ test {
     _ = @import("protocols/quic/params.zig");
     _ = @import("protocols/quic/stream.zig");
     _ = @import("protocols/quic/connection.zig");
-    _ = @import("protocols/quic/connection_id.zig");
+    _ = @import("protocols/quic/connectionId.zig");
     _ = @import("protocols/quic/path.zig");
     _ = @import("protocols/quic/transport.zig");
     _ = @import("protocols/tls/quicTls.zig");
@@ -530,7 +530,7 @@ test {
     _ = @import("web/websocket/handshake.zig");
     _ = @import("web/websocket/frame.zig");
     _ = @import("web/middleware/security.zig");
-    _ = @import("web/middleware/rate_limit.zig");
+    _ = @import("web/middleware/rateLimit.zig");
     _ = @import("web/docs/docs.zig");
     _ = @import("web/graphql/graphql.zig");
     _ = @import("web/openapi/spec.zig");
@@ -586,9 +586,9 @@ test "Full template engine integration: variables, loops, conditionals, and raw 
     });
     defer engine.deinit();
 
-    const template_src =
+    const templateSrc =
         \\<h1>{{ title }}</h1>
-        \\{% if show_admin %}
+        \\{% if showAdmin %}
         \\  <p>Welcome, {{ user.name }} ({{ user.role }})</p>
         \\{% else %}
         \\  <p>Guest</p>
@@ -605,9 +605,9 @@ test "Full template engine integration: variables, loops, conditionals, and raw 
     defer list.deinit(alloc);
 
     var lw = templates.renderer.ListWriter{ .list = &list, .allocator = alloc };
-    try engine.renderString(template_src, .{
+    try engine.renderString(templateSrc, .{
         .title = "HTTPX Web Framework",
-        .show_admin = true,
+        .showAdmin = true,
         .user = .{
             .name = "Muhammad",
             .role = "Architect",

@@ -18,14 +18,14 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const router_mod = @import("../router/router.zig");
-const Router = router_mod.Router;
-const Response = router_mod.Response;
-const Context = router_mod.Context;
+const routerMod = @import("../router/router.zig");
+const Router = routerMod.Router;
+const Response = routerMod.Response;
+const Context = routerMod.Context;
 const Method = @import("../../common/method.zig").Method;
 const openapi = @import("../openapi/spec.zig");
 const assets = @import("assets.zig");
-const meta_mod = @import("../router/metadata.zig");
+const metaMod = @import("../router/metadata.zig");
 
 pub const SwaggerConfig = struct {
     enabled: bool = true,
@@ -104,7 +104,7 @@ const DocsState = struct {
     }
 };
 
-var g_state: ?*DocsState = null;
+var gState: ?*DocsState = null;
 
 /// Registers documentation routes on `router` and captures the generated
 /// OpenAPI document. The spec reflects routes registered BEFORE this call.
@@ -116,7 +116,7 @@ pub fn mount(
 ) !void {
     if (!cfg.enabled) return;
 
-    const actual_info = info orelse openapi.Info{
+    const actualInfo = info orelse openapi.Info{
         .title = cfg.title,
         .version = cfg.version,
         .description = cfg.description,
@@ -160,7 +160,7 @@ pub fn mount(
         .allocator = allocator,
         .openapiRoute = &.{},
         .router = router,
-        .info = actual_info,
+        .info = actualInfo,
     };
     errdefer {
         allocator.free(st.openapiRoute);
@@ -186,7 +186,7 @@ pub fn mount(
         st.graphqlEndpoint = try normalizeRoute(allocator, cfg.graphiql.graphqlEndpoint);
     }
 
-    st.spec = try openapi.generate(router, actual_info);
+    st.spec = try openapi.generate(router, actualInfo);
 
     // Pre-render enabled UI pages once; handlers only borrow.
     if (st.swaggerRoute) |route| {
@@ -204,7 +204,7 @@ pub fn mount(
         st.graphiqlPage = try renderGraphiqlPage(allocator, cfg.graphiql.title, st.graphqlEndpoint.?, route);
     }
 
-    const internal_meta: meta_mod.Metadata = .{ .internal = true };
+    const internalMeta: metaMod.Metadata = .{ .internal = true };
 
     // Roll back partial registration on error so a failed mount leaves no
     // stray docs routes behind (pre-checks make this rare, e.g. OOM only).
@@ -245,44 +245,44 @@ pub fn mount(
     }
 
     if (cfg.openapi.enabled and st.openapiRoute.len > 0) {
-        try router.add(.GET, st.openapiRoute, openApiHandler, .{ .meta = internal_meta, .userData = st });
+        try router.add(.GET, st.openapiRoute, openApiHandler, .{ .meta = internalMeta, .userData = st });
     }
     if (st.swaggerRoute) |route| {
-        try router.add(.GET, route, swaggerPageHandler, .{ .meta = internal_meta, .userData = st });
+        try router.add(.GET, route, swaggerPageHandler, .{ .meta = internalMeta, .userData = st });
         for (assets.swaggerFiles) |f| {
             const full = try joinRoute(allocator, route, f.name);
             defer allocator.free(full);
-            try router.add(.GET, full, swaggerAssetHandler, .{ .meta = internal_meta });
+            try router.add(.GET, full, swaggerAssetHandler, .{ .meta = internalMeta });
         }
     }
     if (st.redocRoute) |route| {
-        try router.add(.GET, route, redocPageHandler, .{ .meta = internal_meta, .userData = st });
+        try router.add(.GET, route, redocPageHandler, .{ .meta = internalMeta, .userData = st });
         for (assets.redocFiles) |f| {
             const full = try joinRoute(allocator, route, f.name);
             defer allocator.free(full);
-            try router.add(.GET, full, redocAssetHandler, .{ .meta = internal_meta });
+            try router.add(.GET, full, redocAssetHandler, .{ .meta = internalMeta });
         }
     }
     if (st.scalarRoute) |route| {
-        try router.add(.GET, route, scalarPageHandler, .{ .meta = internal_meta, .userData = st });
+        try router.add(.GET, route, scalarPageHandler, .{ .meta = internalMeta, .userData = st });
         const full = try joinRoute(allocator, route, "standalone.js");
         defer allocator.free(full);
-        try router.add(.GET, full, scalarAssetHandler, .{ .meta = internal_meta });
+        try router.add(.GET, full, scalarAssetHandler, .{ .meta = internalMeta });
     }
     if (st.graphiqlRoute) |route| {
-        try router.add(.GET, route, graphiqlPageHandler, .{ .meta = internal_meta, .userData = st });
+        try router.add(.GET, route, graphiqlPageHandler, .{ .meta = internalMeta, .userData = st });
         for (assets.graphiqlFiles) |f| {
             const full = try joinRoute(allocator, route, f.name);
             defer allocator.free(full);
-            try router.add(.GET, full, graphiqlAssetHandler, .{ .meta = internal_meta });
+            try router.add(.GET, full, graphiqlAssetHandler, .{ .meta = internalMeta });
         }
     }
-    g_state = st;
+    gState = st;
 }
 
 /// Frees mounted docs state. Safe to call when nothing is mounted.
 pub fn unmount() void {
-    if (g_state) |st| {
+    if (gState) |st| {
         const a = st.allocator;
         a.free(st.openapiRoute);
         if (st.swaggerRoute) |p| a.free(p);
@@ -293,7 +293,7 @@ pub fn unmount() void {
         a.free(st.title);
         st.deinitPages();
         a.destroy(st);
-        g_state = null;
+        gState = null;
     }
 }
 
@@ -316,9 +316,9 @@ fn requireState(ctx: *Context) *DocsState {
 
 fn openApiHandler(ctx: *Context) anyerror!Response {
     const st = requireState(ctx);
-    if (openapi.generate(st.router, st.info)) |fresh_spec| {
+    if (openapi.generate(st.router, st.info)) |freshSpec| {
         if (st.spec) |old| st.allocator.free(old);
-        st.spec = fresh_spec;
+        st.spec = freshSpec;
     } else |_| {}
     return .{ .status = 200, .contentType = "application/json; charset=utf-8", .body = st.spec.? };
 }
@@ -386,7 +386,7 @@ fn escapeInto(w: anytype, s: []const u8) !void {
     }
 }
 
-fn renderSwaggerPage(a: Allocator, title: []const u8, spec_url: []const u8, swaggerRoute: []const u8) ![]u8 {
+fn renderSwaggerPage(a: Allocator, title: []const u8, specUrl: []const u8, swaggerRoute: []const u8) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(a);
     errdefer out.deinit();
     const w = &out.writer;
@@ -402,15 +402,15 @@ fn renderSwaggerPage(a: Allocator, title: []const u8, spec_url: []const u8, swag
     try w.writeAll("/swagger-ui-bundle.js\"></script>\n<script src=\"");
     try escapeInto(w, swaggerRoute);
     try w.writeAll("/swagger-ui-standalone-preset.js\"></script>\n<script>\nwindow.onload = function () {\n  const ui = SwaggerUIBundle({\n    url: '");
-    try escapeInto(w, spec_url);
+    try escapeInto(w, specUrl);
     try w.writeAll("',\n    dom_id: '#swagger-ui',\n    deepLinking: true,\n    presets: [\n      SwaggerUIBundle.presets.apis,\n      SwaggerUIStandalonePreset\n    ],\n    plugins: [\n      SwaggerUIBundle.plugins.DownloadUrl\n    ],\n    layout: 'StandaloneLayout',\n    oauth2RedirectUrl: window.location.origin + '");
     try escapeInto(w, swaggerRoute);
     try w.writeAll("/oauth2-redirect.html'\n  });\n  window.ui = ui;\n};\n</script>\n</body>\n</html>\n");
     return out.toOwnedSlice();
 }
 
-fn renderRedocPage(a: Allocator, title: []const u8, spec_url: []const u8, script_url: []const u8) ![]u8 {
-    defer a.free(script_url);
+fn renderRedocPage(a: Allocator, title: []const u8, specUrl: []const u8, scriptUrl: []const u8) ![]u8 {
+    defer a.free(scriptUrl);
     var out: std.Io.Writer.Allocating = .init(a);
     errdefer out.deinit();
     const w = &out.writer;
@@ -418,15 +418,15 @@ fn renderRedocPage(a: Allocator, title: []const u8, spec_url: []const u8, script
     try w.writeAll("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\">\n<title>");
     try escapeInto(w, title);
     try w.writeAll("</title>\n<link href=\"https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700\" rel=\"stylesheet\">\n<style>body { margin: 0; padding: 0; }</style>\n</head>\n<body>\n<div id=\"redoc-container\"></div>\n<script src=\"");
-    try escapeInto(w, script_url);
+    try escapeInto(w, scriptUrl);
     try w.writeAll("\"></script>\n<script>\nwindow.onload = function () {\n  Redoc.init('");
-    try escapeInto(w, spec_url);
+    try escapeInto(w, specUrl);
     try w.writeAll("', {}, document.getElementById('redoc-container'));\n};\n</script>\n</body>\n</html>\n");
     return out.toOwnedSlice();
 }
 
-fn renderScalarPage(a: Allocator, title: []const u8, spec_url: []const u8, script_url: []const u8) ![]u8 {
-    defer a.free(script_url);
+fn renderScalarPage(a: Allocator, title: []const u8, specUrl: []const u8, scriptUrl: []const u8) ![]u8 {
+    defer a.free(scriptUrl);
     var out: std.Io.Writer.Allocating = .init(a);
     errdefer out.deinit();
     const w = &out.writer;
@@ -434,9 +434,9 @@ fn renderScalarPage(a: Allocator, title: []const u8, spec_url: []const u8, scrip
     try w.writeAll("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\">\n<title>");
     try escapeInto(w, title);
     try w.writeAll("</title>\n<style>body { margin: 0; padding: 0; }</style>\n</head>\n<body>\n<script id=\"api-reference\" data-url=\"");
-    try escapeInto(w, spec_url);
+    try escapeInto(w, specUrl);
     try w.writeAll("\"></script>\n<script src=\"");
-    try escapeInto(w, script_url);
+    try escapeInto(w, scriptUrl);
     try w.writeAll("\"></script>\n</body>\n</html>\n");
     return out.toOwnedSlice();
 }
@@ -513,14 +513,14 @@ test "mount registers spec, pages, and local assets" {
     // ReDoc page + bundle.
     const redocPage = (try invoke(&router, .GET, "/redoc", a)).?;
     try std.testing.expect(std.mem.indexOf(u8, redocPage.body, "redoc.standalone.js") != null);
-    const redoc_js = (try invoke(&router, .GET, "/redoc/redoc.standalone.js", a)).?;
-    try std.testing.expect(redoc_js.body.len == assets.redocStandaloneJs.len);
+    const redocJs = (try invoke(&router, .GET, "/redoc/redoc.standalone.js", a)).?;
+    try std.testing.expect(redocJs.body.len == assets.redocStandaloneJs.len);
 
     // Scalar page + bundle (enabled by default).
     const scalarPage = (try invoke(&router, .GET, "/scalar", a)).?;
     try std.testing.expect(std.mem.indexOf(u8, scalarPage.body, "id=\"api-reference\"") != null);
-    const scalar_js = (try invoke(&router, .GET, "/scalar/standalone.js", a)).?;
-    try std.testing.expectEqual(assets.scalarStandaloneJs.len, scalar_js.body.len);
+    const scalarJs = (try invoke(&router, .GET, "/scalar/standalone.js", a)).?;
+    try std.testing.expectEqual(assets.scalarStandaloneJs.len, scalarJs.body.len);
 }
 
 test "scalar opt-in mounts its page and bundle" {

@@ -102,9 +102,9 @@ pub fn buildRequest(
 ) Error![]u8 {
     if (!validToken(method)) return Error.InvalidMethod;
 
-    const target_form = @import("semantics.zig").classifyTarget(method, target) orelse
+    const targetForm = @import("semantics.zig").classifyTarget(method, target) orelse
         return Error.InvalidTarget;
-    _ = target_form;
+    _ = targetForm;
 
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -130,8 +130,8 @@ pub fn buildRequest(
         try appendHeader(&out, allocator, "Connection", opts.connection);
     }
 
-    const has_body = body != null and body.?.len > 0;
-    if (has_body or opts.chunked) {
+    const hasBody = body != null and body.?.len > 0;
+    if (hasBody or opts.chunked) {
         var declared = false;
         for (opts.headers) |h| {
             if (std.ascii.eqlIgnoreCase(h.name, "content-length")) declared = true;
@@ -140,14 +140,14 @@ pub fn buildRequest(
             if (opts.minorVersion == 0) return Error.UnsupportedForVersion;
             try appendHeader(&out, allocator, "Transfer-Encoding", "chunked");
         } else if (!declared) {
-            var num_buf: [20]u8 = undefined;
-            const n = std.fmt.bufPrint(&num_buf, "{d}", .{body.?.len}) catch unreachable;
+            var numBuf: [20]u8 = undefined;
+            const n = std.fmt.bufPrint(&numBuf, "{d}", .{body.?.len}) catch unreachable;
             try appendHeader(&out, allocator, "Content-Length", n);
         }
     }
 
     out.appendSlice(allocator, "\r\n") catch return Error.OutOfMemory;
-    if (has_body) out.appendSlice(allocator, body.?) catch return Error.OutOfMemory;
+    if (hasBody) out.appendSlice(allocator, body.?) catch return Error.OutOfMemory;
 
     return out.toOwnedSlice(allocator);
 }
@@ -238,17 +238,17 @@ pub fn buildResponse(
 ) Error![]u8 {
     const reason = if (reasonIn.len > 0) reasonIn else reasonPhrase(statusCode);
 
-    var line_buf: [64]u8 = undefined;
-    const statusLine = try fmtStatusLine(line_buf[0..], opts.minorVersion, statusCode, reason);
+    var lineBuf: [64]u8 = undefined;
+    const statusLine = try fmtStatusLine(lineBuf[0..], opts.minorVersion, statusCode, reason);
 
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     try writeHead(&out, allocator, statusLine, opts.headers, opts.connection);
 
-    const no_body_status = semantics.bodylessStatus(statusCode);
-    const wants_body = body != null and body.?.len > 0;
+    const noBodyStatus = semantics.bodylessStatus(statusCode);
+    const wantsBody = body != null and body.?.len > 0;
 
-    if (no_body_status or methodHead or opts.upgrade) {
+    if (noBodyStatus or methodHead or opts.upgrade) {
         // Metadata only: explicit Content-Length allowed when caller
         // supplied it via headers (e.g., HEAD of a GET); nothing auto-added.
         out.appendSlice(allocator, "\r\n") catch return Error.OutOfMemory;
@@ -266,8 +266,8 @@ pub fn buildResponse(
                 if (std.ascii.eqlIgnoreCase(h.name, "content-length")) declared = true;
             }
             if (!declared) {
-                var num_buf: [20]u8 = undefined;
-                const n = std.fmt.bufPrint(&num_buf, "{d}", .{if (wants_body) body.?.len else 0}) catch unreachable;
+                var numBuf: [20]u8 = undefined;
+                const n = std.fmt.bufPrint(&numBuf, "{d}", .{if (wantsBody) body.?.len else 0}) catch unreachable;
                 try appendHeader(&out, allocator, "Content-Length", n);
             }
         }
@@ -278,7 +278,7 @@ pub fn buildResponse(
     }
 
     out.appendSlice(allocator, "\r\n") catch return Error.OutOfMemory;
-    if (wants_body) out.appendSlice(allocator, body.?) catch return Error.OutOfMemory;
+    if (wantsBody) out.appendSlice(allocator, body.?) catch return Error.OutOfMemory;
 
     return out.toOwnedSlice(allocator);
 }
@@ -301,8 +301,8 @@ pub fn buildConnectTunnelHead(
     headers: []const Header,
 ) Error![]u8 {
     if (statusCode < 200 or statusCode >= 300) return Error.InvalidStatus;
-    var line_buf: [64]u8 = undefined;
-    const line = try fmtStatusLine(line_buf[0..], minorVersion, statusCode, "");
+    var lineBuf: [64]u8 = undefined;
+    const line = try fmtStatusLine(lineBuf[0..], minorVersion, statusCode, "");
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     try writeHead(&out, allocator, line, headers, "");
@@ -316,8 +316,8 @@ pub const TrailerField = Header;
 
 /// Emits one complete chunk (size line + data + CRLF) into `out`.
 pub fn writeChunk(out: *std.ArrayList(u8), gpa: Allocator, data: []const u8) Error!void {
-    var size_buf: [18]u8 = undefined;
-    const hex = std.fmt.bufPrint(&size_buf, "{x}\r\n", .{data.len}) catch unreachable;
+    var sizeBuf: [18]u8 = undefined;
+    const hex = std.fmt.bufPrint(&sizeBuf, "{x}\r\n", .{data.len}) catch unreachable;
     out.appendSlice(gpa, hex) catch return Error.OutOfMemory;
     out.appendSlice(gpa, data) catch return Error.OutOfMemory;
     out.appendSlice(gpa, "\r\n") catch return Error.OutOfMemory;
@@ -454,10 +454,10 @@ test "chunked emission with trailers and prohibited filtering" {
 
 test "header injection attempts rejected" {
     const a = std.testing.allocator;
-    const evil_headers = [_]Header{
+    const evilHeaders = [_]Header{
         .{ .name = "X-Evil", .value = "v\r\nInjected: yes" },
     };
-    try std.testing.expectError(Error.InvalidHeader, buildRequest(a, "GET", "/", null, .{ .headers = evil_headers[0..], .host = "h" }));
+    try std.testing.expectError(Error.InvalidHeader, buildRequest(a, "GET", "/", null, .{ .headers = evilHeaders[0..], .host = "h" }));
 
     try std.testing.expectError(Error.InvalidTarget, buildRequest(a, "GET", "/a\r\nX: y", null, .{}));
     try std.testing.expectError(Error.InvalidReason, buildResponse(a, 200, "OK\r\nEvil: x", null, .{}, false));

@@ -13,9 +13,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const net = std.Io.net;
-const tcp_mod = @import("../sockets/tcp.zig");
-const address_mod = @import("address.zig");
-const resolve_mod = @import("resolve.zig");
+const tcpMod = @import("../sockets/tcp.zig");
+const addressMod = @import("address.zig");
+const resolveMod = @import("resolve.zig");
 
 pub const Error = error{
     ProxyConnectFailed,
@@ -50,7 +50,7 @@ pub fn connect(
     destPort: u16,
     username: ?[]const u8,
     password: ?[]const u8,
-) !tcp_mod.Socket {
+) !tcpMod.Socket {
     return connectInternal(io, proxyHost, proxyPort, destHost, destPort, username, password, false);
 }
 
@@ -63,7 +63,7 @@ pub fn connectStream(
     destPort: u16,
     username: ?[]const u8,
     password: ?[]const u8,
-) !tcp_mod.Socket {
+) !tcpMod.Socket {
     return connectInternal(io, proxyHost, proxyPort, destHost, destPort, username, password, true);
 }
 
@@ -76,26 +76,26 @@ fn connectInternal(
     username: ?[]const u8,
     password: ?[]const u8,
     isStream: bool,
-) !tcp_mod.Socket {
-    var probe = address_mod.Address{ .family = .ip4, .port = 0 };
+) !tcpMod.Socket {
+    var probe = addressMod.Address{ .family = .ip4, .port = 0 };
     var sock = if (probe.parseIp(proxyHost)) |parsed| blk: {
         var addr = parsed;
         addr.port = proxyPort;
         if (isStream) {
-            break :blk tcp_mod.connectAddressStream(io, &addr) catch return Error.ProxyConnectFailed;
+            break :blk tcpMod.connectAddressStream(io, &addr) catch return Error.ProxyConnectFailed;
         } else {
-            break :blk tcp_mod.connectAddress(io, &addr) catch return Error.ProxyConnectFailed;
+            break :blk tcpMod.connectAddress(io, &addr) catch return Error.ProxyConnectFailed;
         }
     } else |_| blk: {
         const a = std.heap.page_allocator;
-        const addrs = (resolve_mod.Resolver.init(a, io)).lookup(proxyHost, .{ .port = proxyPort }) catch return Error.ProxyConnectFailed;
+        const addrs = (resolveMod.Resolver.init(a, io)).lookup(proxyHost, .{ .port = proxyPort }) catch return Error.ProxyConnectFailed;
         defer a.free(addrs);
         if (addrs.len == 0) return Error.ProxyConnectFailed;
         for (addrs) |*raddr| {
             if (isStream) {
-                if (tcp_mod.connectAddressStream(io, raddr)) |s| break :blk s else |_| {}
+                if (tcpMod.connectAddressStream(io, raddr)) |s| break :blk s else |_| {}
             } else {
-                if (tcp_mod.connectAddress(io, raddr)) |s| break :blk s else |_| {}
+                if (tcpMod.connectAddress(io, raddr)) |s| break :blk s else |_| {}
             }
         }
         return Error.ProxyConnectFailed;
@@ -103,10 +103,10 @@ fn connectInternal(
     errdefer sock.close();
 
     // Greeting: VER=5, NMETHODS=1, METHOD=(0x02 or 0x00)
-    const want_auth = username != null;
-    if (want_auth and password == null) return Error.AuthFailed;
+    const wantAuth = username != null;
+    if (wantAuth and password == null) return Error.AuthFailed;
 
-    const greet: [3]u8 = .{ 0x05, 1, if (want_auth) 0x02 else 0x00 };
+    const greet: [3]u8 = .{ 0x05, 1, if (wantAuth) 0x02 else 0x00 };
     try sock.writeAll(&greet);
 
     var resp: [2]u8 = undefined;
@@ -120,24 +120,24 @@ fn connectInternal(
         const p = password orelse return Error.AuthFailed;
         if (u.len > 255 or p.len > 255) return Error.AuthFailed;
 
-        var auth_buf: [515]u8 = undefined;
+        var authBuf: [515]u8 = undefined;
         var pos: usize = 0;
-        auth_buf[pos] = 0x01; // auth version
+        authBuf[pos] = 0x01; // auth version
         pos += 1;
-        auth_buf[pos] = @intCast(u.len);
+        authBuf[pos] = @intCast(u.len);
         pos += 1;
-        @memcpy(auth_buf[pos..][0..u.len], u);
+        @memcpy(authBuf[pos..][0..u.len], u);
         pos += u.len;
-        auth_buf[pos] = @intCast(p.len);
+        authBuf[pos] = @intCast(p.len);
         pos += 1;
-        @memcpy(auth_buf[pos..][0..p.len], p);
+        @memcpy(authBuf[pos..][0..p.len], p);
         pos += p.len;
-        try sock.writeAll(auth_buf[0..pos]);
+        try sock.writeAll(authBuf[0..pos]);
 
-        var auth_resp: [2]u8 = undefined;
-        _ = try readExact(&sock, &auth_resp);
-        if (auth_resp[0] != 0x01) return Error.ProtocolViolation;
-        if (auth_resp[1] != 0x00) return Error.AuthFailed;
+        var authResp: [2]u8 = undefined;
+        _ = try readExact(&sock, &authResp);
+        if (authResp[0] != 0x01) return Error.ProtocolViolation;
+        if (authResp[1] != 0x00) return Error.AuthFailed;
     } else if (resp[1] != 0x00) {
         return Error.NoAcceptableAuth;
     }
@@ -161,8 +161,8 @@ fn connectInternal(
     } else if (looksLikeIpv6(destHost)) {
         if (destHost.len > 255) return Error.AddressTypeUnsupported;
         var v6: [16]u8 = undefined;
-        const addr_mod = @import("address.zig");
-        var holder = addr_mod.Address{ .family = .ip4, .port = 0 };
+        const addrMod = @import("address.zig");
+        var holder = addrMod.Address{ .family = .ip4, .port = 0 };
         const parsed = holder.parseIp(destHost) catch return Error.AddressTypeUnsupported;
         if (parsed.family != .ip6) return Error.AddressTypeUnsupported;
         v6 = parsed.bytes;
@@ -225,7 +225,7 @@ fn connectInternal(
     return sock;
 }
 
-fn readExact(sock: *tcp_mod.Socket, buf: []u8) !usize {
+fn readExact(sock: *tcpMod.Socket, buf: []u8) !usize {
     var total: usize = 0;
     while (total < buf.len) {
         const n = sock.read(buf[total..]) catch |e| switch (e) {
@@ -262,7 +262,7 @@ fn parseIp4(text: []const u8) ?u32 {
 // In-process mock SOCKS5 server for deterministic offline testing
 
 pub const MockSocksServer = struct {
-    listener: tcp_mod.Listener,
+    listener: tcpMod.Listener,
     port: u16,
     requireAuth: bool = false,
     expectedUser: []const u8 = "alice",
@@ -277,7 +277,7 @@ pub const MockSocksServer = struct {
         const server = try a.create(MockSocksServer);
         errdefer a.destroy(server);
 
-        const listener = try tcp_mod.Listener.bind(io, 0);
+        const listener = try tcpMod.Listener.bind(io, 0);
         server.* = .{
             .listener = listener,
             .port = listener.localPort(),
@@ -305,31 +305,31 @@ pub const MockSocksServer = struct {
         defer conn.close();
 
         // 1. Greeting: [VER=5, NMETHODS, ...methods]
-        var greet_head: [2]u8 = undefined;
-        _ = readExact(&conn, &greet_head) catch return;
-        if (greet_head[0] != 5) return;
+        var greetHead: [2]u8 = undefined;
+        _ = readExact(&conn, &greetHead) catch return;
+        if (greetHead[0] != 5) return;
         var methods: [255]u8 = undefined;
-        const nmethods: usize = greet_head[1];
+        const nmethods: usize = greetHead[1];
         _ = readExact(&conn, methods[0..nmethods]) catch return;
 
         // Choose method
         if (self.requireAuth) {
             conn.writeAll(&[_]u8{ 0x05, 0x02 }) catch return; // user/pass
             // Read subnegotiation: [VER=1, ULEN, USER..., PLEN, PASS...]
-            var auth_ver: [2]u8 = undefined;
-            _ = readExact(&conn, &auth_ver) catch return;
-            const ulen = auth_ver[1];
+            var authVer: [2]u8 = undefined;
+            _ = readExact(&conn, &authVer) catch return;
+            const ulen = authVer[1];
             var ubuf: [255]u8 = undefined;
             _ = readExact(&conn, ubuf[0..ulen]) catch return;
-            var plen_b: [1]u8 = undefined;
-            _ = readExact(&conn, &plen_b) catch return;
-            const plen = plen_b[0];
+            var plenB: [1]u8 = undefined;
+            _ = readExact(&conn, &plenB) catch return;
+            const plen = plenB[0];
             var pbuf: [255]u8 = undefined;
             _ = readExact(&conn, pbuf[0..plen]) catch return;
 
-            const u_ok = std.mem.eql(u8, ubuf[0..ulen], self.expectedUser);
-            const p_ok = std.mem.eql(u8, pbuf[0..plen], self.expectedPass);
-            if (u_ok and p_ok) {
+            const uOk = std.mem.eql(u8, ubuf[0..ulen], self.expectedUser);
+            const pOk = std.mem.eql(u8, pbuf[0..plen], self.expectedPass);
+            if (uOk and pOk) {
                 conn.writeAll(&[_]u8{ 0x01, 0x00 }) catch return;
             } else {
                 conn.writeAll(&[_]u8{ 0x01, 0x01 }) catch return;
@@ -340,16 +340,16 @@ pub const MockSocksServer = struct {
         }
 
         // 2. CONNECT request: [VER=5, CMD=1, RSV=0, ATYP, ADDR..., PORT(2)]
-        var req_head: [4]u8 = undefined;
-        _ = readExact(&conn, &req_head) catch return;
-        if (req_head[0] != 5 or req_head[1] != 1) return;
-        const atyp = req_head[3];
+        var reqHead: [4]u8 = undefined;
+        _ = readExact(&conn, &reqHead) catch return;
+        if (reqHead[0] != 5 or reqHead[1] != 1) return;
+        const atyp = reqHead[3];
         self.recordedAtyp.store(atyp, .release);
 
         switch (atyp) {
             0x01 => { // IPv4: 4 bytes
-                var ip4_b: [4]u8 = undefined;
-                _ = readExact(&conn, &ip4_b) catch return;
+                var ip4B: [4]u8 = undefined;
+                _ = readExact(&conn, &ip4B) catch return;
             },
             0x03 => { // Domain: 1 byte len + domain bytes
                 var dlen: [1]u8 = undefined;
@@ -358,13 +358,13 @@ pub const MockSocksServer = struct {
                 _ = readExact(&conn, dbuf[0..dlen[0]]) catch return;
             },
             0x04 => { // IPv6: 16 bytes
-                var ip6_b: [16]u8 = undefined;
-                _ = readExact(&conn, &ip6_b) catch return;
+                var ip6B: [16]u8 = undefined;
+                _ = readExact(&conn, &ip6B) catch return;
             },
             else => return,
         }
-        var port_b: [2]u8 = undefined;
-        _ = readExact(&conn, &port_b) catch return;
+        var portB: [2]u8 = undefined;
+        _ = readExact(&conn, &portB) catch return;
 
         // Send reply: [VER=5, REP, RSV=0, ATYP=1, 127.0.0.1, PORT=1080]
         const reply = [_]u8{ 0x05, self.replyCode, 0x00, 0x01, 127, 0, 0, 1, 0x04, 0x38 };
@@ -372,10 +372,10 @@ pub const MockSocksServer = struct {
 
         if (self.replyCode == 0x00) {
             // Echo one message if written
-            var echo_buf: [128]u8 = undefined;
-            const n = conn.read(&echo_buf) catch 0;
+            var echoBuf: [128]u8 = undefined;
+            const n = conn.read(&echoBuf) catch 0;
             if (n > 0) {
-                conn.writeAll(echo_buf[0..n]) catch {};
+                conn.writeAll(echoBuf[0..n]) catch {};
             }
         }
     }
@@ -389,7 +389,7 @@ test "parse dotted quad" {
 }
 
 test "socks5 mock server no-auth connect and echo" {
-    const IoContext = tcp_mod.IoContext;
+    const IoContext = tcpMod.IoContext;
     var ctx = try IoContext.init(std.testing.allocator);
     defer ctx.deinit();
 
@@ -407,7 +407,7 @@ test "socks5 mock server no-auth connect and echo" {
 }
 
 test "socks5h domain name destination sent to proxy" {
-    const IoContext = tcp_mod.IoContext;
+    const IoContext = tcpMod.IoContext;
     var ctx = try IoContext.init(std.testing.allocator);
     defer ctx.deinit();
 
@@ -423,7 +423,7 @@ test "socks5h domain name destination sent to proxy" {
 }
 
 test "socks5 username password authentication success" {
-    const IoContext = tcp_mod.IoContext;
+    const IoContext = tcpMod.IoContext;
     var ctx = try IoContext.init(std.testing.allocator);
     defer ctx.deinit();
 
@@ -440,7 +440,7 @@ test "socks5 username password authentication success" {
 }
 
 test "socks5 wrong password fails with AuthFailed" {
-    const IoContext = tcp_mod.IoContext;
+    const IoContext = tcpMod.IoContext;
     var ctx = try IoContext.init(std.testing.allocator);
     defer ctx.deinit();
 
@@ -452,7 +452,7 @@ test "socks5 wrong password fails with AuthFailed" {
 }
 
 test "socks5 proxy error reply codes mapped" {
-    const IoContext = tcp_mod.IoContext;
+    const IoContext = tcpMod.IoContext;
     var ctx = try IoContext.init(std.testing.allocator);
     defer ctx.deinit();
 

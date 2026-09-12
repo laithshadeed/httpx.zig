@@ -1,5 +1,5 @@
 //! ACK range tracking and ACK frame generation (RFC 9000 section 19.3,
-//! structure modeled on ngtcp2_acktr: descending contiguous ranges).
+//! structure modeled on ngtcp2Acktr: descending contiguous ranges).
 //!
 //! add(pn) merges adjacent/overlapping blocks; generation walks blocks
 //! producing Largest Acknowledged / First Range / Gap+Range pairs.
@@ -52,8 +52,8 @@ pub const AckTracker = struct {
         self.largestSeen = @max(self.largestSeen orelse 0, pn);
     }
 
-    fn insertAndCoalesce(self: *AckTracker, block_in: Block, at: usize) Error!void {
-        var block = block_in;
+    fn insertAndCoalesce(self: *AckTracker, blockIn: Block, at: usize) Error!void {
+        var block = blockIn;
         try self.blocks.insert(self.allocator, at, block);
 
         // Coalesce with the immediately-lower block(s).

@@ -1,7 +1,7 @@
 # Metrics and Observability Example
 
 Request/response counters, status classes, and latency histograms with
-`httpx.Metrics`. See `examples/metrics_server.zig`.
+`httpx.Metrics`. See `examples/metricsServer.zig`.
 
 ```zig
 var m = httpx.Metrics{};

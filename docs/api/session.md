@@ -1,7 +1,7 @@
 # Session API
 
 HTTPX has no built-in server-side session store. The recommended pattern is
-cookie-backed sessions in handlers — see `examples/session_server.zig` for a
+cookie-backed sessions in handlers — see `examples/sessionServer.zig` for a
 runnable `/login`, `/dashboard`, `/logout` flow.
 
 To persist a session across requests, issue a cookie on login and read it

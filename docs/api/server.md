@@ -263,7 +263,7 @@ fn listUsers(ctx: *httpx.Context) anyerror!httpx.Response {
 ### SSE Responses
 
 Server-Sent Events use `httpx.sse.Writer.EventWriter` over a normal handler response
-(see `examples/sse_server.zig` and [SSE](/web/sse)). There is no
+(see `examples/sseServer.zig` and [SSE](/web/sse)). There is no
 `ctx.sse(...)` helper; parse inbound streams with `httpx.sse.Parser`
 (`eventType`, `data`, `id`, `retryMs` fields on parsed events).
 
@@ -413,8 +413,8 @@ fallback) instead of hand-rolled file handlers:
 try server.static("/static", "./public");
 ```
 
-For runnable demos see `examples/static_files.zig`, `examples/static_site.zig`,
-and `examples/static_embedded.zig` (single-file embedded mode).
+For runnable demos see `examples/staticFiles.zig`, `examples/staticSite.zig`,
+and `examples/staticEmbedded.zig` (single-file embedded mode).
 
 ## Error Handling
 

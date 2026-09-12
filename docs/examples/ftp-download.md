@@ -1,6 +1,6 @@
 # Example: Ftp Download
 
-Demonstrates ftp_download.zig using the canonical HTTPX API.
+Demonstrates ftpDownload.zig using the canonical HTTPX API.
 
 ## Complete Example
 

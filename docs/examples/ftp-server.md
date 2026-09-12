@@ -1,6 +1,6 @@
 # Example: Ftp Server
 
-Demonstrates ftp_server.zig using the canonical HTTPX API.
+Demonstrates ftpServer.zig using the canonical HTTPX API.
 
 ## Complete Example
 

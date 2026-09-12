@@ -16,11 +16,11 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const udp_mod = @import("../../sockets/udp.zig");
-const conn_mod = @import("connection.zig");
-const sync_mod = @import("../../common/sync.zig");
-const clock_mod = @import("../../common/clock.zig");
-const Connection = conn_mod.Connection;
+const udpMod = @import("../../sockets/udp.zig");
+const connMod = @import("connection.zig");
+const syncMod = @import("../../common/sync.zig");
+const clockMod = @import("../../common/clock.zig");
+const Connection = connMod.Connection;
 
 /// Background datagram pump for deadline-driven QUIC code.
 ///
@@ -41,16 +41,16 @@ pub const Pump = struct {
     allocator: Allocator,
     thread: std.Thread = undefined,
     running: bool = false,
-    stop_flag: std.atomic.Value(bool) = .init(false),
+    stopFlag: std.atomic.Value(bool) = .init(false),
     /// Set by `stop()`: in-flight and future `next()` calls fail fast
     /// with `error.PumpStopped` instead of polling to their deadline.
     /// This is what makes server-thread teardown instant.
     dead: std.atomic.Value(bool) = .init(false),
-    mu: sync_mod.Spinlock = .{},
+    mu: syncMod.Spinlock = .{},
     queue: std.ArrayList(Queued) = .empty,
     /// Hard cap: beyond this, newest datagrams drop (receive path has no
     /// loss recovery yet, so shedding under flood matches wire reality).
-    max_queued: usize = 256,
+    maxQueued: usize = 256,
 
     const Queued = struct {
         data: []u8,
@@ -63,7 +63,7 @@ pub const Pump = struct {
             .allocator = allocator,
             .thread = undefined,
         };
-        self.stop_flag.store(false, .release);
+        self.stopFlag.store(false, .release);
         self.thread = try std.Thread.spawn(.{}, readerProc, .{self});
         self.running = true;
     }
@@ -80,16 +80,16 @@ pub const Pump = struct {
     /// field is never shared across threads. Polls at ~1ms granularity;
     /// never blocks past the deadline.
     pub fn next(self: *Pump, deadlineMs: u64) !?Deliverable {
-        const t0: u64 = @intCast(clock_mod.millisNow());
+        const t0: u64 = @intCast(clockMod.millisNow());
         while (true) {
             if (self.dead.load(.acquire)) return error.PumpStopped;
             self.mu.lock();
             const item = self.queue.pop();
             self.mu.unlock();
             if (item) |q| return .{ .data = q.data, .from = q.from };
-            const now: u64 = @intCast(clock_mod.millisNow());
+            const now: u64 = @intCast(clockMod.millisNow());
             if (now -| t0 >= deadlineMs) return null;
-            clock_mod.sleepMillis(1);
+            clockMod.sleepMillis(1);
         }
     }
 
@@ -103,7 +103,7 @@ pub const Pump = struct {
     pub fn stop(self: *Pump) void {
         if (!self.running) return;
         self.running = false;
-        self.stop_flag.store(true, .release);
+        self.stopFlag.store(true, .release);
         self.dead.store(true, .release);
         self.wakeReader();
         self.thread.join();
@@ -126,20 +126,20 @@ pub const Pump = struct {
 
     fn readerProc(self: *Pump) void {
         var buf: [MAX_DATAGRAM]u8 = undefined;
-        while (!self.stop_flag.load(.acquire)) {
+        while (!self.stopFlag.load(.acquire)) {
             const rx = self.ep.sock.receive(&buf) catch {
                 // Socket closed (stop) or ICMP/transport noise: back off
                 // briefly, then re-check the flag. Never hot-spins: a
                 // persistently failing socket still yields the CPU.
-                clock_mod.sleepMillis(1);
+                clockMod.sleepMillis(1);
                 continue;
             };
             const owned = self.allocator.dupe(u8, rx.data) catch {
-                clock_mod.sleepMillis(1);
+                clockMod.sleepMillis(1);
                 continue;
             };
             self.mu.lock();
-            if (self.queue.items.len >= self.max_queued) {
+            if (self.queue.items.len >= self.maxQueued) {
                 self.mu.unlock();
                 self.allocator.free(owned);
                 continue;
@@ -158,7 +158,7 @@ pub const MAX_DATAGRAM: usize = 1500;
 
 pub const Endpoint = struct {
     conn: *Connection,
-    sock: udp_mod.UdpSocket,
+    sock: udpMod.UdpSocket,
     /// Last peer address observed (set on first received datagram).
     peer: ?std.Io.net.IpAddress = null,
     io: std.Io,
@@ -172,7 +172,7 @@ pub const Endpoint = struct {
     /// port so clients can address them; clients use ephemeral ports.
     pub fn initPort(allocator: Allocator, io: std.Io, conn: *Connection, port: u16) !Endpoint {
         _ = allocator;
-        const sock = try udp_mod.UdpSocket.bind(io, port);
+        const sock = try udpMod.UdpSocket.bind(io, port);
         // No SO_RCVTIMEO on purpose: a receive timeout surfaces as
         // error.WouldBlock, which the Threaded std.Io backend treats as
         // unreachable and aborts the process. The socket stays fully
@@ -244,18 +244,18 @@ test "quic endpoints exchange protected initial packets over real udp" {
 
     defer ctx.deinit();
 
-    var client = try conn_mod.Connection.init(a, .client, .{}, 11);
+    var client = try connMod.Connection.init(a, .client, .{}, 11);
     defer client.deinit();
-    var server = try conn_mod.Connection.init(a, .server, .{}, 22);
+    var server = try connMod.Connection.init(a, .server, .{}, 22);
     defer server.deinit();
 
     // Queue a real Initial-space flight (keys derive from DCID alone, so
     // no TLS driver is needed at this level).
     try client.installInitialKeys();
     const PingC = struct {
-        fn build(gpa: Allocator, payload: *std.ArrayList(u8)) conn_mod.Error!void {
+        fn build(gpa: Allocator, payload: *std.ArrayList(u8)) connMod.Error!void {
             @import("../quic/frames.zig").encode(payload, gpa, .ping) catch
-                return conn_mod.Error.OutOfMemory;
+                return connMod.Error.OutOfMemory;
         }
     };
     try client.sendFrames(.initial, PingC.build, 50);
@@ -275,13 +275,13 @@ test "quic endpoints exchange protected initial packets over real udp" {
     // Client -> server over the kernel; fail fast if nothing was queued.
     const sent = try ce.flush(cdest);
     try std.testing.expect(sent > 0);
-    const got_in = try se.pumpIn(1, 100);
-    try std.testing.expect(got_in >= 1);
+    const gotIn = try se.pumpIn(1, 100);
+    try std.testing.expect(gotIn >= 1);
 
     // Server -> client reply (ACK-bearing ping injected via sendFrames).
     const Ping = struct {
-        fn build(gpa: Allocator, payload: *std.ArrayList(u8)) conn_mod.Error!void {
-            @import("../quic/frames.zig").encode(payload, gpa, .ping) catch return conn_mod.Error.OutOfMemory;
+        fn build(gpa: Allocator, payload: *std.ArrayList(u8)) connMod.Error!void {
+            @import("../quic/frames.zig").encode(payload, gpa, .ping) catch return connMod.Error.OutOfMemory;
         }
     };
     try server.sendFrames(.initial, Ping.build, 150);
@@ -289,6 +289,6 @@ test "quic endpoints exchange protected initial packets over real udp" {
     // Flush BEFORE reading localPort-independent peer info: server learned
     // the client's address from its received datagram.
     _ = try se.flush(null);
-    const got_back = try ce.pumpIn(1, 200);
-    try std.testing.expect(got_back >= 1);
+    const gotBack = try ce.pumpIn(1, 200);
+    try std.testing.expect(gotBack >= 1);
 }

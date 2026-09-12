@@ -15,19 +15,19 @@ const Attribute = dom.Attribute;
 pub const XmlTree = ts.Tree;
 pub const XmlNode = ts.Node;
 
-const xml_sym_end: u16 = 0;
-const xml_sym_open_tag: u16 = 1;
-const xml_sym_close_tag: u16 = 2;
-const xml_sym_selfclose_tag: u16 = 3;
-const xml_sym_comment: u16 = 4;
-const xml_sym_cdata: u16 = 5;
-const xml_sym_pi: u16 = 6;
-const xml_sym_doctype: u16 = 7;
-const xml_sym_text: u16 = 8;
-const xml_sym_program: u16 = 9;
-const xml_sym_nodes: u16 = 10;
-const xml_sym_node: u16 = 11;
-const xml_sym_error: u16 = 12;
+const xmlSymEnd: u16 = 0;
+const xmlSymOpenTag: u16 = 1;
+const xmlSymCloseTag: u16 = 2;
+const xmlSymSelfcloseTag: u16 = 3;
+const xmlSymComment: u16 = 4;
+const xmlSymCdata: u16 = 5;
+const xmlSymPi: u16 = 6;
+const xmlSymDoctype: u16 = 7;
+const xmlSymText: u16 = 8;
+const xmlSymProgram: u16 = 9;
+const xmlSymNodes: u16 = 10;
+const xmlSymNode: u16 = 11;
+const xmlSymError: u16 = 12;
 
 fn isXmlTagChar(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == ':' or c == '.' or c == '?';
@@ -45,16 +45,16 @@ fn matchXmlOpenTag(source: []const u8, start: usize) ?usize {
     if (c1 == '/' or c1 == '!' or c1 == '?') return null;
     if (!std.ascii.isAlphabetic(c1) and c1 != '_' and c1 != ':') return null;
     var i = start + 1 + xmlTagNameLen(source, start + 1);
-    var in_quote: u8 = 0;
+    var inQuote: u8 = 0;
     while (i < source.len) {
         const c = source[i];
-        if (in_quote != 0) {
-            if (c == in_quote) in_quote = 0;
+        if (inQuote != 0) {
+            if (c == inQuote) inQuote = 0;
             i += 1;
             continue;
         }
         if (c == '"' or c == '\'') {
-            in_quote = c;
+            inQuote = c;
             i += 1;
             continue;
         }
@@ -84,16 +84,16 @@ fn matchXmlSelfCloseTag(source: []const u8, start: usize) ?usize {
     if (c1 == '/' or c1 == '!' or c1 == '?') return null;
     if (!std.ascii.isAlphabetic(c1) and c1 != '_' and c1 != ':') return null;
     var i = start + 1 + xmlTagNameLen(source, start + 1);
-    var in_quote: u8 = 0;
+    var inQuote: u8 = 0;
     while (i < source.len) {
         const c = source[i];
-        if (in_quote != 0) {
-            if (c == in_quote) in_quote = 0;
+        if (inQuote != 0) {
+            if (c == inQuote) inQuote = 0;
             i += 1;
             continue;
         }
         if (c == '"' or c == '\'') {
-            in_quote = c;
+            inQuote = c;
             i += 1;
             continue;
         }
@@ -130,16 +130,16 @@ fn matchXmlDoctype(source: []const u8, start: usize) ?usize {
     if (start + 4 <= source.len and std.mem.eql(u8, source[start .. start + 4], "<!--")) return null;
     var i = start + 2;
     var depth: usize = 0;
-    var in_quote: u8 = 0;
+    var inQuote: u8 = 0;
     while (i < source.len) {
         const c = source[i];
-        if (in_quote != 0) {
-            if (c == in_quote) in_quote = 0;
+        if (inQuote != 0) {
+            if (c == inQuote) inQuote = 0;
             i += 1;
             continue;
         }
         if (c == '"' or c == '\'') {
-            in_quote = c;
+            inQuote = c;
             i += 1;
             continue;
         }
@@ -167,116 +167,116 @@ fn matchXmlText(source: []const u8, start: usize) ?usize {
     return i - start;
 }
 
-const xml_symbol_table: []const ts.language_mod.symbols.SymbolInfo = &.{
-    .{ .id = xml_sym_end, .name = "end", .kind = .end, .metadata = .{ .visible = false, .named = false } },
-    .{ .id = xml_sym_open_tag, .name = "open_tag", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = xml_sym_close_tag, .name = "close_tag", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = xml_sym_selfclose_tag, .name = "selfclose_tag", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = xml_sym_comment, .name = "comment", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = xml_sym_cdata, .name = "cdata", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = xml_sym_pi, .name = "pi", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = xml_sym_doctype, .name = "doctype", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = xml_sym_text, .name = "text", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = xml_sym_program, .name = "program", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = xml_sym_nodes, .name = "nodes", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = xml_sym_node, .name = "node", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
-    .{ .id = xml_sym_error, .name = "ERROR", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
+const xmlSymbolTable: []const ts.language_mod.symbols.SymbolInfo = &.{
+    .{ .id = xmlSymEnd, .name = "end", .kind = .end, .metadata = .{ .visible = false, .named = false } },
+    .{ .id = xmlSymOpenTag, .name = "open_tag", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = xmlSymCloseTag, .name = "close_tag", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = xmlSymSelfcloseTag, .name = "selfclose_tag", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = xmlSymComment, .name = "comment", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = xmlSymCdata, .name = "cdata", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = xmlSymPi, .name = "pi", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = xmlSymDoctype, .name = "doctype", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = xmlSymText, .name = "text", .kind = .terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = xmlSymProgram, .name = "program", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = xmlSymNodes, .name = "nodes", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = xmlSymNode, .name = "node", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
+    .{ .id = xmlSymError, .name = "ERROR", .kind = .non_terminal, .metadata = .{ .visible = true, .named = true } },
 };
 
-const xml_token_matchers: []const ts.language_mod.TokenMatcher = &.{
-    .{ .symbol = xml_sym_cdata, .match = matchXmlCdata },
-    .{ .symbol = xml_sym_comment, .match = matchXmlComment },
-    .{ .symbol = xml_sym_pi, .match = matchXmlPi },
-    .{ .symbol = xml_sym_doctype, .match = matchXmlDoctype },
-    .{ .symbol = xml_sym_close_tag, .match = matchXmlCloseTag },
-    .{ .symbol = xml_sym_selfclose_tag, .match = matchXmlSelfCloseTag },
-    .{ .symbol = xml_sym_open_tag, .match = matchXmlOpenTag },
-    .{ .symbol = xml_sym_text, .match = matchXmlText },
+const xmlTokenMatchers: []const ts.language_mod.TokenMatcher = &.{
+    .{ .symbol = xmlSymCdata, .match = matchXmlCdata },
+    .{ .symbol = xmlSymComment, .match = matchXmlComment },
+    .{ .symbol = xmlSymPi, .match = matchXmlPi },
+    .{ .symbol = xmlSymDoctype, .match = matchXmlDoctype },
+    .{ .symbol = xmlSymCloseTag, .match = matchXmlCloseTag },
+    .{ .symbol = xmlSymSelfcloseTag, .match = matchXmlSelfCloseTag },
+    .{ .symbol = xmlSymOpenTag, .match = matchXmlOpenTag },
+    .{ .symbol = xmlSymText, .match = matchXmlText },
 };
 
-const xml_s0_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = xml_sym_open_tag, .action = .{ .shift = 6 } },
-    .{ .symbol = xml_sym_close_tag, .action = .{ .shift = 12 } },
-    .{ .symbol = xml_sym_selfclose_tag, .action = .{ .shift = 7 } },
-    .{ .symbol = xml_sym_text, .action = .{ .shift = 8 } },
-    .{ .symbol = xml_sym_comment, .action = .{ .shift = 9 } },
-    .{ .symbol = xml_sym_cdata, .action = .{ .shift = 10 } },
-    .{ .symbol = xml_sym_pi, .action = .{ .shift = 13 } },
-    .{ .symbol = xml_sym_doctype, .action = .{ .shift = 14 } },
-    .{ .symbol = xml_sym_end, .action = .{ .reduce = .{ .symbol = xml_sym_program, .child_count = 0, .production_id = 0 } } },
+const xmlS0Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = xmlSymOpenTag, .action = .{ .shift = 6 } },
+    .{ .symbol = xmlSymCloseTag, .action = .{ .shift = 12 } },
+    .{ .symbol = xmlSymSelfcloseTag, .action = .{ .shift = 7 } },
+    .{ .symbol = xmlSymText, .action = .{ .shift = 8 } },
+    .{ .symbol = xmlSymComment, .action = .{ .shift = 9 } },
+    .{ .symbol = xmlSymCdata, .action = .{ .shift = 10 } },
+    .{ .symbol = xmlSymPi, .action = .{ .shift = 13 } },
+    .{ .symbol = xmlSymDoctype, .action = .{ .shift = 14 } },
+    .{ .symbol = xmlSymEnd, .action = .{ .reduce = .{ .symbol = xmlSymProgram, .child_count = 0, .production_id = 0 } } },
 };
-const xml_s0_gotos: []const ts.language_mod.tables.GotoEntry = &.{
-    .{ .symbol = xml_sym_program, .state = 1 },
-    .{ .symbol = xml_sym_nodes, .state = 2 },
-    .{ .symbol = xml_sym_node, .state = 3 },
+const xmlS0Gotos: []const ts.language_mod.tables.GotoEntry = &.{
+    .{ .symbol = xmlSymProgram, .state = 1 },
+    .{ .symbol = xmlSymNodes, .state = 2 },
+    .{ .symbol = xmlSymNode, .state = 3 },
 };
-const xml_s1_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = xml_sym_end, .action = .accept },
+const xmlS1Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = xmlSymEnd, .action = .accept },
 };
-const xml_s2_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = xml_sym_open_tag, .action = .{ .shift = 6 } },
-    .{ .symbol = xml_sym_close_tag, .action = .{ .shift = 12 } },
-    .{ .symbol = xml_sym_selfclose_tag, .action = .{ .shift = 7 } },
-    .{ .symbol = xml_sym_text, .action = .{ .shift = 8 } },
-    .{ .symbol = xml_sym_comment, .action = .{ .shift = 9 } },
-    .{ .symbol = xml_sym_cdata, .action = .{ .shift = 10 } },
-    .{ .symbol = xml_sym_pi, .action = .{ .shift = 13 } },
-    .{ .symbol = xml_sym_doctype, .action = .{ .shift = 14 } },
-    .{ .symbol = xml_sym_end, .action = .{ .reduce = .{ .symbol = xml_sym_program, .child_count = 1, .production_id = 1 } } },
+const xmlS2Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = xmlSymOpenTag, .action = .{ .shift = 6 } },
+    .{ .symbol = xmlSymCloseTag, .action = .{ .shift = 12 } },
+    .{ .symbol = xmlSymSelfcloseTag, .action = .{ .shift = 7 } },
+    .{ .symbol = xmlSymText, .action = .{ .shift = 8 } },
+    .{ .symbol = xmlSymComment, .action = .{ .shift = 9 } },
+    .{ .symbol = xmlSymCdata, .action = .{ .shift = 10 } },
+    .{ .symbol = xmlSymPi, .action = .{ .shift = 13 } },
+    .{ .symbol = xmlSymDoctype, .action = .{ .shift = 14 } },
+    .{ .symbol = xmlSymEnd, .action = .{ .reduce = .{ .symbol = xmlSymProgram, .child_count = 1, .production_id = 1 } } },
 };
-const xml_s2_gotos: []const ts.language_mod.tables.GotoEntry = &.{
-    .{ .symbol = xml_sym_node, .state = 4 },
+const xmlS2Gotos: []const ts.language_mod.tables.GotoEntry = &.{
+    .{ .symbol = xmlSymNode, .state = 4 },
 };
-const xml_s3_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = xml_sym_open_tag, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = xml_sym_close_tag, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = xml_sym_selfclose_tag, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = xml_sym_text, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = xml_sym_comment, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = xml_sym_cdata, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = xml_sym_pi, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = xml_sym_doctype, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 1, .production_id = 2 } } },
-    .{ .symbol = xml_sym_end, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 1, .production_id = 2 } } },
+const xmlS3Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = xmlSymOpenTag, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = xmlSymCloseTag, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = xmlSymSelfcloseTag, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = xmlSymText, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = xmlSymComment, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = xmlSymCdata, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = xmlSymPi, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = xmlSymDoctype, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 1, .production_id = 2 } } },
+    .{ .symbol = xmlSymEnd, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 1, .production_id = 2 } } },
 };
-const xml_s4_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = xml_sym_open_tag, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = xml_sym_close_tag, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = xml_sym_selfclose_tag, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = xml_sym_text, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = xml_sym_comment, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = xml_sym_cdata, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = xml_sym_pi, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = xml_sym_doctype, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 2, .production_id = 3 } } },
-    .{ .symbol = xml_sym_end, .action = .{ .reduce = .{ .symbol = xml_sym_nodes, .child_count = 2, .production_id = 3 } } },
+const xmlS4Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = xmlSymOpenTag, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = xmlSymCloseTag, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = xmlSymSelfcloseTag, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = xmlSymText, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = xmlSymComment, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = xmlSymCdata, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = xmlSymPi, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = xmlSymDoctype, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 2, .production_id = 3 } } },
+    .{ .symbol = xmlSymEnd, .action = .{ .reduce = .{ .symbol = xmlSymNodes, .child_count = 2, .production_id = 3 } } },
 };
-const xml_s5_actions: []const ts.language_mod.tables.ActionEntry = &.{
-    .{ .symbol = xml_sym_open_tag, .action = .{ .reduce = .{ .symbol = xml_sym_node, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = xml_sym_close_tag, .action = .{ .reduce = .{ .symbol = xml_sym_node, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = xml_sym_selfclose_tag, .action = .{ .reduce = .{ .symbol = xml_sym_node, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = xml_sym_text, .action = .{ .reduce = .{ .symbol = xml_sym_node, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = xml_sym_comment, .action = .{ .reduce = .{ .symbol = xml_sym_node, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = xml_sym_cdata, .action = .{ .reduce = .{ .symbol = xml_sym_node, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = xml_sym_pi, .action = .{ .reduce = .{ .symbol = xml_sym_node, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = xml_sym_doctype, .action = .{ .reduce = .{ .symbol = xml_sym_node, .child_count = 1, .production_id = 4 } } },
-    .{ .symbol = xml_sym_end, .action = .{ .reduce = .{ .symbol = xml_sym_node, .child_count = 1, .production_id = 4 } } },
+const xmlS5Actions: []const ts.language_mod.tables.ActionEntry = &.{
+    .{ .symbol = xmlSymOpenTag, .action = .{ .reduce = .{ .symbol = xmlSymNode, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = xmlSymCloseTag, .action = .{ .reduce = .{ .symbol = xmlSymNode, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = xmlSymSelfcloseTag, .action = .{ .reduce = .{ .symbol = xmlSymNode, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = xmlSymText, .action = .{ .reduce = .{ .symbol = xmlSymNode, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = xmlSymComment, .action = .{ .reduce = .{ .symbol = xmlSymNode, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = xmlSymCdata, .action = .{ .reduce = .{ .symbol = xmlSymNode, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = xmlSymPi, .action = .{ .reduce = .{ .symbol = xmlSymNode, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = xmlSymDoctype, .action = .{ .reduce = .{ .symbol = xmlSymNode, .child_count = 1, .production_id = 4 } } },
+    .{ .symbol = xmlSymEnd, .action = .{ .reduce = .{ .symbol = xmlSymNode, .child_count = 1, .production_id = 4 } } },
 };
 
-const xml_parse_states: []const ts.language_mod.tables.ParseState = &.{
-    .{ .actions = xml_s0_actions, .gotos = xml_s0_gotos },
-    .{ .actions = xml_s1_actions },
-    .{ .actions = xml_s2_actions, .gotos = xml_s2_gotos },
-    .{ .actions = xml_s3_actions },
-    .{ .actions = xml_s4_actions },
-    .{ .actions = xml_s5_actions },
-    .{ .actions = xml_s5_actions },
-    .{ .actions = xml_s5_actions },
-    .{ .actions = xml_s5_actions },
-    .{ .actions = xml_s5_actions },
-    .{ .actions = xml_s5_actions },
-    .{ .actions = xml_s5_actions },
-    .{ .actions = xml_s5_actions },
-    .{ .actions = xml_s5_actions },
-    .{ .actions = xml_s5_actions },
+const xmlParseStates: []const ts.language_mod.tables.ParseState = &.{
+    .{ .actions = xmlS0Actions, .gotos = xmlS0Gotos },
+    .{ .actions = xmlS1Actions },
+    .{ .actions = xmlS2Actions, .gotos = xmlS2Gotos },
+    .{ .actions = xmlS3Actions },
+    .{ .actions = xmlS4Actions },
+    .{ .actions = xmlS5Actions },
+    .{ .actions = xmlS5Actions },
+    .{ .actions = xmlS5Actions },
+    .{ .actions = xmlS5Actions },
+    .{ .actions = xmlS5Actions },
+    .{ .actions = xmlS5Actions },
+    .{ .actions = xmlS5Actions },
+    .{ .actions = xmlS5Actions },
+    .{ .actions = xmlS5Actions },
+    .{ .actions = xmlS5Actions },
 };
 
 pub const xmlLanguage: ts.Language = .{
@@ -288,14 +288,14 @@ pub const xmlLanguage: ts.Language = .{
         .state_count = 15,
         .field_count = 0,
     },
-    .symbols = xml_symbol_table,
-    .token_matchers = xml_token_matchers,
+    .symbols = xmlSymbolTable,
+    .token_matchers = xmlTokenMatchers,
     .extra_symbols = &.{},
     .table = .{
-        .states = xml_parse_states,
+        .states = xmlParseStates,
         .start_state = 0,
-        .end_symbol = xml_sym_end,
-        .error_symbol = xml_sym_error,
+        .end_symbol = xmlSymEnd,
+        .error_symbol = xmlSymError,
     },
     .fields = .{},
 };
@@ -307,7 +307,7 @@ fn parseXmlTree(allocator: Allocator, src: []const u8) ParseError!XmlTree {
     return parser.parseString(src) catch return error.OutOfMemory;
 }
 
-const XmlTokenKind = enum { open_tag, close_tag, selfclose_tag, comment, cdata, pi, doctype, text };
+const XmlTokenKind = enum { openTag, closeTag, selfcloseTag, comment, cdata, pi, doctype, text };
 
 const XmlToken = struct {
     kind: XmlTokenKind,
@@ -346,7 +346,7 @@ fn collectXmlTokens(tree: *const XmlTree, allocator: Allocator) Allocator.Error!
     }.less);
     for (ordered.items) |n| {
         const t = n.nodeType();
-        const kind: XmlTokenKind = if (std.mem.eql(u8, t, "open_tag")) .open_tag else if (std.mem.eql(u8, t, "close_tag")) .close_tag else if (std.mem.eql(u8, t, "selfclose_tag")) .selfclose_tag else if (std.mem.eql(u8, t, "comment")) .comment else if (std.mem.eql(u8, t, "cdata")) .cdata else if (std.mem.eql(u8, t, "pi")) .pi else if (std.mem.eql(u8, t, "doctype")) .doctype else .text;
+        const kind: XmlTokenKind = if (std.mem.eql(u8, t, "open_tag")) .openTag else if (std.mem.eql(u8, t, "close_tag")) .closeTag else if (std.mem.eql(u8, t, "selfclose_tag")) .selfcloseTag else if (std.mem.eql(u8, t, "comment")) .comment else if (std.mem.eql(u8, t, "cdata")) .cdata else if (std.mem.eql(u8, t, "pi")) .pi else if (std.mem.eql(u8, t, "doctype")) .doctype else .text;
         try out.append(allocator, .{ .kind = kind, .start = n.startByte(), .end = n.endByte() });
     }
     return out.toOwnedSlice(allocator);
@@ -380,10 +380,10 @@ pub fn parse(arena: Allocator, xmlSrc: []const u8, opts: Options) ParseError!Tre
         .opts = opts,
     };
     try p.openStack.append(arena, root);
-    var ts_tree = try parseXmlTree(arena, xmlSrc);
-    defer ts_tree.deinit();
-    const tokens = try collectXmlTokens(&ts_tree, arena);
-    if (ts_tree.hasError()) tree.getMut(root).hasError = true;
+    var tsTree = try parseXmlTree(arena, xmlSrc);
+    defer tsTree.deinit();
+    const tokens = try collectXmlTokens(&tsTree, arena);
+    if (tsTree.hasError()) tree.getMut(root).hasError = true;
     try p.runTokens(tokens);
     return tree;
 }
@@ -432,7 +432,7 @@ const Parser = struct {
                     self.tree.appendChild(self.cur(), idx);
                 },
                 .pi, .doctype => {},
-                .selfclose_tag => {
+                .selfcloseTag => {
                     const tag = try self.parseOpenTag(self.src[tok.start..tok.end]);
                     const nodeIdx = try self.tree.append(self.arena, .{
                         .kind = .element,
@@ -441,7 +441,7 @@ const Parser = struct {
                     });
                     self.tree.appendChild(self.cur(), nodeIdx);
                 },
-                .open_tag => {
+                .openTag => {
                     if (self.openStack.items.len >= self.opts.maxDepth) return error.TooDeep;
                     const tag = try self.parseOpenTag(self.src[tok.start..tok.end]);
                     const nodeIdx = try self.tree.append(self.arena, .{
@@ -452,7 +452,7 @@ const Parser = struct {
                     self.tree.appendChild(self.cur(), nodeIdx);
                     try self.openStack.append(self.arena, nodeIdx);
                 },
-                .close_tag => {
+                .closeTag => {
                     const raw = self.src[tok.start..tok.end];
                     var inner = raw;
                     if (inner.len >= 2) inner = inner[2..];
@@ -481,13 +481,13 @@ const Parser = struct {
     };
 
     fn parseOpenTag(self: *Parser, slice: []const u8) ParseError!OpenTag {
-        var name_end: usize = 1;
-        while (name_end < slice.len and !isStop(slice[name_end])) : (name_end += 1) {}
-        const name = slice[1..name_end];
+        var nameEnd: usize = 1;
+        while (nameEnd < slice.len and !isStop(slice[nameEnd])) : (nameEnd += 1) {}
+        const name = slice[1..nameEnd];
         var attrs: std.ArrayList(Attribute) = .empty;
         defer attrs.deinit(self.arena);
         var selfClosing = false;
-        _ = try parseAttrs(self.arena, slice, name_end, &attrs, &selfClosing, self.opts.maxAttrValue);
+        _ = try parseAttrs(self.arena, slice, nameEnd, &attrs, &selfClosing, self.opts.maxAttrValue);
         if (attrs.items.len > self.opts.maxAttrs) return error.TooManyAttributes;
         return .{ .name = name, .attrs = try attrs.toOwnedSlice(self.arena) };
     }
@@ -523,11 +523,11 @@ test "xml preserves namespaces and cdata via syntax tree" {
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     const tree = try parse(arena.allocator(), "<rss><channel><item><title><![CDATA[Hi]]></title></item></channel></rss>", .{});
-    var found_cdata = false;
+    var foundCdata = false;
     for (tree.nodes.items) |n| {
-        if (n.kind == .cdata and std.mem.eql(u8, n.data, "Hi")) found_cdata = true;
+        if (n.kind == .cdata and std.mem.eql(u8, n.data, "Hi")) foundCdata = true;
     }
-    try std.testing.expect(found_cdata);
+    try std.testing.expect(foundCdata);
 }
 
 test "xml strict mode rejects mismatched tags" {
@@ -560,19 +560,19 @@ fn parseAttrs(
             break;
         }
 
-        const name_start = i;
+        const nameStart = i;
         while (i < src.len and src[i] != '=' and src[i] != '>' and src[i] != '/' and
             src[i] != ' ' and src[i] != '\t' and src[i] != '\r' and src[i] != '\n') : (i += 1)
         {}
-        if (i == name_start) {
+        if (i == nameStart) {
             i += 1;
             continue;
         }
-        const attr_name = src[name_start..i];
+        const attrName = src[nameStart..i];
 
         while (i < src.len and (src[i] == ' ' or src[i] == '\t')) : (i += 1) {}
         if (i >= src.len or src[i] != '=') {
-            try attrs.append(arena, .{ .name = attr_name, .value = "" });
+            try attrs.append(arena, .{ .name = attrName, .value = "" });
             continue;
         }
         i += 1;
@@ -592,7 +592,7 @@ fn parseAttrs(
             val = src[vs..i];
         }
         if (val.len > maxVal) return error.InputTooLarge;
-        try attrs.append(arena, .{ .name = attr_name, .value = val });
+        try attrs.append(arena, .{ .name = attrName, .value = val });
     }
     return i;
 }

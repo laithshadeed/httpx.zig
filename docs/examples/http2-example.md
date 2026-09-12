@@ -1,7 +1,7 @@
 # HTTP/2 Example
 
 HTTP/2 frame headers and stream multiplexing with `httpx.http2`.
-See `examples/http2_client.zig` and `examples/http2_multiplex.zig`.
+See `examples/http2Client.zig` and `examples/http2Multiplex.zig`.
 
 ```zig
 var hdrBuf: [httpx.http2.frame.FRAME_HEADER_SIZE]u8 = undefined;

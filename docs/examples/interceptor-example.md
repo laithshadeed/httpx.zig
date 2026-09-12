@@ -1,6 +1,6 @@
 # Example: Interceptor Example
 
-Demonstrates interceptor_example.zig using the canonical HTTPX API.
+Demonstrates interceptorExample.zig using the canonical HTTPX API.
 
 ## Complete Example
 

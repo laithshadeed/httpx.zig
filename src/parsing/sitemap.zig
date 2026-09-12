@@ -43,51 +43,51 @@ pub fn parse(allocator: Allocator, src: []const u8) !Sitemap {
     var tree = try xml.parse(al, src, .{});
     defer tree.deinit(al);
 
-    var sitemap_index_nodes: std.ArrayList(u32) = .empty;
-    try tree.getElementsByTag(al, 0, "sitemapindex", &sitemap_index_nodes);
+    var sitemapIndexNodes: std.ArrayList(u32) = .empty;
+    try tree.getElementsByTag(al, 0, "sitemapindex", &sitemapIndexNodes);
 
-    if (sitemap_index_nodes.items.len > 0) {
-        var sm_list: std.ArrayList([]const u8) = .empty;
+    if (sitemapIndexNodes.items.len > 0) {
+        var smList: std.ArrayList([]const u8) = .empty;
         var sitemaps: std.ArrayList(u32) = .empty;
         try tree.getElementsByTag(al, 0, "sitemap", &sitemaps);
-        for (sitemaps.items) |s_idx| {
-            var loc_nodes: std.ArrayList(u32) = .empty;
-            try tree.getElementsByTag(al, s_idx, "loc", &loc_nodes);
-            if (loc_nodes.items.len > 0) {
-                const loc_text = getText(&tree, loc_nodes.items[0]);
-                if (loc_text.len > 0) try sm_list.append(allocator, loc_text);
+        for (sitemaps.items) |sIdx| {
+            var locNodes: std.ArrayList(u32) = .empty;
+            try tree.getElementsByTag(al, sIdx, "loc", &locNodes);
+            if (locNodes.items.len > 0) {
+                const locText = getText(&tree, locNodes.items[0]);
+                if (locText.len > 0) try smList.append(allocator, locText);
             }
         }
         return Sitemap{
             .allocator = allocator,
             .isIndex = true,
-            .sitemaps = try sm_list.toOwnedSlice(allocator),
+            .sitemaps = try smList.toOwnedSlice(allocator),
         };
     }
 
-    var url_nodes: std.ArrayList(u32) = .empty;
-    try tree.getElementsByTag(al, 0, "url", &url_nodes);
+    var urlNodes: std.ArrayList(u32) = .empty;
+    try tree.getElementsByTag(al, 0, "url", &urlNodes);
 
     var urls: std.ArrayList(SitemapUrl) = .empty;
-    for (url_nodes.items) |u_idx| {
+    for (urlNodes.items) |uIdx| {
         var u = SitemapUrl{};
         var locs: std.ArrayList(u32) = .empty;
-        try tree.getElementsByTag(al, u_idx, "loc", &locs);
+        try tree.getElementsByTag(al, uIdx, "loc", &locs);
         if (locs.items.len > 0) u.loc = getText(&tree, locs.items[0]);
 
         var mods: std.ArrayList(u32) = .empty;
-        try tree.getElementsByTag(al, u_idx, "lastMod", &mods);
+        try tree.getElementsByTag(al, uIdx, "lastMod", &mods);
         if (mods.items.len > 0) u.lastMod = getText(&tree, mods.items[0]);
 
         var freqs: std.ArrayList(u32) = .empty;
-        try tree.getElementsByTag(al, u_idx, "changeFreq", &freqs);
+        try tree.getElementsByTag(al, uIdx, "changeFreq", &freqs);
         if (freqs.items.len > 0) {
             const f = getText(&tree, freqs.items[0]);
             if (std.ascii.eqlIgnoreCase(f, "always")) u.changeFreq = .always else if (std.ascii.eqlIgnoreCase(f, "hourly")) u.changeFreq = .hourly else if (std.ascii.eqlIgnoreCase(f, "daily")) u.changeFreq = .daily else if (std.ascii.eqlIgnoreCase(f, "weekly")) u.changeFreq = .weekly else if (std.ascii.eqlIgnoreCase(f, "monthly")) u.changeFreq = .monthly else if (std.ascii.eqlIgnoreCase(f, "yearly")) u.changeFreq = .yearly else if (std.ascii.eqlIgnoreCase(f, "never")) u.changeFreq = .never;
         }
 
         var prios: std.ArrayList(u32) = .empty;
-        try tree.getElementsByTag(al, u_idx, "priority", &prios);
+        try tree.getElementsByTag(al, uIdx, "priority", &prios);
         if (prios.items.len > 0) {
             const p = getText(&tree, prios.items[0]);
             if (std.fmt.parseFloat(f32, p)) |v| u.priority = v else |_| {}

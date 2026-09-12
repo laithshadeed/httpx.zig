@@ -11,16 +11,16 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const context_mod = @import("context.zig");
-const parser_mod = @import("parser.zig");
-const err_mod = @import("error.zig");
+const contextMod = @import("context.zig");
+const parserMod = @import("parser.zig");
+const errMod = @import("error.zig");
 
-pub const Value = context_mod.Value;
-pub const Context = context_mod.Context;
-pub const TemplateAst = parser_mod.TemplateAst;
-pub const TemplateNode = parser_mod.TemplateNode;
-pub const BlockInfo = parser_mod.BlockInfo;
-pub const TemplateError = err_mod.TemplateError;
+pub const Value = contextMod.Value;
+pub const Context = contextMod.Context;
+pub const TemplateAst = parserMod.TemplateAst;
+pub const TemplateNode = parserMod.TemplateNode;
+pub const BlockInfo = parserMod.BlockInfo;
+pub const TemplateError = errMod.TemplateError;
 
 /// Minimal provider interface used by renderer to retrieve ASTs for includes and parent templates.
 pub const TemplateProvider = struct {
@@ -69,11 +69,11 @@ pub const GlobalKwarg = struct {
     value: Value,
 };
 
-pub const GlobalFn = *const fn (user_data: ?*const anyopaque, allocator: Allocator, args: []const Value, kwargs: []const GlobalKwarg) anyerror!Value;
+pub const GlobalFn = *const fn (userData: ?*const anyopaque, allocator: Allocator, args: []const Value, kwargs: []const GlobalKwarg) anyerror!Value;
 
 pub const GlobalEntry = struct {
     func: GlobalFn,
-    user_data: ?*const anyopaque = null,
+    userData: ?*const anyopaque = null,
 };
 
 pub const GlobalMap = struct {
@@ -178,13 +178,13 @@ fn filterCapitalize(allocator: Allocator, value: Value, args: []const Value) !Va
 fn filterTitle(allocator: Allocator, value: Value, args: []const Value) !Value {
     _ = args;
     const s = try filterStringValue(allocator, value);
-    var new_word = true;
+    var newWord = true;
     for (s) |*c| {
         if (std.ascii.isWhitespace(c.*)) {
-            new_word = true;
-        } else if (new_word) {
+            newWord = true;
+        } else if (newWord) {
             c.* = std.ascii.toUpper(c.*);
-            new_word = false;
+            newWord = false;
         } else {
             c.* = std.ascii.toLower(c.*);
         }
@@ -219,9 +219,9 @@ fn filterSafe(allocator: Allocator, value: Value, args: []const Value) !Value {
 }
 
 fn filterDefault(allocator: Allocator, value: Value, args: []const Value) !Value {
-    const use_bool = args.len > 1 and args[1] == .boolean and args[1].boolean;
-    const is_missing = value == .nullVal or value == .missing or (use_bool and !value.isTruthy());
-    if (!is_missing) return value;
+    const useBool = args.len > 1 and args[1] == .boolean and args[1].boolean;
+    const isMissing = value == .nullVal or value == .missing or (useBool and !value.isTruthy());
+    if (!isMissing) return value;
     if (args.len > 0) return args[0];
     return .{ .string = try allocator.dupe(u8, "") };
 }
@@ -319,12 +319,12 @@ fn filterStriptags(allocator: Allocator, value: Value, args: []const Value) !Val
     defer allocator.free(s);
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
-    var in_tag = false;
+    var inTag = false;
     for (s) |c| {
-        if (in_tag) {
-            if (c == '>') in_tag = false;
+        if (inTag) {
+            if (c == '>') inTag = false;
         } else if (c == '<') {
-            in_tag = true;
+            inTag = true;
         } else {
             try out.append(allocator, c);
         }
@@ -395,19 +395,19 @@ fn filterSort(allocator: Allocator, value: Value, args: []const Value) !Value {
     if (value != .list) return value;
     const out = try allocator.dupe(Value, value.list);
     errdefer allocator.free(out);
-    var all_int = true;
-    var all_string = true;
+    var allInt = true;
+    var allString = true;
     for (out) |item| {
-        if (item != .integer) all_int = false;
-        if (item != .string) all_string = false;
+        if (item != .integer) allInt = false;
+        if (item != .string) allString = false;
     }
-    if (all_int) {
+    if (allInt) {
         std.mem.sort(Value, out, {}, struct {
             fn less(_: void, a: Value, b: Value) bool {
                 return a.integer < b.integer;
             }
         }.less);
-    } else if (all_string) {
+    } else if (allString) {
         std.mem.sort(Value, out, {}, struct {
             fn less(_: void, a: Value, b: Value) bool {
                 return std.mem.order(u8, a.string, b.string) == .lt;
@@ -470,21 +470,21 @@ pub fn builtinFilter(name: []const u8) ?FilterFn {
 }
 
 const MacroTable = struct {
-    map: std.StringHashMap(parser_mod.MacroDef),
+    map: std.StringHashMap(parserMod.MacroDef),
 
     fn init(allocator: Allocator) MacroTable {
-        return .{ .map = std.StringHashMap(parser_mod.MacroDef).init(allocator) };
+        return .{ .map = std.StringHashMap(parserMod.MacroDef).init(allocator) };
     }
 
     fn deinit(self: *MacroTable) void {
         self.map.deinit();
     }
 
-    fn addIfAbsent(self: *MacroTable, def: parser_mod.MacroDef) !void {
+    fn addIfAbsent(self: *MacroTable, def: parserMod.MacroDef) !void {
         if (!self.map.contains(def.name)) try self.map.put(def.name, def);
     }
 
-    fn get(self: *const MacroTable, name: []const u8) ?parser_mod.MacroDef {
+    fn get(self: *const MacroTable, name: []const u8) ?parserMod.MacroDef {
         return self.map.get(name);
     }
 };
@@ -498,7 +498,7 @@ const RenderState = struct {
     macros: *MacroTable,
     filters: ?*const FilterRegistry,
     globals: ?*const GlobalMap,
-    scope: *context_mod.Scope,
+    scope: *contextMod.Scope,
     superNodes: ?[]const TemplateNode = null,
     strict: bool = false,
     alloc: Allocator,
@@ -522,9 +522,9 @@ pub const Renderer = struct {
     ) !void {
         var depth: usize = 0;
         var chain = InheritChain{};
-        var scope = context_mod.Scope{};
-        const arena_alloc = @constCast(&ctx.arena).allocator();
-        defer scope.deinit(arena_alloc);
+        var scope = contextMod.Scope{};
+        const arenaAlloc = @constCast(&ctx.arena).allocator();
+        defer scope.deinit(arenaAlloc);
         var macros = MacroTable.init(ctx.arena.child_allocator);
         defer macros.deinit();
         for (ast.macros) |m| try macros.addIfAbsent(m);
@@ -539,7 +539,7 @@ pub const Renderer = struct {
             .globals = self.globals,
             .scope = &scope,
             .strict = self.options.strictUndefined,
-            .alloc = arena_alloc,
+            .alloc = arenaAlloc,
             .root = ctx.root,
         };
         _ = try self.renderInternal(ast, ctx, state, writer);
@@ -581,13 +581,13 @@ pub const Renderer = struct {
             }
 
             const p = state.provider orelse return TemplateError.TemplateNotFound;
-            const parent_ast = p.getAst(parentPath) orelse return TemplateError.TemplateNotFound;
+            const parentAst = p.getAst(parentPath) orelse return TemplateError.TemplateNotFound;
 
-            var combined_blocks = std.ArrayList(BlockInfo).empty;
-            defer combined_blocks.deinit(ctx.arena.child_allocator);
+            var combinedBlocks = std.ArrayList(BlockInfo).empty;
+            defer combinedBlocks.deinit(ctx.arena.child_allocator);
 
             for (ast.blocks) |b| {
-                try combined_blocks.append(ctx.arena.child_allocator, b);
+                try combinedBlocks.append(ctx.arena.child_allocator, b);
             }
             for (state.blockOverrides) |b| {
                 var found = false;
@@ -598,14 +598,14 @@ pub const Renderer = struct {
                     }
                 }
                 if (!found) {
-                    try combined_blocks.append(ctx.arena.child_allocator, b);
+                    try combinedBlocks.append(ctx.arena.child_allocator, b);
                 }
             }
-            for (parent_ast.macros) |m| try state.macros.addIfAbsent(m);
+            for (parentAst.macros) |m| try state.macros.addIfAbsent(m);
 
             var next = state;
-            next.blockOverrides = combined_blocks.items;
-            return self.renderInternal(parent_ast, ctx, next, writer);
+            next.blockOverrides = combinedBlocks.items;
+            return self.renderInternal(parentAst, ctx, next, writer);
         }
 
         for (ast.macros) |m| try state.macros.addIfAbsent(m);
@@ -624,17 +624,17 @@ pub const Renderer = struct {
                 .text => |txt| {
                     try writer.writeAll(txt);
                 },
-                .expression => |expr_info| {
-                    try self.renderExpression(expr_info.expr, ctx, state, writer);
+                .expression => |exprInfo| {
+                    try self.renderExpression(exprInfo.expr, ctx, state, writer);
                 },
-                .ifBlock => |if_info| {
-                    const cond_val = try self.evalExpr(ctx, state, if_info.condition);
-                    if (cond_val.isTruthy()) {
-                        const f = try self.renderNodes(if_info.thenNodes, ctx, state, writer);
+                .ifBlock => |ifInfo| {
+                    const condVal = try self.evalExpr(ctx, state, ifInfo.condition);
+                    if (condVal.isTruthy()) {
+                        const f = try self.renderNodes(ifInfo.thenNodes, ctx, state, writer);
                         if (f != .normal) return f;
                     } else {
                         var taken = false;
-                        for (if_info.elifBranches) |branch| {
+                        for (ifInfo.elifBranches) |branch| {
                             const bv = try self.evalExpr(ctx, state, branch.condition);
                             if (bv.isTruthy()) {
                                 const f = try self.renderNodes(branch.bodyNodes, ctx, state, writer);
@@ -643,8 +643,8 @@ pub const Renderer = struct {
                                 break;
                             }
                         }
-                        if (!taken and if_info.elseNodes.len > 0) {
-                            const f = try self.renderNodes(if_info.elseNodes, ctx, state, writer);
+                        if (!taken and ifInfo.elseNodes.len > 0) {
+                            const f = try self.renderNodes(ifInfo.elseNodes, ctx, state, writer);
                             if (f != .normal) return f;
                         }
                     }
@@ -653,23 +653,23 @@ pub const Renderer = struct {
                     const f = try self.renderForLoop(forInfo, ctx, state, writer);
                     if (f != .normal) return f;
                 },
-                .set => |set_info| {
-                    const val = try self.evalExpr(ctx, state, set_info.valueExpr);
-                    try state.scope.set(state.alloc, set_info.name, val);
+                .set => |setInfo| {
+                    const val = try self.evalExpr(ctx, state, setInfo.valueExpr);
+                    try state.scope.set(state.alloc, setInfo.name, val);
                 },
-                .setBlock => |set_info| {
+                .setBlock => |setInfo| {
                     var list = std.ArrayList(u8).empty;
                     defer list.deinit(state.alloc);
                     var lw = ListWriter{ .list = &list, .allocator = state.alloc };
-                    _ = try self.renderNodes(set_info.bodyNodes, ctx, state, &lw);
-                    try state.scope.set(state.alloc, set_info.name, .{ .rawHtml = try list.toOwnedSlice(state.alloc) });
+                    _ = try self.renderNodes(setInfo.bodyNodes, ctx, state, &lw);
+                    try state.scope.set(state.alloc, setInfo.name, .{ .rawHtml = try list.toOwnedSlice(state.alloc) });
                 },
-                .call => |call_info| {
+                .call => |callInfo| {
                     var args = std.ArrayList(Value).empty;
                     defer args.deinit(state.alloc);
                     var kwargs = std.ArrayList(CallKwarg).empty;
                     defer kwargs.deinit(state.alloc);
-                    for (call_info.args) |a| {
+                    for (callInfo.args) |a| {
                         const v = try self.evalExpr(ctx, state, a.value);
                         if (a.name) |nm| {
                             try kwargs.append(state.alloc, .{ .name = nm, .value = v });
@@ -677,27 +677,27 @@ pub const Renderer = struct {
                             try args.append(state.alloc, v);
                         }
                     }
-                    var body_list = std.ArrayList(u8).empty;
-                    defer body_list.deinit(state.alloc);
-                    var body_lw = ListWriter{ .list = &body_list, .allocator = state.alloc };
-                    _ = try self.renderNodes(call_info.bodyNodes, ctx, state, &body_lw);
-                    const body_text = try body_list.toOwnedSlice(state.alloc);
-                    const caller_nodes = try state.alloc.alloc(TemplateNode, 1);
-                    caller_nodes[0] = .{ .text = body_text };
-                    var call_scope = context_mod.Scope{ .parent = state.scope };
-                    defer call_scope.deinit(state.alloc);
-                    try call_scope.set(state.alloc, "caller", .{ .macro = .{
+                    var bodyList = std.ArrayList(u8).empty;
+                    defer bodyList.deinit(state.alloc);
+                    var bodyLw = ListWriter{ .list = &bodyList, .allocator = state.alloc };
+                    _ = try self.renderNodes(callInfo.bodyNodes, ctx, state, &bodyLw);
+                    const bodyText = try bodyList.toOwnedSlice(state.alloc);
+                    const callerNodes = try state.alloc.alloc(TemplateNode, 1);
+                    callerNodes[0] = .{ .text = bodyText };
+                    var callScope = contextMod.Scope{ .parent = state.scope };
+                    defer callScope.deinit(state.alloc);
+                    try callScope.set(state.alloc, "caller", .{ .macro = .{
                         .name = "caller",
                         .params = &.{},
-                        .bodyNodes = caller_nodes,
-                        .startByte = call_info.startByte,
-                        .line = call_info.line,
-                        .col = call_info.col,
+                        .bodyNodes = callerNodes,
+                        .startByte = callInfo.startByte,
+                        .line = callInfo.line,
+                        .col = callInfo.col,
                     } });
-                    var call_state = state;
-                    call_state.scope = &call_scope;
-                    const callee_def = state.macros.get(call_info.name) orelse return TemplateError.UnknownVariable;
-                    const out = try self.renderMacroWithScope(ctx, call_state, callee_def, args.items, kwargs.items, &call_scope);
+                    var callState = state;
+                    callState.scope = &callScope;
+                    const calleeDef = state.macros.get(callInfo.name) orelse return TemplateError.UnknownVariable;
+                    const out = try self.renderMacroWithScope(ctx, callState, calleeDef, args.items, kwargs.items, &callScope);
                     // Call-block output is statement-level markup like includes.
                     switch (out) {
                         .string => |s| try writer.writeAll(s),
@@ -714,45 +714,45 @@ pub const Renderer = struct {
                 .continueLoop => {
                     return .continued;
                 },
-                .block => |block_info| {
-                    var block_to_render = block_info.bodyNodes;
-                    var super_nodes: ?[]const TemplateNode = null;
+                .block => |blockInfo| {
+                    var blockToRender = blockInfo.bodyNodes;
+                    var superNodes: ?[]const TemplateNode = null;
                     for (state.blockOverrides) |ov| {
-                        if (std.mem.eql(u8, ov.name, block_info.name)) {
-                            block_to_render = ov.nodes;
-                            super_nodes = block_info.bodyNodes;
+                        if (std.mem.eql(u8, ov.name, blockInfo.name)) {
+                            blockToRender = ov.nodes;
+                            superNodes = blockInfo.bodyNodes;
                             break;
                         }
                     }
                     var next = state;
-                    next.superNodes = super_nodes;
-                    const f = try self.renderNodes(block_to_render, ctx, next, writer);
+                    next.superNodes = superNodes;
+                    const f = try self.renderNodes(blockToRender, ctx, next, writer);
                     if (f != .normal) return f;
                 },
                 .extends => {},
-                .include => |inc_info| {
+                .include => |incInfo| {
                     if (state.includeStack.len >= self.options.maxIncludeDepth) {
                         return TemplateError.DepthLimitExceeded;
                     }
                     for (state.includeStack) |item| {
-                        if (std.mem.eql(u8, item, inc_info.templatePath)) {
+                        if (std.mem.eql(u8, item, incInfo.templatePath)) {
                             return TemplateError.CircularInclude;
                         }
                     }
 
                     const p = state.provider orelse return TemplateError.TemplateNotFound;
-                    const inc_ast = p.getAst(inc_info.templatePath) orelse return TemplateError.TemplateNotFound;
-                    for (inc_ast.macros) |m| try state.macros.addIfAbsent(m);
+                    const incAst = p.getAst(incInfo.templatePath) orelse return TemplateError.TemplateNotFound;
+                    for (incAst.macros) |m| try state.macros.addIfAbsent(m);
 
-                    const new_stack = try ctx.arena.child_allocator.alloc([]const u8, state.includeStack.len + 1);
-                    defer ctx.arena.child_allocator.free(new_stack);
-                    @memcpy(new_stack[0..state.includeStack.len], state.includeStack);
-                    new_stack[state.includeStack.len] = inc_info.templatePath;
+                    const newStack = try ctx.arena.child_allocator.alloc([]const u8, state.includeStack.len + 1);
+                    defer ctx.arena.child_allocator.free(newStack);
+                    @memcpy(newStack[0..state.includeStack.len], state.includeStack);
+                    newStack[state.includeStack.len] = incInfo.templatePath;
 
                     var next = state;
                     next.blockOverrides = &[_]BlockInfo{};
-                    next.includeStack = new_stack;
-                    const f = try self.renderInternal(inc_ast, ctx, next, writer);
+                    next.includeStack = newStack;
+                    const f = try self.renderInternal(incAst, ctx, next, writer);
                     if (f != .normal) return f;
                 },
             }
@@ -938,8 +938,8 @@ pub const Renderer = struct {
                 return left;
             }
             const negated = self.eatWord("not");
-            const test_name = self.parseName() orelse return error.RenderError;
-            const result = try self.evalTest(left, test_name);
+            const testName = self.parseName() orelse return error.RenderError;
+            const result = try self.evalTest(left, testName);
             return .{ .boolean = if (negated) !result else result };
         }
 
@@ -1187,7 +1187,7 @@ pub const Renderer = struct {
             }
             if (c == '{') {
                 self.pos += 1;
-                var entries = std.ArrayList(context_mod.Entry).empty;
+                var entries = std.ArrayList(contextMod.Entry).empty;
                 errdefer entries.deinit(self.state.alloc);
                 self.skipWs();
                 if (self.pos < self.src.len and self.src[self.pos] == '}') {
@@ -1200,8 +1200,8 @@ pub const Renderer = struct {
                     if (self.pos >= self.src.len or self.src[self.pos] != ':') return error.RenderError;
                     self.pos += 1;
                     const kval = try self.parseTernary();
-                    const key_str = try filterStringValue(self.state.alloc, key);
-                    try entries.append(self.state.alloc, .{ .key = key_str, .value = kval });
+                    const keyStr = try filterStringValue(self.state.alloc, key);
+                    try entries.append(self.state.alloc, .{ .key = keyStr, .value = kval });
                     self.skipWs();
                     if (self.pos < self.src.len and self.src[self.pos] == ',') {
                         self.pos += 1;
@@ -1284,13 +1284,13 @@ pub const Renderer = struct {
         fn parseNumber(self: *ExprParser) !Value {
             const start = self.pos;
             while (self.pos < self.src.len and std.ascii.isDigit(self.src[self.pos])) : (self.pos += 1) {}
-            var is_float = false;
+            var isFloat = false;
             if (self.pos < self.src.len and self.src[self.pos] == '.' and self.pos + 1 < self.src.len and std.ascii.isDigit(self.src[self.pos + 1])) {
-                is_float = true;
+                isFloat = true;
                 self.pos += 1;
                 while (self.pos < self.src.len and std.ascii.isDigit(self.src[self.pos])) : (self.pos += 1) {}
             }
-            if (!is_float) {
+            if (!isFloat) {
                 return .{ .integer = std.fmt.parseInt(i64, self.src[start..self.pos], 10) catch return error.RenderError };
             }
             return .{ .float = std.fmt.parseFloat(f64, self.src[start..self.pos]) catch return error.RenderError };
@@ -1316,8 +1316,8 @@ pub const Renderer = struct {
             while (true) {
                 const save = self.pos;
                 if (self.parseName()) |nm| {
-                    const after_name = self.pos;
-                    _ = after_name;
+                    const afterName = self.pos;
+                    _ = afterName;
                     self.skipWs();
                     if (self.pos < self.src.len and self.src[self.pos] == '=' and (self.pos + 1 >= self.src.len or self.src[self.pos + 1] != '=')) {
                         self.pos += 1;
@@ -1400,18 +1400,18 @@ pub const Renderer = struct {
             else => null,
         };
         if (lf == null or rf == null) return .nullVal;
-        const both_int = left == .integer and right == .integer;
+        const bothInt = left == .integer and right == .integer;
         switch (op) {
             .add => {
-                if (both_int) return .{ .integer = left.integer +% right.integer };
+                if (bothInt) return .{ .integer = left.integer +% right.integer };
                 return .{ .float = lf.? + rf.? };
             },
             .sub => {
-                if (both_int) return .{ .integer = left.integer -% right.integer };
+                if (bothInt) return .{ .integer = left.integer -% right.integer };
                 return .{ .float = lf.? - rf.? };
             },
             .mul => {
-                if (both_int) return .{ .integer = left.integer *% right.integer };
+                if (bothInt) return .{ .integer = left.integer *% right.integer };
                 return .{ .float = lf.? * rf.? };
             },
             .div => {
@@ -1423,7 +1423,7 @@ pub const Renderer = struct {
                 return .{ .integer = @intFromFloat(@floor(lf.? / rf.?)) };
             },
             .mod => {
-                if (both_int) {
+                if (bothInt) {
                     if (right.integer == 0) return .nullVal;
                     return .{ .integer = @mod(left.integer, right.integer) };
                 }
@@ -1454,7 +1454,7 @@ pub const Renderer = struct {
                 var gkwargs = std.ArrayList(GlobalKwarg).empty;
                 defer gkwargs.deinit(state.alloc);
                 for (kwargs) |kw| try gkwargs.append(state.alloc, .{ .name = kw.name, .value = kw.value });
-                return entry.func(entry.user_data, state.alloc, args, gkwargs.items);
+                return entry.func(entry.userData, state.alloc, args, gkwargs.items);
             }
         }
         if (std.mem.eql(u8, name, "range")) {
@@ -1494,16 +1494,16 @@ pub const Renderer = struct {
         return .nullVal;
     }
 
-    fn renderMacro(self: Renderer, ctx: *const Context, state: RenderState, def: parser_mod.MacroDef, args: []const Value, kwargs: []const CallKwarg) anyerror!Value {
+    fn renderMacro(self: Renderer, ctx: *const Context, state: RenderState, def: parserMod.MacroDef, args: []const Value, kwargs: []const CallKwarg) anyerror!Value {
         return self.renderMacroWithScope(ctx, state, def, args, kwargs, null);
     }
 
-    fn renderMacroWithScope(self: Renderer, ctx: *const Context, state: RenderState, def: parser_mod.MacroDef, args: []const Value, kwargs: []const CallKwarg, parent_scope: ?*context_mod.Scope) anyerror!Value {
-        var macro_scope = context_mod.Scope{ .parent = parent_scope };
-        defer macro_scope.deinit(state.alloc);
+    fn renderMacroWithScope(self: Renderer, ctx: *const Context, state: RenderState, def: parserMod.MacroDef, args: []const Value, kwargs: []const CallKwarg, parentScope: ?*contextMod.Scope) anyerror!Value {
+        var macroScope = contextMod.Scope{ .parent = parentScope };
+        defer macroScope.deinit(state.alloc);
         for (def.params, 0..) |param, i| {
             if (i < args.len) {
-                try macro_scope.set(state.alloc, param.name, args[i]);
+                try macroScope.set(state.alloc, param.name, args[i]);
             } else {
                 var bound: ?Value = null;
                 for (kwargs) |kw| {
@@ -1513,22 +1513,22 @@ pub const Renderer = struct {
                     }
                 }
                 if (bound) |v| {
-                    try macro_scope.set(state.alloc, param.name, v);
+                    try macroScope.set(state.alloc, param.name, v);
                 } else if (param.default) |d| {
                     const trimmed = std.mem.trim(u8, d, " \t\r\n");
                     if (trimmed.len == 0) {
-                        try macro_scope.set(state.alloc, param.name, .nullVal);
+                        try macroScope.set(state.alloc, param.name, .nullVal);
                     } else {
                         const dv = try self.evalExpr(ctx, state, trimmed);
-                        try macro_scope.set(state.alloc, param.name, dv);
+                        try macroScope.set(state.alloc, param.name, dv);
                     }
                 } else {
-                    try macro_scope.set(state.alloc, param.name, .nullVal);
+                    try macroScope.set(state.alloc, param.name, .nullVal);
                 }
             }
         }
         var next = state;
-        next.scope = &macro_scope;
+        next.scope = &macroScope;
         var list = std.ArrayList(u8).empty;
         defer list.deinit(state.alloc);
         var lw = ListWriter{ .list = &list, .allocator = state.alloc };
@@ -1551,8 +1551,8 @@ pub const Renderer = struct {
         state: RenderState,
         writer: anytype,
     ) anyerror!Flow {
-        const coll_val = try self.evalExpr(ctx, state, forInfo.collectionExpr);
-        const list = switch (coll_val) {
+        const collVal = try self.evalExpr(ctx, state, forInfo.collectionExpr);
+        const list = switch (collVal) {
             .list => |l| l,
             else => {
                 if (forInfo.elseNodes.len > 0) {
@@ -1565,38 +1565,38 @@ pub const Renderer = struct {
             return self.renderNodes(forInfo.elseNodes, ctx, state, writer);
         }
 
-        var loop_scope = context_mod.Scope{ .parent = state.scope };
-        defer loop_scope.deinit(state.alloc);
-        var loop_state = state;
-        loop_state.scope = &loop_scope;
+        var loopScope = contextMod.Scope{ .parent = state.scope };
+        defer loopScope.deinit(state.alloc);
+        var loopState = state;
+        loopState.scope = &loopScope;
 
         for (list, 0..) |item, i| {
-            var iter_scope = context_mod.Scope{ .parent = &loop_scope };
-            defer iter_scope.deinit(state.alloc);
+            var iterScope = contextMod.Scope{ .parent = &loopScope };
+            defer iterScope.deinit(state.alloc);
             if (forInfo.itemVar2) |second| {
                 if (item == .list and item.list.len >= 2) {
-                    try iter_scope.set(state.alloc, forInfo.itemVar, item.list[0]);
-                    try iter_scope.set(state.alloc, second, item.list[1]);
+                    try iterScope.set(state.alloc, forInfo.itemVar, item.list[0]);
+                    try iterScope.set(state.alloc, second, item.list[1]);
                 } else {
-                    try iter_scope.set(state.alloc, forInfo.itemVar, .nullVal);
-                    try iter_scope.set(state.alloc, second, .nullVal);
+                    try iterScope.set(state.alloc, forInfo.itemVar, .nullVal);
+                    try iterScope.set(state.alloc, second, .nullVal);
                 }
             } else {
-                try iter_scope.set(state.alloc, forInfo.itemVar, item);
+                try iterScope.set(state.alloc, forInfo.itemVar, item);
             }
-            const loop_meta = try state.alloc.alloc(context_mod.Entry, 7);
-            loop_meta[0] = .{ .key = "index", .value = .{ .integer = @intCast(i + 1) } };
-            loop_meta[1] = .{ .key = "index0", .value = .{ .integer = @intCast(i) } };
-            loop_meta[2] = .{ .key = "first", .value = .{ .boolean = (i == 0) } };
-            loop_meta[3] = .{ .key = "last", .value = .{ .boolean = (i + 1 == list.len) } };
-            loop_meta[4] = .{ .key = "length", .value = .{ .integer = @intCast(list.len) } };
-            loop_meta[5] = .{ .key = "revindex", .value = .{ .integer = @intCast(list.len - i) } };
-            loop_meta[6] = .{ .key = "revindex0", .value = .{ .integer = @intCast(list.len - 1 - i) } };
-            try iter_scope.set(state.alloc, "loop", .{ .map = loop_meta });
+            const loopMeta = try state.alloc.alloc(contextMod.Entry, 7);
+            loopMeta[0] = .{ .key = "index", .value = .{ .integer = @intCast(i + 1) } };
+            loopMeta[1] = .{ .key = "index0", .value = .{ .integer = @intCast(i) } };
+            loopMeta[2] = .{ .key = "first", .value = .{ .boolean = (i == 0) } };
+            loopMeta[3] = .{ .key = "last", .value = .{ .boolean = (i + 1 == list.len) } };
+            loopMeta[4] = .{ .key = "length", .value = .{ .integer = @intCast(list.len) } };
+            loopMeta[5] = .{ .key = "revindex", .value = .{ .integer = @intCast(list.len - i) } };
+            loopMeta[6] = .{ .key = "revindex0", .value = .{ .integer = @intCast(list.len - 1 - i) } };
+            try iterScope.set(state.alloc, "loop", .{ .map = loopMeta });
 
-            var iter_state = loop_state;
-            iter_state.scope = &iter_scope;
-            const f = try self.renderNodes(forInfo.bodyNodes, ctx, iter_state, writer);
+            var iterState = loopState;
+            iterState.scope = &iterScope;
+            const f = try self.renderNodes(forInfo.bodyNodes, ctx, iterState, writer);
             if (f == .broken) break;
             if (f == .continued) continue;
         }
@@ -1609,13 +1609,13 @@ test "Renderer escapes HTML and supports raw HTML" {
     const alloc = testing.allocator;
 
     const src = "<title>{{ title }}</title><body>{{ safeBody }}</body>";
-    var parser = parser_mod.Parser.init(alloc, "test.html", src);
+    var parser = parserMod.Parser.init(alloc, "test.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
 
     var ctx = try Context.init(alloc, .{
         .title = "<script>alert('xss')</script> & \"more\"",
-        .safeBody = context_mod.raw("<b>Trusted Content</b>"),
+        .safeBody = contextMod.raw("<b>Trusted Content</b>"),
     });
     defer ctx.deinit();
 
@@ -1631,7 +1631,7 @@ test "Renderer supports elif chains" {
     const testing = std.testing;
     const alloc = testing.allocator;
     const src = "{% if a %}A{% elif b %}B{% else %}C{% endif %}";
-    var parser = parser_mod.Parser.init(alloc, "t.html", src);
+    var parser = parserMod.Parser.init(alloc, "t.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
 
@@ -1656,7 +1656,7 @@ test "Renderer supports set assignments" {
     const testing = std.testing;
     const alloc = testing.allocator;
     const src = "{% set greeting = \"hi\" %}{{ greeting }}, {{ greeting ~ \"!\" }}";
-    var parser = parser_mod.Parser.init(alloc, "t.html", src);
+    var parser = parserMod.Parser.init(alloc, "t.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
     var ctx = try Context.init(alloc, .{});
@@ -1671,7 +1671,7 @@ test "Renderer supports macros with defaults" {
     const testing = std.testing;
     const alloc = testing.allocator;
     const src = "{% macro input(name, value=\"\") %}<input name=\"{{ name }}\" value=\"{{ value }}\">{% endmacro %}{{ input(\"u\")|safe }}|{{ input(\"p\", \"x\")|safe }}";
-    var parser = parser_mod.Parser.init(alloc, "t.html", src);
+    var parser = parserMod.Parser.init(alloc, "t.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
     var ctx = try Context.init(alloc, .{});
@@ -1686,14 +1686,14 @@ test "Renderer supports filter pipelines" {
     const testing = std.testing;
     const alloc = testing.allocator;
     const src = "{{ name|trim|upper }}|{{ missing|default(\"N/A\") }}|{{ items|join(\", \") }}|{{ items|length }}|{{ html|striptags }}|{{ trusted|safe }}";
-    var parser = parser_mod.Parser.init(alloc, "t.html", src);
+    var parser = parserMod.Parser.init(alloc, "t.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
     var ctx = try Context.init(alloc, .{
         .name = "  ada  ",
         .items = [_][]const u8{ "a", "b" },
         .html = "<b>x</b>",
-        .trusted = context_mod.raw("<i>y</i>"),
+        .trusted = contextMod.raw("<i>y</i>"),
     });
     defer ctx.deinit();
     const renderer = Renderer{};
@@ -1706,7 +1706,7 @@ test "Renderer evaluates rich expressions" {
     const testing = std.testing;
     const alloc = testing.allocator;
     const src = "{{ price * qty }}|{{ user.age >= 18 }}|{{ user[\"name\"] }}|{{ items[0] }}|{{ a and b }}|{{ x if ok else \"fallback\" }}|{{ 7 // 2 }}|{{ 7 % 3 }}";
-    var parser = parser_mod.Parser.init(alloc, "t.html", src);
+    var parser = parserMod.Parser.init(alloc, "t.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
     var ctx = try Context.init(alloc, .{
@@ -1730,7 +1730,7 @@ test "Renderer supports break and continue" {
     const testing = std.testing;
     const alloc = testing.allocator;
     const src = "{% for i in items %}{% if i == \"b\" %}{% break %}{% endif %}{{ i }}{% endfor %}|{% for i in items %}{% if i == \"a\" %}{% continue %}{% endif %}{{ i }}{% endfor %}";
-    var parser = parser_mod.Parser.init(alloc, "t.html", src);
+    var parser = parserMod.Parser.init(alloc, "t.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
     var ctx = try Context.init(alloc, .{ .items = [_][]const u8{ "a", "b", "c" } });
@@ -1745,7 +1745,7 @@ test "Renderer supports whitespace control" {
     const testing = std.testing;
     const alloc = testing.allocator;
     const src = "a  \n  {%- if ok -%}  \n  x  \n  {%- endif -%}  \n  b";
-    var parser = parser_mod.Parser.init(alloc, "t.html", src);
+    var parser = parserMod.Parser.init(alloc, "t.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
     var ctx = try Context.init(alloc, .{ .ok = true });
@@ -1771,7 +1771,7 @@ test "Renderer custom filter registration" {
     defer reg.deinit();
     try reg.register("shout", shout);
     const src = "{{ name|shout }}";
-    var parser = parser_mod.Parser.init(alloc, "t.html", src);
+    var parser = parserMod.Parser.init(alloc, "t.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
     var ctx = try Context.init(alloc, .{ .name = "hi" });
@@ -1786,7 +1786,7 @@ test "Renderer supports is-tests" {
     const testing = std.testing;
     const alloc = testing.allocator;
     const src = "{% if u is defined %}D{% endif %}{% if m is undefined %}U{% endif %}{% if n is none %}N{% endif %}{% if s is string %}S{% endif %}{% if i is number %}I{% endif %}{% if l is sequence %}Q{% endif %}{% if d is mapping %}M{% endif %}{% if x is not defined %}ND{% endif %}";
-    var parser = parser_mod.Parser.init(alloc, "t.html", src);
+    var parser = parserMod.Parser.init(alloc, "t.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
     var ctx = try Context.init(alloc, .{ .u = 1, .n = null, .s = "a", .i = 2, .l = [_]i32{1}, .d = .{ .k = 1 } });
@@ -1801,7 +1801,7 @@ test "Renderer supports for-else and revindex" {
     const testing = std.testing;
     const alloc = testing.allocator;
     const src = "{% for i in items %}{{ loop.revindex }}{% else %}empty{% endfor %}|{% for i in missing %}{{ i }}{% else %}none{% endfor %}";
-    var parser = parser_mod.Parser.init(alloc, "t.html", src);
+    var parser = parserMod.Parser.init(alloc, "t.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
     var ctx = try Context.init(alloc, .{ .items = [_][]const u8{ "a", "b" } });
@@ -1816,7 +1816,7 @@ test "Renderer supports destructuring" {
     const testing = std.testing;
     const alloc = testing.allocator;
     const src = "{% for k, v in pairs %}{{ k }}={{ v }};{% endfor %}";
-    var parser = parser_mod.Parser.init(alloc, "t.html", src);
+    var parser = parserMod.Parser.init(alloc, "t.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
     var ctx = try Context.init(alloc, .{ .pairs = [_][2][]const u8{ .{ "a", "1" }, .{ "b", "2" } } });
@@ -1831,7 +1831,7 @@ test "Renderer supports set blocks and raw blocks" {
     const testing = std.testing;
     const alloc = testing.allocator;
     const src = "{% set card %}<b>{{ v }}</b>{% endset %}{{ card }}{% raw %}{{ not evaluated }}{% endraw %}";
-    var parser = parser_mod.Parser.init(alloc, "t.html", src);
+    var parser = parserMod.Parser.init(alloc, "t.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
     var ctx = try Context.init(alloc, .{ .v = "X" });
@@ -1846,7 +1846,7 @@ test "Renderer supports call blocks" {
     const testing = std.testing;
     const alloc = testing.allocator;
     const src = "{% macro wrap(cls) %}<div class=\"{{ cls }}\">{{ caller() }}</div>{% endmacro %}{% call wrap(\"box\") %}Hi{% endcall %}";
-    var parser = parser_mod.Parser.init(alloc, "t.html", src);
+    var parser = parserMod.Parser.init(alloc, "t.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
     var ctx = try Context.init(alloc, .{});
@@ -1860,15 +1860,15 @@ test "Renderer supports call blocks" {
 test "Renderer supports super and nested inheritance" {
     const testing = std.testing;
     const alloc = testing.allocator;
-    var base_parser = parser_mod.Parser.init(alloc, "base.html", "<title>{% block t %}Base{% endblock %}</title>{% block c %}Body{% endblock %}");
-    var base_ast = try base_parser.parse();
-    defer base_ast.deinit();
-    var mid_parser = parser_mod.Parser.init(alloc, "mid.html", "{% extends \"base.html\" %}{% block t %}Mid-{{ super() }}{% endblock %}");
-    var mid_ast = try mid_parser.parse();
-    defer mid_ast.deinit();
-    var page_parser = parser_mod.Parser.init(alloc, "page.html", "{% extends \"mid.html\" %}{% block c %}Page{% endblock %}");
-    var page_ast = try page_parser.parse();
-    defer page_ast.deinit();
+    var baseParser = parserMod.Parser.init(alloc, "base.html", "<title>{% block t %}Base{% endblock %}</title>{% block c %}Body{% endblock %}");
+    var baseAst = try baseParser.parse();
+    defer baseAst.deinit();
+    var midParser = parserMod.Parser.init(alloc, "mid.html", "{% extends \"base.html\" %}{% block t %}Mid-{{ super() }}{% endblock %}");
+    var midAst = try midParser.parse();
+    defer midAst.deinit();
+    var pageParser = parserMod.Parser.init(alloc, "page.html", "{% extends \"mid.html\" %}{% block c %}Page{% endblock %}");
+    var pageAst = try pageParser.parse();
+    defer pageAst.deinit();
     const Provider = struct {
         fn get(ptr: *const anyopaque, name: []const u8) ?*const TemplateAst {
             const asts: *const struct { base: *const TemplateAst, mid: *const TemplateAst } = @ptrCast(@alignCast(ptr));
@@ -1877,12 +1877,12 @@ test "Renderer supports super and nested inheritance" {
             return null;
         }
     };
-    const pair = .{ .base = &base_ast, .mid = &mid_ast };
+    const pair = .{ .base = &baseAst, .mid = &midAst };
     const provider = TemplateProvider{ .ptr = &pair, .getAstFn = Provider.get };
     var ctx = try Context.init(alloc, .{});
     defer ctx.deinit();
     const renderer = Renderer{};
-    const out = try renderer.renderToString(alloc, &page_ast, &ctx, provider);
+    const out = try renderer.renderToString(alloc, &pageAst, &ctx, provider);
     defer alloc.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "<title>Mid-Base</title>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "Page") != null);
@@ -1891,12 +1891,12 @@ test "Renderer supports super and nested inheritance" {
 test "Renderer detects inheritance cycles" {
     const testing = std.testing;
     const alloc = testing.allocator;
-    var a_parser = parser_mod.Parser.init(alloc, "a.html", "{% extends \"b.html\" %}A");
-    var a_ast = try a_parser.parse();
-    defer a_ast.deinit();
-    var b_parser = parser_mod.Parser.init(alloc, "b.html", "{% extends \"a.html\" %}B");
-    var b_ast = try b_parser.parse();
-    defer b_ast.deinit();
+    var aParser = parserMod.Parser.init(alloc, "a.html", "{% extends \"b.html\" %}A");
+    var aAst = try aParser.parse();
+    defer aAst.deinit();
+    var bParser = parserMod.Parser.init(alloc, "b.html", "{% extends \"a.html\" %}B");
+    var bAst = try bParser.parse();
+    defer bAst.deinit();
     const Provider = struct {
         fn get(ptr: *const anyopaque, name: []const u8) ?*const TemplateAst {
             const asts: *const struct { a: *const TemplateAst, b: *const TemplateAst } = @ptrCast(@alignCast(ptr));
@@ -1905,12 +1905,12 @@ test "Renderer detects inheritance cycles" {
             return null;
         }
     };
-    const pair = .{ .a = &a_ast, .b = &b_ast };
+    const pair = .{ .a = &aAst, .b = &bAst };
     const provider = TemplateProvider{ .ptr = &pair, .getAstFn = Provider.get };
     var ctx = try Context.init(alloc, .{});
     defer ctx.deinit();
     const renderer = Renderer{};
-    const res = renderer.renderToString(alloc, &a_ast, &ctx, provider);
+    const res = renderer.renderToString(alloc, &aAst, &ctx, provider);
     try testing.expectError(error.CircularInheritance, res);
 }
 
@@ -1918,15 +1918,15 @@ test "Renderer strict mode rejects undefined output" {
     const testing = std.testing;
     const alloc = testing.allocator;
     const src = "{{ missing }}";
-    var parser = parser_mod.Parser.init(alloc, "t.html", src);
+    var parser = parserMod.Parser.init(alloc, "t.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
     var ctx = try Context.init(alloc, .{});
     defer ctx.deinit();
-    const strict_renderer = Renderer{ .options = .{ .strictUndefined = true } };
-    try testing.expectError(error.UnknownVariable, strict_renderer.renderToString(alloc, &ast, &ctx, null));
-    const lax_renderer = Renderer{};
-    const out = try lax_renderer.renderToString(alloc, &ast, &ctx, null);
+    const strictRenderer = Renderer{ .options = .{ .strictUndefined = true } };
+    try testing.expectError(error.UnknownVariable, strictRenderer.renderToString(alloc, &ast, &ctx, null));
+    const laxRenderer = Renderer{};
+    const out = try laxRenderer.renderToString(alloc, &ast, &ctx, null);
     defer alloc.free(out);
     try testing.expectEqualStrings("", out);
 }
@@ -1935,7 +1935,7 @@ test "Renderer supports sort and reverse filters" {
     const testing = std.testing;
     const alloc = testing.allocator;
     const src = "{{ items|sort|join(\",\") }}|{{ items|reverse|join(\",\") }}";
-    var parser = parser_mod.Parser.init(alloc, "t.html", src);
+    var parser = parserMod.Parser.init(alloc, "t.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
     var ctx = try Context.init(alloc, .{ .items = [_][]const u8{ "b", "a", "c" } });
@@ -1949,22 +1949,22 @@ test "Renderer supports sort and reverse filters" {
 test "Renderer handles large templates without reparsing" {
     const testing = std.testing;
     const alloc = testing.allocator;
-    var src_list = std.ArrayList(u8).empty;
-    defer src_list.deinit(alloc);
-    try src_list.appendSlice(alloc, "{% for i in items %}");
+    var srcList = std.ArrayList(u8).empty;
+    defer srcList.deinit(alloc);
+    try srcList.appendSlice(alloc, "{% for i in items %}");
     var k: usize = 0;
     while (k < 2000) : (k += 1) {
-        try src_list.appendSlice(alloc, "<p>{{ i }}:{{ loop.index }}</p>{% if i %}<b>x</b>{% endif %}");
+        try srcList.appendSlice(alloc, "<p>{{ i }}:{{ loop.index }}</p>{% if i %}<b>x</b>{% endif %}");
     }
-    try src_list.appendSlice(alloc, "{% endfor %}");
-    const src = src_list.items;
+    try srcList.appendSlice(alloc, "{% endfor %}");
+    const src = srcList.items;
 
     var items = std.ArrayList(Value).empty;
     defer items.deinit(alloc);
     var j: i64 = 0;
     while (j < 50) : (j += 1) try items.append(alloc, .{ .integer = j });
 
-    var parser = parser_mod.Parser.init(alloc, "big.html", src);
+    var parser = parserMod.Parser.init(alloc, "big.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
     var ctx = try Context.init(alloc, .{ .items = items.items });
@@ -1992,7 +1992,7 @@ test "Renderer fuzzes invalid expressions without crashing" {
         "{{ {\"a\": 1} }}",
     };
     for (evil) |src| {
-        var parser = parser_mod.Parser.init(alloc, "fuzz.html", src);
+        var parser = parserMod.Parser.init(alloc, "fuzz.html", src);
         if (parser.parse()) |ast| {
             var mut = ast;
             defer mut.deinit();
@@ -2020,7 +2020,7 @@ test "Renderer evaluates conditionals and loops" {
         \\{% endfor %}
     ;
 
-    var parser = parser_mod.Parser.init(alloc, "test.html", src);
+    var parser = parserMod.Parser.init(alloc, "test.html", src);
     var ast = try parser.parse();
     defer ast.deinit();
 

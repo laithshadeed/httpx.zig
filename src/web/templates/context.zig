@@ -21,7 +21,7 @@ pub const Entry = struct {
     value: Value,
 };
 
-const parser_mod = @import("parser.zig");
+const parserMod = @import("parser.zig");
 
 /// Tagged union representing dynamic values inside template evaluation.
 /// `.missing` marks an unresolvable lookup (distinct from explicit null):
@@ -39,7 +39,7 @@ pub const Value = union(enum) {
     rawHtml: []const u8,
     list: []const Value,
     map: []const Entry,
-    macro: parser_mod.MacroDef,
+    macro: parserMod.MacroDef,
 
     /// Returns whether this value evaluates to true in conditional contexts.
     pub fn isTruthy(self: Value) bool {
@@ -191,10 +191,10 @@ pub const Value = union(enum) {
                 const fields = st.fields;
                 const entries = try allocator.alloc(Entry, fields.len);
                 inline for (fields, 0..) |field, i| {
-                    const field_val = @field(val, field.name);
+                    const fieldVal = @field(val, field.name);
                     entries[i] = .{
                         .key = field.name,
-                        .value = try from(allocator, field_val),
+                        .value = try from(allocator, fieldVal),
                     };
                 }
                 return .{ .map = entries };
@@ -248,10 +248,10 @@ pub const Context = struct {
         var arena = std.heap.ArenaAllocator.init(baseAllocator);
         errdefer arena.deinit();
 
-        const root_val = try Value.from(arena.allocator(), data);
+        const rootVal = try Value.from(arena.allocator(), data);
         return .{
             .arena = arena,
-            .root = root_val,
+            .root = rootVal,
         };
     }
 
@@ -312,7 +312,7 @@ test "Value and Context basic operations" {
             .role = "admin",
         },
         .tags = [_][]const u8{ "zig", "web", "templates" },
-        .safe_markup = raw("<b>bold</b>"),
+        .safeMarkup = raw("<b>bold</b>"),
     });
     defer ctx.deinit();
 
@@ -322,9 +322,9 @@ test "Value and Context basic operations" {
     try testing.expectEqualStrings("HTTPX", title.?.string);
 
     // Nested struct lookup
-    const user_name = ctx.get("user.name");
-    try testing.expect(user_name != null);
-    try testing.expectEqualStrings("Muhammad", user_name.?.string);
+    const userName = ctx.get("user.name");
+    try testing.expect(userName != null);
+    try testing.expectEqualStrings("Muhammad", userName.?.string);
 
     // Array index lookup
     const tag1 = ctx.get("tags.1");
@@ -334,11 +334,11 @@ test "Value and Context basic operations" {
     // Truthiness
     try testing.expect(ctx.get("enabled").?.isTruthy());
     try testing.expect(ctx.get("count").?.isTruthy());
-    const null_v = Value{ .nullVal = {} };
-    try testing.expect(!null_v.isTruthy());
+    const nullV = Value{ .nullVal = {} };
+    try testing.expect(!nullV.isTruthy());
 
     // Raw HTML
-    const markup = ctx.get("safe_markup");
+    const markup = ctx.get("safeMarkup");
     try testing.expect(markup != null);
     try testing.expectEqual(Value.rawHtml, std.meta.activeTag(markup.?));
 }

@@ -147,16 +147,16 @@ const DynTable = struct {
     fn insert(self: *DynTable, name: []const u8, value: []const u8) !void {
         self.evictFor(entrySize(name, value));
         if (entrySize(name, value) > self.maxSize) return; // emptied, not stored
-        const owned_name = try self.allocator.dupe(u8, name);
-        errdefer self.allocator.free(owned_name);
-        const owned_value = try self.allocator.dupe(u8, value);
-        errdefer self.allocator.free(owned_value);
-        try self.entries.insert(self.allocator, 0, .{ .name = owned_name, .value = owned_value });
+        const ownedName = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(ownedName);
+        const ownedValue = try self.allocator.dupe(u8, value);
+        errdefer self.allocator.free(ownedValue);
+        try self.entries.insert(self.allocator, 0, .{ .name = ownedName, .value = ownedValue });
         self.size += entrySize(name, value);
     }
 
-    fn setMaxSize(self: *DynTable, new_max: usize) void {
-        self.maxSize = new_max;
+    fn setMaxSize(self: *DynTable, newMax: usize) void {
+        self.maxSize = newMax;
         self.evictFor(0);
     }
 
@@ -212,14 +212,14 @@ pub const Decoder = struct {
 
     fn readString(self: *Decoder, data: []const u8, offset: *usize) Error!StringResult {
         if (offset.* >= data.len) return Error.Truncated;
-        const huffman_bit = data[offset.*] & 0x80 != 0;
+        const huffmanBit = data[offset.*] & 0x80 != 0;
         const len = try pint.decode(data, offset, 7);
         if (len > MAX_STRING_LEN) return Error.HeaderTooLarge;
         const rawLen = std.math.cast(usize, len) orelse return Error.HeaderTooLarge;
         if (offset.* > data.len or rawLen > data.len - offset.*) return Error.Truncated;
         const raw = data[offset.*..][0..rawLen];
         offset.* += rawLen;
-        if (!huffman_bit) {
+        if (!huffmanBit) {
             return .{ .data = @constCast(raw), .owned = false };
         }
         const cap = huff.maxEncodedLen(@intCast(len));
@@ -257,7 +257,7 @@ pub const Decoder = struct {
 
         var total: usize = 0;
         var offset: usize = 0;
-        var at_start = true;
+        var atStart = true;
 
         while (offset < block.len) {
             const b = block[offset];
@@ -268,7 +268,7 @@ pub const Decoder = struct {
                 const f = try self.lookup(idx);
                 try appendOwned(&list, self.allocator, f);
                 total = std.math.add(usize, total, ENTRY_OVERHEAD + f.name.len + f.value.len) catch return Error.HeaderTooLarge;
-                at_start = false;
+                atStart = false;
             } else if (b & 0xC0 == 0x40) {
                 // 01xxxxxx: literal WITH incremental indexing.
                 const idx = try pint.decode(block, &offset, 6);
@@ -280,10 +280,10 @@ pub const Decoder = struct {
                 self.dyn.insert(f.name, f.value) catch return Error.OutOfMemory;
                 try appendDup(&list, self.allocator, f);
                 total = std.math.add(usize, total, ENTRY_OVERHEAD + f.name.len + f.value.len) catch return Error.HeaderTooLarge;
-                at_start = false;
+                atStart = false;
             } else if (b & 0xE0 == 0x20) {
                 // 001xxxxx: dynamic table size update.
-                if (!at_start) return Error.UnexpectedTableSizeUpdate;
+                if (!atStart) return Error.UnexpectedTableSizeUpdate;
                 const sz = try pint.decode(block, &offset, 5);
                 if (sz > self.protocolMaxSize) return Error.InvalidTableSize;
                 self.dyn.setMaxSize(@intCast(sz));
@@ -298,7 +298,7 @@ pub const Decoder = struct {
                 }
                 try appendDup(&list, self.allocator, f);
                 total = std.math.add(usize, total, ENTRY_OVERHEAD + f.name.len + f.value.len) catch return Error.HeaderTooLarge;
-                at_start = false;
+                atStart = false;
             }
             if (total > self.maxHeaderList) return Error.HeaderTooLarge;
         }
@@ -311,22 +311,22 @@ pub const Decoder = struct {
         };
     }
 
-    fn readLiteral(self: *Decoder, block: []const u8, offset: *usize, name_index: u64) Error!HeaderField {
-        const name_res = if (name_index == 0)
+    fn readLiteral(self: *Decoder, block: []const u8, offset: *usize, nameIndex: u64) Error!HeaderField {
+        const nameRes = if (nameIndex == 0)
             try self.readString(block, offset)
         else blk: {
-            const nf = try self.lookup(name_index);
+            const nf = try self.lookup(nameIndex);
             break :blk StringResult{ .data = @constCast(nf.name), .owned = false };
         };
-        defer if (name_index == 0) self.freeString(name_res);
+        defer if (nameIndex == 0) self.freeString(nameRes);
 
-        const val_res = try self.readString(block, offset);
-        defer self.freeString(val_res);
+        const valRes = try self.readString(block, offset);
+        defer self.freeString(valRes);
 
-        const owned_name = try self.allocator.dupe(u8, name_res.data);
-        errdefer self.allocator.free(owned_name);
-        const owned_value = try self.allocator.dupe(u8, val_res.data);
-        return .{ .name = owned_name, .value = owned_value };
+        const ownedName = try self.allocator.dupe(u8, nameRes.data);
+        errdefer self.allocator.free(ownedName);
+        const ownedValue = try self.allocator.dupe(u8, valRes.data);
+        return .{ .name = ownedName, .value = ownedValue };
     }
 };
 
@@ -365,7 +365,7 @@ pub const Encoder = struct {
     pendingSizeUpdate: ?usize = null,
 
     /// Names that nghttp2 avoids indexing (volatile per-request values).
-    const no_index_names = [_][]const u8{
+    const noIndexNames = [_][]const u8{
         ":path",             "age",           "content-length", "etag",
         "if-modified-since", "if-none-match", "location",       "set-cookie",
     };
@@ -412,7 +412,7 @@ pub const Encoder = struct {
     }
 
     fn shouldIndex(name: []const u8) bool {
-        for (no_index_names) |n| {
+        for (noIndexNames) |n| {
             if (std.ascii.eqlIgnoreCase(n, name)) return false;
         }
         return true;
@@ -470,14 +470,14 @@ pub const Encoder = struct {
             }
         }
 
-        const name_ref = self.findNameIndex(name);
+        const nameRef = self.findNameIndex(name);
 
         switch (indexing) {
             .incremental => {
                 if (!shouldIndex(name)) {
                     const op: u8 = 0x00;
-                    if (name_ref.idx != 0 and !forceLiteral) {
-                        const n = try pint.encode(ib[0..], 4, op, name_ref.idx);
+                    if (nameRef.idx != 0 and !forceLiteral) {
+                        const n = try pint.encode(ib[0..], 4, op, nameRef.idx);
                         try out.appendSlice(self.allocator, ib[0..n]);
                     } else {
                         try out.append(self.allocator, op);
@@ -487,8 +487,8 @@ pub const Encoder = struct {
                 } else {
                     try self.dyn.insert(name, value);
                     const op: u8 = 0x40;
-                    if (name_ref.idx != 0 and !forceLiteral) {
-                        const n = try pint.encode(ib[0..], 6, op, name_ref.idx);
+                    if (nameRef.idx != 0 and !forceLiteral) {
+                        const n = try pint.encode(ib[0..], 6, op, nameRef.idx);
                         try out.appendSlice(self.allocator, ib[0..n]);
                     } else {
                         try out.append(self.allocator, op);
@@ -499,8 +499,8 @@ pub const Encoder = struct {
             },
             .without => {
                 const op: u8 = 0x00;
-                if (name_ref.idx != 0 and !forceLiteral) {
-                    const n = try pint.encode(ib[0..], 4, op, name_ref.idx);
+                if (nameRef.idx != 0 and !forceLiteral) {
+                    const n = try pint.encode(ib[0..], 4, op, nameRef.idx);
                     try out.appendSlice(self.allocator, ib[0..n]);
                 } else {
                     try out.append(self.allocator, op);
@@ -510,8 +510,8 @@ pub const Encoder = struct {
             },
             .never => {
                 const op: u8 = 0x10;
-                if (name_ref.idx != 0 and !forceLiteral) {
-                    const n = try pint.encode(ib[0..], 4, op, name_ref.idx);
+                if (nameRef.idx != 0 and !forceLiteral) {
+                    const n = try pint.encode(ib[0..], 4, op, nameRef.idx);
                     try out.appendSlice(self.allocator, ib[0..n]);
                 } else {
                     try out.append(self.allocator, op);
@@ -665,8 +665,8 @@ test "eviction respects max size" {
     defer block.deinit(a);
     var i: usize = 0;
     while (i < 10) : (i += 1) {
-        var name_buf: [16]u8 = undefined;
-        const name = try std.fmt.bufPrint(&name_buf, "header-{d}", .{i});
+        var nameBuf: [16]u8 = undefined;
+        const name = try std.fmt.bufPrint(&nameBuf, "header-{d}", .{i});
         try enc.encode(&block, name, "some-value-data", .incremental, false);
     }
     try std.testing.expect(enc.dyn.size <= 200);

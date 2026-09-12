@@ -13,7 +13,7 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const clock = @import("../../common/clock.zig");
 const sync = @import("../../common/sync.zig");
-const static_mod = @import("../static_files/serve.zig");
+const staticMod = @import("../static_files/serve.zig");
 const events = @import("events.zig");
 
 const windows = @import("windows.zig");
@@ -42,9 +42,9 @@ pub const Config = struct {
     maxDepth: usize = 32,
 };
 
-const has_native = builtin.os.tag == .windows or builtin.os.tag == .linux or builtin.os.tag == .macos;
+const hasNative = builtin.os.tag == .windows or builtin.os.tag == .linux or builtin.os.tag == .macos;
 
-const PlatformBackend = if (!has_native)
+const PlatformBackend = if (!hasNative)
     struct {}
 else if (builtin.os.tag == .windows)
     windows.Backend
@@ -72,10 +72,10 @@ pub const Watcher = struct {
     currentEvent: ?OwnedWatchEvent = null,
     coalescer: events.Coalescer = .{},
     native: ?PlatformBackend = null,
-    native_failed: bool = false,
+    nativeFailed: bool = false,
     dirty: std.atomic.Value(bool) = .init(false),
     rescans: std.atomic.Value(usize) = .init(0),
-    externals_checked_ms: i64 = 0,
+    externalsCheckedMs: i64 = 0,
 
     pub fn init(allocator: Allocator, io: std.Io, config: Config) !*Watcher {
         const w = try allocator.create(Watcher);
@@ -123,28 +123,28 @@ pub const Watcher = struct {
     }
 
     fn startNative(self: *Watcher) void {
-        if (!has_native) return;
+        if (!hasNative) return;
         if (self.config.dirPath.len == 0) return;
         if (builtin.os.tag == .windows) {
             self.native = windows.Backend.init(self.allocator, self.config.dirPath) catch {
-                self.native_failed = true;
+                self.nativeFailed = true;
                 return;
             };
         } else if (builtin.os.tag == .linux) {
             self.native = linux.Backend.init(self.allocator, self.io, self.config.dirPath) catch {
-                self.native_failed = true;
+                self.nativeFailed = true;
                 return;
             };
         } else if (builtin.os.tag == .macos) {
             self.native = macos.Backend.init(self.allocator, self.io, self.config.dirPath) catch {
-                self.native_failed = true;
+                self.nativeFailed = true;
                 return;
             };
         }
     }
 
     fn stopNative(self: *Watcher) void {
-        if (!has_native) return;
+        if (!hasNative) return;
         if (builtin.os.tag == .windows) {
             if (self.native) |*nb| nb.deinit();
         } else if (builtin.os.tag == .linux) {
@@ -159,19 +159,19 @@ pub const Watcher = struct {
         self.notifyChangeFull(path, oldPath, kind, false);
     }
 
-    fn notifyChangeFull(self: *Watcher, path: []const u8, oldPath: ?[]const u8, kind: WatchEventKind, is_dir: bool) void {
+    fn notifyChangeFull(self: *Watcher, path: []const u8, oldPath: ?[]const u8, kind: WatchEventKind, isDir: bool) void {
         const now = clock.millisNow();
         if (!self.coalescer.shouldEmit(now, path, kind)) return;
         _ = self._change_count.fetchAdd(1, .release);
 
-        const owned_path = self.allocator.dupe(u8, path) catch return;
-        const owned_old = if (oldPath) |op| (self.allocator.dupe(u8, op) catch null) else null;
+        const ownedPath = self.allocator.dupe(u8, path) catch return;
+        const ownedOld = if (oldPath) |op| (self.allocator.dupe(u8, op) catch null) else null;
         const ev = OwnedWatchEvent{
-            .path = owned_path,
-            .oldPath = owned_old,
+            .path = ownedPath,
+            .oldPath = ownedOld,
             .kind = kind,
             .strategy = ReloadStrategy.forPath(path),
-            .isDirectory = is_dir,
+            .isDirectory = isDir,
             .timestampMs = now,
         };
 
@@ -182,8 +182,8 @@ pub const Watcher = struct {
         }
 
         self.eventQueue.append(self.allocator, ev) catch {
-            var mut_ev = ev;
-            mut_ev.deinit(self.allocator);
+            var mutEv = ev;
+            mutEv.deinit(self.allocator);
             return;
         };
 
@@ -252,22 +252,22 @@ pub const Watcher = struct {
                         // Filter out editor temp / atomic swap files (~file, .tmp)
                         if (events.isEditorTempFile(entry.path)) continue;
 
-                        // Skip generated trees (node_modules, caches, build output).
+                        // Skip generated trees (nodeModules, caches, build output).
                         if (self.isIgnoredPath(entry.path)) continue;
 
-                        const full_path = std.Io.Dir.path.join(self.allocator, &.{ self.config.dirPath, entry.path }) catch continue;
+                        const fullPath = std.Io.Dir.path.join(self.allocator, &.{ self.config.dirPath, entry.path }) catch continue;
 
-                        if (static_mod.statPath(io, full_path)) |st| {
+                        if (staticMod.statPath(io, fullPath)) |st| {
                             seen.append(self.allocator, .{
-                                .path = full_path,
+                                .path = fullPath,
                                 .mtimeNs = st.mtimeNs,
                                 .size = st.size,
                             }) catch {
-                                self.allocator.free(full_path);
+                                self.allocator.free(fullPath);
                                 continue;
                             };
                         } else {
-                            self.allocator.free(full_path);
+                            self.allocator.free(fullPath);
                         }
                     }
                 }
@@ -275,10 +275,10 @@ pub const Watcher = struct {
         }
 
         // Membership set over scratch paths (borrowed; `seen` outlives it).
-        var seen_set = std.StringHashMap(void).init(self.allocator);
-        defer seen_set.deinit();
+        var seenSet = std.StringHashMap(void).init(self.allocator);
+        defer seenSet.deinit();
         for (seen.items) |*f| {
-            seen_set.put(f.path, {}) catch continue;
+            seenSet.put(f.path, {}) catch continue;
         }
 
         // Phase 2 (brief lock): diff scratch against tracked entries.
@@ -296,13 +296,13 @@ pub const Watcher = struct {
                 }
             } else {
                 // New file detected; ownership moves into the map.
-                const owned_path = self.allocator.dupe(u8, f.path) catch continue;
-                self.entries.put(owned_path, .{
-                    .path = owned_path,
+                const ownedPath = self.allocator.dupe(u8, f.path) catch continue;
+                self.entries.put(ownedPath, .{
+                    .path = ownedPath,
                     .mtimeNs = f.mtimeNs,
                     .size = f.size,
                 }) catch {
-                    self.allocator.free(owned_path);
+                    self.allocator.free(ownedPath);
                     continue;
                 };
                 changed = true;
@@ -312,13 +312,13 @@ pub const Watcher = struct {
 
         // Tracked files absent from the walk (watchFile extras, deletions):
         // stat once here — files covered by the walk are never re-statted.
-        var deleted_keys = std.ArrayList([]const u8).empty;
-        defer deleted_keys.deinit(self.allocator);
+        var deletedKeys = std.ArrayList([]const u8).empty;
+        defer deletedKeys.deinit(self.allocator);
 
-        var it_entries = self.entries.iterator();
-        while (it_entries.next()) |entry| {
-            if (seen_set.contains(entry.key_ptr.*)) continue;
-            if (static_mod.statPath(io, entry.key_ptr.*)) |st| {
+        var itEntries = self.entries.iterator();
+        while (itEntries.next()) |entry| {
+            if (seenSet.contains(entry.key_ptr.*)) continue;
+            if (staticMod.statPath(io, entry.key_ptr.*)) |st| {
                 if (entry.value_ptr.mtimeNs != st.mtimeNs or entry.value_ptr.size != st.size) {
                     entry.value_ptr.mtimeNs = st.mtimeNs;
                     entry.value_ptr.size = st.size;
@@ -326,14 +326,14 @@ pub const Watcher = struct {
                     self.notifyChange(entry.key_ptr.*, null, .modified);
                 }
             } else {
-                deleted_keys.append(self.allocator, entry.key_ptr.*) catch {};
+                deletedKeys.append(self.allocator, entry.key_ptr.*) catch {};
             }
         }
 
-        for (deleted_keys.items) |del_path| {
-            if (self.entries.fetchRemove(del_path)) |kv| {
+        for (deletedKeys.items) |delPath| {
+            if (self.entries.fetchRemove(delPath)) |kv| {
                 changed = true;
-                self.notifyChange(del_path, null, .deleted);
+                self.notifyChange(delPath, null, .deleted);
                 self.allocator.free(kv.key);
             }
         }
@@ -361,22 +361,22 @@ pub const Watcher = struct {
             if (entry.kind != .file) continue;
             if (pathDepth(entry.path) > self.config.maxDepth) continue;
             if (events.isEditorTempFile(entry.path)) continue;
-            const full_path = std.Io.Dir.path.join(self.allocator, &.{ dir, entry.path }) catch continue;
-            if (static_mod.statPath(io, full_path)) |st| {
-                seen.append(self.allocator, .{ .path = full_path, .mtimeNs = st.mtimeNs, .size = st.size }) catch {
-                    self.allocator.free(full_path);
+            const fullPath = std.Io.Dir.path.join(self.allocator, &.{ dir, entry.path }) catch continue;
+            if (staticMod.statPath(io, fullPath)) |st| {
+                seen.append(self.allocator, .{ .path = fullPath, .mtimeNs = st.mtimeNs, .size = st.size }) catch {
+                    self.allocator.free(fullPath);
                     continue;
                 };
             } else {
-                self.allocator.free(full_path);
+                self.allocator.free(fullPath);
             }
         }
         self.mutex.lock();
         defer self.mutex.unlock();
         // Unknown paths are rename-target candidates; emitting their
         // created events is deferred until rename pairing runs below.
-        var created_idx = std.ArrayList(usize).empty;
-        defer created_idx.deinit(self.allocator);
+        var createdIdx = std.ArrayList(usize).empty;
+        defer createdIdx.deinit(self.allocator);
         for (seen.items, 0..) |*f, si| {
             if (self.entries.getPtr(f.path)) |val| {
                 if (val.mtimeNs != f.mtimeNs or val.size != f.size) {
@@ -385,7 +385,7 @@ pub const Watcher = struct {
                     self.notifyChange(f.path, null, .modified);
                 }
             } else {
-                created_idx.append(self.allocator, si) catch {};
+                createdIdx.append(self.allocator, si) catch {};
             }
         }
         var gone = std.ArrayList([]const u8).empty;
@@ -400,7 +400,7 @@ pub const Watcher = struct {
                     break;
                 }
             }
-            if (!found and static_mod.statPath(io, entry.key_ptr.*) == null) {
+            if (!found and staticMod.statPath(io, entry.key_ptr.*) == null) {
                 gone.append(self.allocator, entry.key_ptr.*) catch {};
             }
         }
@@ -410,12 +410,12 @@ pub const Watcher = struct {
         // Linux/Windows native rename paths: silent drop of the old
         // path, ingest of the new one, plus the paired rename event.
         // Unpaired entries keep the previous created/deleted behavior.
-        // Paired targets leave created_idx via swapRemove, so the final
+        // Paired targets leave createdIdx via swapRemove, so the final
         // loop only sees genuinely new files.
-        for (gone.items) |del_path| {
-            const old = self.entries.get(del_path) orelse continue;
+        for (gone.items) |delPath| {
+            const old = self.entries.get(delPath) orelse continue;
             var pair: ?usize = null;
-            for (created_idx.items, 0..) |si, ci| {
+            for (createdIdx.items, 0..) |si, ci| {
                 const f = &seen.items[si];
                 if (f.size == old.size and f.mtimeNs == old.mtimeNs) {
                     pair = ci;
@@ -423,26 +423,26 @@ pub const Watcher = struct {
                 }
             }
             if (pair) |ci| {
-                const si = created_idx.swapRemove(ci);
-                const new_path = seen.items[si].path;
+                const si = createdIdx.swapRemove(ci);
+                const newPath = seen.items[si].path;
                 // Copy the old path BEFORE dropPathSilent frees the
                 // tracked key it borrows; emitting afterwards would
                 // duplicate freed memory.
-                const old_owned = self.allocator.dupe(u8, del_path) catch continue;
-                self.dropPathSilent(del_path);
-                self.ingestPath(new_path, .renamed);
-                self.emitRenameLocked(old_owned, new_path);
-                self.allocator.free(old_owned);
-            } else if (self.entries.fetchRemove(del_path)) |kv| {
-                self.notifyChange(del_path, null, .deleted);
+                const oldOwned = self.allocator.dupe(u8, delPath) catch continue;
+                self.dropPathSilent(delPath);
+                self.ingestPath(newPath, .renamed);
+                self.emitRenameLocked(oldOwned, newPath);
+                self.allocator.free(oldOwned);
+            } else if (self.entries.fetchRemove(delPath)) |kv| {
+                self.notifyChange(delPath, null, .deleted);
                 self.allocator.free(kv.key);
             }
         }
-        for (created_idx.items) |si| {
+        for (createdIdx.items) |si| {
             const f = &seen.items[si];
-            const owned_path = self.allocator.dupe(u8, f.path) catch continue;
-            self.entries.put(owned_path, .{ .path = owned_path, .mtimeNs = f.mtimeNs, .size = f.size }) catch {
-                self.allocator.free(owned_path);
+            const ownedPath = self.allocator.dupe(u8, f.path) catch continue;
+            self.entries.put(ownedPath, .{ .path = ownedPath, .mtimeNs = f.mtimeNs, .size = f.size }) catch {
+                self.allocator.free(ownedPath);
                 continue;
             };
             self.notifyChange(f.path, null, .created);
@@ -459,7 +459,7 @@ pub const Watcher = struct {
         while (it.next()) |entry| {
             const p = entry.key_ptr.*;
             if (self.config.dirPath.len > 0 and std.mem.startsWith(u8, p, self.config.dirPath)) continue;
-            if (static_mod.statPath(io, p)) |st| {
+            if (staticMod.statPath(io, p)) |st| {
                 if (entry.value_ptr.mtimeNs != st.mtimeNs or entry.value_ptr.size != st.size) {
                     entry.value_ptr.mtimeNs = st.mtimeNs;
                     entry.value_ptr.size = st.size;
@@ -470,7 +470,7 @@ pub const Watcher = struct {
     }
 
     /// True when the walk-relative path lives under an ignored top-level
-    /// directory (generated trees such as node_modules or build caches).
+    /// directory (generated trees such as nodeModules or build caches).
     /// Matches the first path component exactly.
     pub fn isIgnoredPath(self: *const Watcher, path: []const u8) bool {
         if (self.config.ignoredDirs.len == 0) return false;
@@ -489,7 +489,7 @@ pub const Watcher = struct {
     /// Re-registering refreshes in place without leaking the old key.
     /// Stats before locking (no IO under the spinlock).
     pub fn watchFile(self: *Watcher, path: []const u8) !void {
-        const st = static_mod.statPath(self.io, path) orelse return;
+        const st = staticMod.statPath(self.io, path) orelse return;
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.entries.getPtr(path)) |val| {
@@ -516,7 +516,7 @@ pub const Watcher = struct {
     /// Stops background watching.
     pub fn stop(self: *Watcher) void {
         if (!self.running.swap(false, .acq_rel)) return;
-        if (has_native and builtin.os.tag == .windows) {
+        if (hasNative and builtin.os.tag == .windows) {
             if (self.native) |*nb| nb.cancel();
         }
         if (self.thread) |t| {
@@ -544,7 +544,7 @@ pub const Watcher = struct {
     /// Single native drain step (also directly testable).
     /// Returns true when the backend asked for a full reconcile.
     pub fn drainNative(self: *Watcher) bool {
-        if (!has_native or self.native == null) {
+        if (!hasNative or self.native == null) {
             if (self.dirty.swap(false, .acq_rel)) {
                 _ = self.rescans.fetchAdd(1, .release);
                 _ = self.scan() catch false;
@@ -623,12 +623,12 @@ pub const Watcher = struct {
                 .modified => self.ingestPath(full, .modified),
                 .deleted => self.dropPath(full, .deleted),
                 .renamed => {
-                    if (e.oldRelPath) |old_rel| {
-                        const old_full = std.Io.Dir.path.join(self.allocator, &.{ self.config.dirPath, old_rel }) catch continue;
-                        defer self.allocator.free(old_full);
-                        self.dropPathSilent(old_full);
+                    if (e.oldRelPath) |oldRel| {
+                        const oldFull = std.Io.Dir.path.join(self.allocator, &.{ self.config.dirPath, oldRel }) catch continue;
+                        defer self.allocator.free(oldFull);
+                        self.dropPathSilent(oldFull);
                         self.ingestPath(full, .renamed);
-                        self.emitRenameLocked(old_full, full);
+                        self.emitRenameLocked(oldFull, full);
                     } else {
                         self.ingestPath(full, .created);
                     }
@@ -663,32 +663,32 @@ pub const Watcher = struct {
                 continue;
             }
             switch (e.kind) {
-                .moved_from => {
-                    if (i + 1 < evs.len and evs[i + 1].kind == .moved_to and evs[i + 1].cookie == e.cookie) {
+                .movedFrom => {
+                    if (i + 1 < evs.len and evs[i + 1].kind == .movedTo and evs[i + 1].cookie == e.cookie) {
                         const n = &evs[i + 1];
-                        const new_full = std.Io.Dir.path.join(self.allocator, &.{ n.dir, n.name }) catch {
+                        const newFull = std.Io.Dir.path.join(self.allocator, &.{ n.dir, n.name }) catch {
                             i += 1;
                             continue;
                         };
-                        defer self.allocator.free(new_full);
+                        defer self.allocator.free(newFull);
                         self.dropPathSilent(full);
-                        self.ingestPath(new_full, .renamed);
-                        self.emitRenameLocked(full, new_full);
+                        self.ingestPath(newFull, .renamed);
+                        self.emitRenameLocked(full, newFull);
                         i += 2;
                         continue;
                     }
                     self.dropPath(full, .deleted);
                 },
-                .moved_to => self.ingestPath(full, .created),
+                .movedTo => self.ingestPath(full, .created),
                 .created => {
-                    if (e.is_dir) {
+                    if (e.isDir) {
                         self.notifyChangeFull(full, null, .directoryCreated, true);
                     } else {
                         self.ingestPath(full, .created);
                     }
                 },
                 .deleted => {
-                    if (e.is_dir) {
+                    if (e.isDir) {
                         self.dropSubtree(full);
                         self.notifyChangeFull(full, null, .directoryDeleted, true);
                     } else {
@@ -705,8 +705,8 @@ pub const Watcher = struct {
     fn ingestMacos(self: *Watcher, evs: []const macos.RawEvent) void {
         for (evs) |*e| {
             switch (e.kind) {
-                .dir_changed => self.reconcileDir(e.dir) catch {},
-                .dir_gone => {
+                .dirChanged => self.reconcileDir(e.dir) catch {},
+                .dirGone => {
                     self.mutex.lock();
                     self.dropSubtree(e.dir);
                     self.notifyChangeFull(e.dir, null, .directoryDeleted, true);
@@ -719,7 +719,7 @@ pub const Watcher = struct {
     /// Stats `path`, emitting created/modified only on real index change.
     /// Caller holds the mutex.
     fn ingestPath(self: *Watcher, path: []const u8, kind: events.WatchEventKind) void {
-        if (static_mod.statPath(self.io, path)) |st| {
+        if (staticMod.statPath(self.io, path)) |st| {
             if (self.entries.getPtr(path)) |val| {
                 if (val.mtimeNs == st.mtimeNs and val.size == st.size) return;
                 val.mtimeNs = st.mtimeNs;
@@ -739,19 +739,19 @@ pub const Watcher = struct {
     }
 
     /// Emits a paired rename event. Caller holds the mutex.
-    fn emitRenameLocked(self: *Watcher, old_path: []const u8, new_path: []const u8) void {
+    fn emitRenameLocked(self: *Watcher, oldPath: []const u8, newPath: []const u8) void {
         const now = clock.millisNow();
         _ = self._change_count.fetchAdd(1, .release);
-        const owned_path = self.allocator.dupe(u8, new_path) catch return;
-        const owned_old = self.allocator.dupe(u8, old_path) catch {
-            self.allocator.free(owned_path);
+        const ownedPath = self.allocator.dupe(u8, newPath) catch return;
+        const ownedOld = self.allocator.dupe(u8, oldPath) catch {
+            self.allocator.free(ownedPath);
             return;
         };
         const ev = OwnedWatchEvent{
-            .path = owned_path,
-            .oldPath = owned_old,
+            .path = ownedPath,
+            .oldPath = ownedOld,
             .kind = .renamed,
-            .strategy = ReloadStrategy.forPath(new_path),
+            .strategy = ReloadStrategy.forPath(newPath),
             .timestampMs = now,
         };
         if (self.eventQueue.items.len >= 1024) {
@@ -760,8 +760,8 @@ pub const Watcher = struct {
             self.dirty.store(true, .release);
         }
         self.eventQueue.append(self.allocator, ev) catch {
-            var mut_ev = ev;
-            mut_ev.deinit(self.allocator);
+            var mutEv = ev;
+            mutEv.deinit(self.allocator);
             return;
         };
         if (self.config.onChange) |cb| {
@@ -913,22 +913,22 @@ test "reload strategy maps extensions correctly" {
 }
 
 test "scan detects create/modify/delete across rescans" {
-    const fs_mod = @import("../../utils/fs.zig");
+    const fsMod = @import("../../utils/fs.zig");
     const a = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     const probe = "watcher_scan_probe.tmp";
-    fs_mod.deleteFile(probe) catch {};
+    fsMod.deleteFile(probe) catch {};
 
     var watcher = try Watcher.init(a, io, .{ .extensions = &.{".tmp"} });
     defer watcher.deinit();
-    defer fs_mod.deleteFile(probe) catch {};
+    defer fsMod.deleteFile(probe) catch {};
 
     // Missing file registers silently with no entry.
     try watcher.watchFile(probe);
     try std.testing.expectEqual(@as(usize, 0), watcher.entries.count());
 
     // Create + register: baseline, no change yet.
-    try fs_mod.writeFile(probe, "v1");
+    try fsMod.writeFile(probe, "v1");
     try watcher.watchFile(probe);
     try std.testing.expect(!try watcher.scan());
 
@@ -938,7 +938,7 @@ test "scan detects create/modify/delete across rescans" {
     try std.testing.expectEqual(@as(usize, 1), watcher.entries.count());
 
     // Modify: detected with a .modified event.
-    try fs_mod.writeFile(probe, "v2-longer");
+    try fsMod.writeFile(probe, "v2-longer");
     try std.testing.expect(try watcher.scan());
     const ev = watcher.next();
     try std.testing.expect(ev != null);
@@ -946,7 +946,7 @@ test "scan detects create/modify/delete across rescans" {
     try std.testing.expect(!try watcher.scan());
 
     // Delete: detected with a .deleted event.
-    try fs_mod.deleteFile(probe);
+    try fsMod.deleteFile(probe);
     try std.testing.expect(try watcher.scan());
     const ev2 = watcher.next();
     try std.testing.expect(ev2 != null);
@@ -990,12 +990,12 @@ fn cleanupTestDir(io: std.Io, root: []const u8) void {
 }
 
 test "native backend produces real filesystem events" {
-    if (!has_native) return error.SkipZigTest;
-    const fs_mod = @import("../../utils/fs.zig");
+    if (!hasNative) return error.SkipZigTest;
+    const fsMod = @import("../../utils/fs.zig");
     const a = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var path_buf: [256]u8 = undefined;
-    const root = try std.fmt.bufPrint(&path_buf, ".zig-cache/watch-native-{d}", .{clock.millisNow()});
+    var pathBuf: [256]u8 = undefined;
+    const root = try std.fmt.bufPrint(&pathBuf, ".zig-cache/watch-native-{d}", .{clock.millisNow()});
     {
         const cwd: std.Io.Dir = .cwd();
         cwd.createDir(io, ".zig-cache", .default_dir) catch {};
@@ -1012,29 +1012,29 @@ test "native backend produces real filesystem events" {
     _ = watcher.drainNative();
     var fbuf: [512]u8 = undefined;
     const fpath = try std.fmt.bufPrint(&fbuf, "{s}/ev.txt", .{root});
-    try fs_mod.writeFile(fpath, "v1");
-    var saw_kind: ?WatchEventKind = null;
+    try fsMod.writeFile(fpath, "v1");
+    var sawKind: ?WatchEventKind = null;
     var deadline: usize = 0;
     while (deadline < 60) : (deadline += 1) {
         if (watcher.next()) |e| {
             if (e.kind == .created or e.kind == .modified) {
-                saw_kind = e.kind;
+                sawKind = e.kind;
                 break;
             }
         }
         _ = watcher.drainNative();
         clock.sleepMillis(10);
     }
-    try std.testing.expect(saw_kind != null);
+    try std.testing.expect(sawKind != null);
 }
 
 test "rename pairing survives atomic save patterns" {
-    if (!has_native) return error.SkipZigTest;
-    const fs_mod = @import("../../utils/fs.zig");
+    if (!hasNative) return error.SkipZigTest;
+    const fsMod = @import("../../utils/fs.zig");
     const a = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var path_buf: [256]u8 = undefined;
-    const root = try std.fmt.bufPrint(&path_buf, ".zig-cache/watch-rename-{d}", .{clock.millisNow()});
+    var pathBuf: [256]u8 = undefined;
+    const root = try std.fmt.bufPrint(&pathBuf, ".zig-cache/watch-rename-{d}", .{clock.millisNow()});
     {
         const cwd: std.Io.Dir = .cwd();
         cwd.createDir(io, ".zig-cache", .default_dir) catch {};
@@ -1051,7 +1051,7 @@ test "rename pairing survives atomic save patterns" {
     const apath = try std.fmt.bufPrint(&abuf, "{s}/a.txt", .{root});
     const bpath = try std.fmt.bufPrint(&bbuf, "{s}/b.txt", .{root});
     _ = watcher.drainNative();
-    try fs_mod.writeFile(apath, "data");
+    try fsMod.writeFile(apath, "data");
     var deadline: usize = 0;
     while (watcher.next() == null and deadline < 60) : (deadline += 1) {
         _ = watcher.drainNative();
@@ -1063,27 +1063,27 @@ test "rename pairing survives atomic save patterns" {
         try cwd.rename(apath, cwd, bpath, io);
     }
     deadline = 0;
-    var saw_rename = false;
+    var sawRename = false;
     while (deadline < 60) : (deadline += 1) {
         _ = watcher.drainNative();
         while (watcher.next()) |e| {
-            if (e.kind == .renamed) saw_rename = true;
+            if (e.kind == .renamed) sawRename = true;
         }
-        if (saw_rename) break;
+        if (sawRename) break;
         clock.sleepMillis(10);
     }
-    try std.testing.expect(saw_rename);
+    try std.testing.expect(sawRename);
 }
 
 test "reconcileDir pairs renames from stat-walk diffs" {
     // Backend-agnostic coverage for the directory-granularity path
     // (macOS kqueue): a stat-walk diff that loses a tracked file and
     // gains an untracked one with identical size+mtime is a rename.
-    const fs_mod = @import("../../utils/fs.zig");
+    const fsMod = @import("../../utils/fs.zig");
     const a = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var path_buf: [256]u8 = undefined;
-    const root = try std.fmt.bufPrint(&path_buf, ".zig-cache/watch-reconcile-{d}", .{clock.millisNow()});
+    var pathBuf: [256]u8 = undefined;
+    const root = try std.fmt.bufPrint(&pathBuf, ".zig-cache/watch-reconcile-{d}", .{clock.millisNow()});
     {
         const cwd: std.Io.Dir = .cwd();
         cwd.createDir(io, ".zig-cache", .default_dir) catch {};
@@ -1098,7 +1098,7 @@ test "reconcileDir pairs renames from stat-walk diffs" {
     var bbuf: [512]u8 = undefined;
     const apath = try std.fmt.bufPrint(&abuf, "{s}/a.txt", .{root});
     const bpath = try std.fmt.bufPrint(&bbuf, "{s}/b.txt", .{root});
-    try fs_mod.writeFile(apath, "data");
+    try fsMod.writeFile(apath, "data");
     try watcher.reconcileDir(root);
     while (watcher.next()) |_| {}
     {
@@ -1106,20 +1106,20 @@ test "reconcileDir pairs renames from stat-walk diffs" {
         try cwd.rename(apath, cwd, bpath, io);
     }
     try watcher.reconcileDir(root);
-    var saw_rename = false;
-    var saw_old = false;
+    var sawRename = false;
+    var sawOld = false;
     // Tracked keys use path.join separators (backslash on Windows),
     // so build the expectation the same way instead of assuming '/'.
-    const expected_old = try std.Io.Dir.path.join(a, &.{ root, "a.txt" });
-    defer a.free(expected_old);
+    const expectedOld = try std.Io.Dir.path.join(a, &.{ root, "a.txt" });
+    defer a.free(expectedOld);
     while (watcher.next()) |e| {
         if (e.kind == .renamed) {
-            saw_rename = true;
-            if (e.oldPath) |op| saw_old = saw_old or std.mem.eql(u8, op, expected_old);
+            sawRename = true;
+            if (e.oldPath) |op| sawOld = sawOld or std.mem.eql(u8, op, expectedOld);
         }
     }
-    try std.testing.expect(saw_rename);
-    try std.testing.expect(saw_old);
+    try std.testing.expect(sawRename);
+    try std.testing.expect(sawOld);
 }
 
 test "overflow marks dirty and rescans to reconcile" {

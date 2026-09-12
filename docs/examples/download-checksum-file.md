@@ -1,6 +1,6 @@
 # Example: Download Checksum File
 
-Demonstrates download_checksum_file.zig using the canonical HTTPX API.
+Demonstrates downloadChecksumFile.zig using the canonical HTTPX API.
 
 ## Complete Example
 

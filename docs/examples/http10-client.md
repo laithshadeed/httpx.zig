@@ -1,6 +1,6 @@
 # Example: Http10 Client
 
-Demonstrates http10_client.zig using the canonical HTTPX API.
+Demonstrates http10Client.zig using the canonical HTTPX API.
 
 ## Complete Example
 

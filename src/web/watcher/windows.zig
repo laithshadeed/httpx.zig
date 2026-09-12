@@ -92,7 +92,7 @@ pub const RawEvent = struct {
     kind: RawKind,
     /// Previous relative path for renames (owned, null otherwise).
     oldRelPath: ?[]u8 = null,
-    is_dir: bool = false,
+    isDir: bool = false,
 
     pub fn deinit(self: *RawEvent, allocator: Allocator) void {
         allocator.free(self.relPath);
@@ -110,13 +110,13 @@ pub const RawKind = enum {
 
 pub const Backend = struct {
     allocator: Allocator,
-    dir_handle: HANDLE = INVALID_HANDLE_VALUE,
-    event_handle: ?HANDLE = null,
+    dirHandle: HANDLE = INVALID_HANDLE_VALUE,
+    eventHandle: ?HANDLE = null,
     overlapped: OVERLAPPED = .{},
     /// Read buffer for the single outstanding overlapped read. It must
     /// outlive every poll call, so it lives here rather than on the stack.
     buf: [65536]u8 align(@alignOf(u32)) = undefined,
-    read_pending: bool = false,
+    readPending: bool = false,
     root: []u8 = &.{},
     dirty: bool = false,
     reading: std.atomic.Value(bool) = .init(false),
@@ -127,7 +127,7 @@ pub const Backend = struct {
         self.root = try allocator.dupe(u8, root);
         const wroot = try toLongWPath(allocator, root);
         defer allocator.free(wroot);
-        self.dir_handle = CreateFileW(
+        self.dirHandle = CreateFileW(
             wroot.ptr,
             FILE_LIST_DIRECTORY,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -139,52 +139,52 @@ pub const Backend = struct {
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
             null,
         );
-        if (self.dir_handle == INVALID_HANDLE_VALUE) return error.WatchInitFailed;
+        if (self.dirHandle == INVALID_HANDLE_VALUE) return error.WatchInitFailed;
         const ev = CreateEventW(null, @enumFromInt(1), @enumFromInt(0), null);
-        const ev_int: usize = @intFromPtr(ev);
-        if (ev_int == 0) return error.WatchInitFailed;
-        self.event_handle = ev;
+        const evInt: usize = @intFromPtr(ev);
+        if (evInt == 0) return error.WatchInitFailed;
+        self.eventHandle = ev;
         self.overlapped.hEvent = ev;
         return self;
     }
 
     pub fn deinit(self: *Backend) void {
         self.cancel();
-        if (self.event_handle) |ev| {
+        if (self.eventHandle) |ev| {
             _ = CloseHandle(ev);
-            self.event_handle = null;
+            self.eventHandle = null;
         }
-        if (self.dir_handle != INVALID_HANDLE_VALUE) {
-            _ = CloseHandle(self.dir_handle);
-            self.dir_handle = INVALID_HANDLE_VALUE;
+        if (self.dirHandle != INVALID_HANDLE_VALUE) {
+            _ = CloseHandle(self.dirHandle);
+            self.dirHandle = INVALID_HANDLE_VALUE;
         }
         if (self.root.len > 0) self.allocator.free(self.root);
     }
 
     /// Cancels any in-flight read so a blocked poll() wakes promptly.
     pub fn cancel(self: *Backend) void {
-        if (self.dir_handle == INVALID_HANDLE_VALUE) return;
-        if (!self.read_pending) return;
-        _ = CancelIoEx(self.dir_handle, null);
-        if (self.event_handle) |ev| {
+        if (self.dirHandle == INVALID_HANDLE_VALUE) return;
+        if (!self.readPending) return;
+        _ = CancelIoEx(self.dirHandle, null);
+        if (self.eventHandle) |ev| {
             _ = WaitForSingleObject(ev, 5000);
         }
-        self.read_pending = false;
+        self.readPending = false;
     }
 
-    /// Blocks up to timeout_ms for native events; returns owned events.
+    /// Blocks up to timeoutMs for native events; returns owned events.
     /// One overlapped read stays outstanding across calls (no cancel/reissue
     /// cycle, hence no baseline gaps); only shutdown cancels it. Sets
     /// `dirty` when the kernel dropped events (rescan required).
-    pub fn poll(self: *Backend, allocator: Allocator, timeout_ms: i32) ![]RawEvent {
+    pub fn poll(self: *Backend, allocator: Allocator, timeoutMs: i32) ![]RawEvent {
         var out = std.ArrayList(RawEvent).empty;
         errdefer {
             for (out.items) |*e| e.deinit(allocator);
             out.deinit(allocator);
         }
-        if (self.dir_handle == INVALID_HANDLE_VALUE) return out.toOwnedSlice(allocator);
-        const ev = self.event_handle orelse return out.toOwnedSlice(allocator);
-        if (!self.read_pending) {
+        if (self.dirHandle == INVALID_HANDLE_VALUE) return out.toOwnedSlice(allocator);
+        const ev = self.eventHandle orelse return out.toOwnedSlice(allocator);
+        if (!self.readPending) {
             _ = ResetEvent(ev);
             self.overlapped.Internal = 0;
             self.overlapped.InternalHigh = 0;
@@ -192,7 +192,7 @@ pub const Backend = struct {
             self.overlapped.OffsetHigh = 0;
             self.overlapped.hEvent = ev;
             const started = ReadDirectoryChangesW(
-                self.dir_handle,
+                self.dirHandle,
                 &self.buf,
                 self.buf.len,
                 @enumFromInt(1),
@@ -209,25 +209,25 @@ pub const Backend = struct {
                     return out.toOwnedSlice(allocator);
                 }
             }
-            self.read_pending = true;
+            self.readPending = true;
         }
         self.reading.store(true, .release);
         defer self.reading.store(false, .release);
-        const wait_ms: DWORD = if (timeout_ms < 0) INFINITE else @intCast(timeout_ms);
-        const wr = WaitForSingleObject(ev, wait_ms);
+        const waitMs: DWORD = if (timeoutMs < 0) INFINITE else @intCast(timeoutMs);
+        const wr = WaitForSingleObject(ev, waitMs);
         if (wr == WAIT_TIMEOUT) return out.toOwnedSlice(allocator);
         if (wr != WAIT_OBJECT_0) {
             self.dirty = true;
-            self.read_pending = false;
+            self.readPending = false;
             return out.toOwnedSlice(allocator);
         }
         var bytes: DWORD = 0;
-        if (@intFromEnum(GetOverlappedResult(self.dir_handle, &self.overlapped, &bytes, @enumFromInt(0))) == 0) {
+        if (@intFromEnum(GetOverlappedResult(self.dirHandle, &self.overlapped, &bytes, @enumFromInt(0))) == 0) {
             if (windows.GetLastError() == .NOTIFY_ENUM_DIR) self.dirty = true;
-            self.read_pending = false;
+            self.readPending = false;
             return out.toOwnedSlice(allocator);
         }
-        self.read_pending = false;
+        self.readPending = false;
         if (bytes == 0) {
             self.dirty = true;
             return out.toOwnedSlice(allocator);
@@ -238,21 +238,21 @@ pub const Backend = struct {
 
     const PendingRename = struct {
         path: []u8,
-        is_dir: bool,
+        isDir: bool,
     };
 
     fn translate(self: *Backend, allocator: Allocator, out: *std.ArrayList(RawEvent), buf: []const u8, valid: u32) !void {
         var off: usize = 0;
-        var pending_old: ?PendingRename = null;
-        defer if (pending_old) |*p| allocator.free(p.path);
+        var pendingOld: ?PendingRename = null;
+        defer if (pendingOld) |*p| allocator.free(p.path);
         while (off + 12 <= valid) {
             const next: u32 = std.mem.readInt(u32, buf[off..][0..4], .little);
             const action: u32 = std.mem.readInt(u32, buf[off + 4 ..][0..4], .little);
-            const name_len: u32 = std.mem.readInt(u32, buf[off + 8 ..][0..4], .little);
-            const name_off = off + 12;
-            if (name_off + name_len > valid) break;
-            const wlen = name_len / 2;
-            const wname: []const u16 = @ptrCast(@alignCast(buf[name_off..][0 .. wlen * 2]));
+            const nameLen: u32 = std.mem.readInt(u32, buf[off + 8 ..][0..4], .little);
+            const nameOff = off + 12;
+            if (nameOff + nameLen > valid) break;
+            const wlen = nameLen / 2;
+            const wname: []const u16 = @ptrCast(@alignCast(buf[nameOff..][0 .. wlen * 2]));
             const utf8 = std.unicode.utf16LeToUtf8Alloc(allocator, wname) catch null;
             defer if (utf8) |s| allocator.free(s);
             if (utf8) |s| {
@@ -263,47 +263,47 @@ pub const Backend = struct {
             const rel = if (utf8) |s| s else "";
             switch (action) {
                 FILE_ACTION_ADDED => {
-                    try self.flushPendingOld(allocator, out, &pending_old, .deleted);
+                    try self.flushPendingOld(allocator, out, &pendingOld, .deleted);
                     try out.append(allocator, .{
                         .relPath = try allocator.dupe(u8, rel),
                         .kind = .created,
-                        .is_dir = false,
+                        .isDir = false,
                     });
                 },
                 FILE_ACTION_REMOVED => {
-                    try self.flushPendingOld(allocator, out, &pending_old, .deleted);
+                    try self.flushPendingOld(allocator, out, &pendingOld, .deleted);
                     try out.append(allocator, .{
                         .relPath = try allocator.dupe(u8, rel),
                         .kind = .deleted,
-                        .is_dir = false,
+                        .isDir = false,
                     });
                 },
                 FILE_ACTION_MODIFIED => {
-                    try self.flushPendingOld(allocator, out, &pending_old, .deleted);
+                    try self.flushPendingOld(allocator, out, &pendingOld, .deleted);
                     try out.append(allocator, .{
                         .relPath = try allocator.dupe(u8, rel),
                         .kind = .modified,
-                        .is_dir = false,
+                        .isDir = false,
                     });
                 },
                 FILE_ACTION_RENAMED_OLD_NAME => {
-                    try self.flushPendingOld(allocator, out, &pending_old, .deleted);
-                    pending_old = .{ .path = try allocator.dupe(u8, rel), .is_dir = false };
+                    try self.flushPendingOld(allocator, out, &pendingOld, .deleted);
+                    pendingOld = .{ .path = try allocator.dupe(u8, rel), .isDir = false };
                 },
                 FILE_ACTION_RENAMED_NEW_NAME => {
-                    if (pending_old) |*p| {
+                    if (pendingOld) |*p| {
                         try out.append(allocator, .{
                             .relPath = try allocator.dupe(u8, rel),
                             .kind = .renamed,
                             .oldRelPath = p.path,
-                            .is_dir = false,
+                            .isDir = false,
                         });
-                        pending_old = null;
+                        pendingOld = null;
                     } else {
                         try out.append(allocator, .{
                             .relPath = try allocator.dupe(u8, rel),
                             .kind = .created,
-                            .is_dir = false,
+                            .isDir = false,
                         });
                     }
                 },
@@ -312,13 +312,13 @@ pub const Backend = struct {
             if (next == 0) break;
             off += next;
         }
-        try self.flushPendingOld(allocator, out, &pending_old, .deleted);
+        try self.flushPendingOld(allocator, out, &pendingOld, .deleted);
     }
 
     fn flushPendingOld(self: *Backend, allocator: Allocator, out: *std.ArrayList(RawEvent), pending: *?PendingRename, kind: RawKind) !void {
         _ = self;
         if (pending.*) |*p| {
-            try out.append(allocator, .{ .relPath = p.path, .kind = kind, .is_dir = p.is_dir });
+            try out.append(allocator, .{ .relPath = p.path, .kind = kind, .isDir = p.isDir });
             pending.* = null;
         }
     }
@@ -328,22 +328,22 @@ pub const Backend = struct {
 /// `\\?\` long-path prefix for long absolute paths (classic MAX_PATH).
 fn toLongWPath(allocator: Allocator, path: []const u8) ![:0]u16 {
     const abs = path;
-    const is_abs = (abs.len >= 3 and abs[1] == ':' and (abs[2] == '\\' or abs[2] == '/')) or
+    const isAbs = (abs.len >= 3 and abs[1] == ':' and (abs[2] == '\\' or abs[2] == '/')) or
         (abs.len >= 2 and abs[0] == '\\' and abs[1] == '\\');
-    const needs_prefix = is_abs and abs.len > 200 and !std.mem.startsWith(u8, abs, "\\\\?\\");
+    const needsPrefix = isAbs and abs.len > 200 and !std.mem.startsWith(u8, abs, "\\\\?\\");
     var out = std.ArrayList(u16).empty;
     errdefer out.deinit(allocator);
-    if (needs_prefix) {
+    if (needsPrefix) {
         try out.appendSlice(allocator, &[_]u16{ '\\', '\\', '?', '\\' });
     }
     var i: usize = 0;
     while (i < abs.len) {
-        const cp_len = std.unicode.utf8ByteSequenceLength(abs[i]) catch {
+        const cpLen = std.unicode.utf8ByteSequenceLength(abs[i]) catch {
             i += 1;
             continue;
         };
-        if (i + cp_len > abs.len) break;
-        const cp = std.unicode.utf8Decode(abs[i..][0..cp_len]) catch {
+        if (i + cpLen > abs.len) break;
+        const cp = std.unicode.utf8Decode(abs[i..][0..cpLen]) catch {
             i += 1;
             continue;
         };
@@ -354,7 +354,7 @@ fn toLongWPath(allocator: Allocator, path: []const u8) ![:0]u16 {
             const lo = 0xDC00 + @as(u16, @intCast((cp - 0x10000) & 0x3FF));
             try out.appendSlice(allocator, &[_]u16{ hi, lo });
         }
-        i += cp_len;
+        i += cpLen;
     }
     if (out.items.len > 0 and out.items[out.items.len - 1] == '/') {
         out.items[out.items.len - 1] = '\\';
@@ -368,7 +368,7 @@ test "rdc backend watches its root and reports a write" {
     if (builtin.os.tag != .windows) return error.SkipZigTest;
     const a = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const fs_mod = @import("../../utils/fs.zig");
+    const fsMod = @import("../../utils/fs.zig");
     const root = ".zig-cache/tmp-rdc-probe";
     {
         const cwd: std.Io.Dir = .cwd();
@@ -395,7 +395,7 @@ test "rdc backend watches its root and reports a write" {
     }
     const fpath = try std.fmt.allocPrint(a, "{s}/w.txt", .{root});
     defer a.free(fpath);
-    try fs_mod.writeFile(fpath, "hello");
+    try fsMod.writeFile(fpath, "hello");
     const evs = try backend.poll(a, 5000);
     defer {
         for (evs) |*e| {

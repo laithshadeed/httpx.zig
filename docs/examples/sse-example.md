@@ -1,7 +1,7 @@
 # Server-Sent Events (SSE) Example
 
 SSE payloads with `httpx.sse.EventWriter`, parsed back with
-`httpx.sse.EventParser`. See `examples/sse_server.zig`.
+`httpx.sse.EventParser`. See `examples/sseServer.zig`.
 
 ```zig
 fn sseHandler(ctx: *httpx.Context) anyerror!httpx.Response {

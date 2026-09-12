@@ -13,11 +13,11 @@ const parser = @import("parser.zig");
 const writer = @import("writer.zig");
 
 fn tryRequest(buf: []const u8) void {
-    _ = parser.parseRequestHead(buf) catch {};
+    _ = parser.parseRequestHead(buf, .{}) catch {};
 }
 
 fn tryResponse(buf: []const u8) void {
-    _ = parser.parseResponseHead(buf) catch {};
+    _ = parser.parseResponseHead(buf, .{}) catch {};
 }
 
 fn tryChunked(buf: []u8) void {
@@ -37,17 +37,17 @@ test "fuzz: truncation sweep over valid messages" {
         "OPTIONS * HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
     };
 
-    var chunk_buf: [256]u8 = undefined;
+    var chunkBuf: [256]u8 = undefined;
     for (seeds) |s| {
         for (0..s.len + 1) |cut| {
             tryRequest(s[0..cut]);
             if (s.len >= 5) tryResponse(s[0..cut]);
         }
         // Chunked decoder fed the body-bearing seeds directly.
-        @memcpy(chunk_buf[0..s.len], s);
-        tryChunked(chunk_buf[0..s.len]);
+        @memcpy(chunkBuf[0..s.len], s);
+        tryChunked(chunkBuf[0..s.len]);
         for (1..s.len) |cut| {
-            tryChunked(chunk_buf[0..cut]);
+            tryChunked(chunkBuf[0..cut]);
         }
     }
 }
@@ -113,7 +113,7 @@ test "fuzz: writer rejects smuggled CR/LF across many candidates" {
         "\r\n\r\nGET / HTTP/1.1",
     };
     for (candidates) |cand| {
-        const evil_headers = [_]writer.Header{
+        const evilHeaders = [_]writer.Header{
             .{ .name = "X-N", .value = cand },
         };
         // Must either error or emit sanitized output — never inject a
@@ -123,7 +123,7 @@ test "fuzz: writer rejects smuggled CR/LF across many candidates" {
             "GET",
             "/",
             null,
-            .{ .host = "h", .headers = evil_headers[0..] },
+            .{ .host = "h", .headers = evilHeaders[0..] },
         )) |maybe| {
             std.heap.page_allocator.free(maybe);
             // Accepted output must not inject a new header/line.

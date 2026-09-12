@@ -24,7 +24,7 @@ defer {
 ## WorkerPool
 
 A fixed-thread, bounded-queue pool with graceful drain
-(`src/concurrency/worker_pool.zig`).
+(`src/concurrency/workerPool.zig`).
 
 ```zig
 var pool = httpx.WorkerPool.init(allocator, .{

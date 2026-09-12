@@ -2,10 +2,10 @@
 //!
 //! Initial packet secrets are derived from the destination connection ID
 //! using HKDF-SHA256 with the version-specific salts. Application secrets
-//! arrive from the TLS 1.3 handshake layer (see tls_engine.zig); this
+//! arrive from the TLS 1.3 handshake layer (see tlsEngine.zig); this
 //! module provides the QUIC-specific label machinery both paths share.
 //!
-//! Constants verified against ngtcp2/lib/ngtcp2_crypto/shared.c.
+//! Constants verified against ngtcp2/lib/ngtcp2Crypto/shared.c.
 
 const std = @import("std");
 const hmac = std.crypto.auth.hmac;
@@ -39,22 +39,22 @@ pub fn saltForVersion(version: u32) Error![20]u8 {
 /// info = uint16(len) || uint8(6 + label.len) || "tls13 " || label || 0x00
 pub fn hkdfExpandLabel(prk: [32]u8, comptime label: []const u8, out: []u8) void {
     const fullLabel = "tls13 " ++ label;
-    var info_buf: [2 + 1 + 64 + 1]u8 = undefined;
+    var infoBuf: [2 + 1 + 64 + 1]u8 = undefined;
     const infoLen = 2 + 1 + fullLabel.len + 1;
     var w: usize = 0;
 
     const total: u16 = @intCast(out.len);
-    info_buf[w] = @intCast(total >> 8);
-    info_buf[w + 1] = @intCast(total & 0xFF);
+    infoBuf[w] = @intCast(total >> 8);
+    infoBuf[w + 1] = @intCast(total & 0xFF);
     w += 2;
-    info_buf[w] = @intCast(fullLabel.len);
+    infoBuf[w] = @intCast(fullLabel.len);
     w += 1;
-    @memcpy(info_buf[w..][0..fullLabel.len], fullLabel);
+    @memcpy(infoBuf[w..][0..fullLabel.len], fullLabel);
     w += fullLabel.len;
-    info_buf[w] = 0;
+    infoBuf[w] = 0;
     w += 1;
 
-    HkdfSha256.expand(out, info_buf[0..infoLen], prk);
+    HkdfSha256.expand(out, infoBuf[0..infoLen], prk);
 }
 
 /// Derives a secret from a parent secret with a label suffix
@@ -69,25 +69,25 @@ pub fn deriveSecret(prk: [32]u8, comptime label: []const u8) [32]u8 {
 /// (RFC 8446 Section 7.1 Derive-Secret).
 pub fn deriveSecretWithContext(prk: [32]u8, comptime label: []const u8, contextHash: *const [32]u8) [32]u8 {
     const fullLabel = "tls13 " ++ label;
-    var info_buf: [2 + 1 + 64 + 1 + 32]u8 = undefined;
+    var infoBuf: [2 + 1 + 64 + 1 + 32]u8 = undefined;
     var w: usize = 0;
-    info_buf[w] = 0;
-    info_buf[w + 1] = 32;
+    infoBuf[w] = 0;
+    infoBuf[w + 1] = 32;
     w += 2;
-    info_buf[w] = @intCast(fullLabel.len);
+    infoBuf[w] = @intCast(fullLabel.len);
     w += 1;
-    @memcpy(info_buf[w..][0..fullLabel.len], fullLabel);
+    @memcpy(infoBuf[w..][0..fullLabel.len], fullLabel);
     w += fullLabel.len;
-    info_buf[w] = 32;
+    infoBuf[w] = 32;
     w += 1;
-    @memcpy(info_buf[w..][0..32], contextHash);
+    @memcpy(infoBuf[w..][0..32], contextHash);
     w += 32;
     var out: [32]u8 = undefined;
-    HkdfSha256.expand(&out, info_buf[0..w], prk);
+    HkdfSha256.expand(&out, infoBuf[0..w], prk);
     return out;
 }
 
-pub const Cipher = enum { aes_128_gcm, aes_256_gcm, chacha20_poly1305 };
+pub const Cipher = enum { aes128Gcm, aes256Gcm, chacha20Poly1305 };
 
 /// Packet-protection keys for one direction at one encryption level.
 pub const ProtectionKeys = struct {
@@ -99,7 +99,7 @@ pub const ProtectionKeys = struct {
     /// Header-protection key (16 bytes for AES, 32 for ChaCha20).
     hp: [32]u8 = [_]u8{0} ** 32,
     hpLen: usize = 16,
-    cipher: Cipher = .aes_128_gcm,
+    cipher: Cipher = .aes128Gcm,
 
     pub const keyLen128 = 16;
     pub const keyLen256 = 32;
@@ -108,7 +108,7 @@ pub const ProtectionKeys = struct {
 
 /// Derives {key, iv, hp} from a secret using QUIC labels (AES-128-GCM, 16-byte key).
 pub fn deriveProtectionKeys(secret: [32]u8) ProtectionKeys {
-    var pk: ProtectionKeys = .{ .iv = undefined, .hp = undefined, .cipher = .aes_128_gcm };
+    var pk: ProtectionKeys = .{ .iv = undefined, .hp = undefined, .cipher = .aes128Gcm };
     pk.keyLen = 16;
     pk.hpLen = 16;
     hkdfExpandLabel(secret, "quic key", pk.key[0..16]);
@@ -123,7 +123,7 @@ pub fn deriveProtectionKeys(secret: [32]u8) ProtectionKeys {
 pub fn deriveProtectionKeysForCipher(secret: [32]u8, cipher: Cipher) ProtectionKeys {
     var pk: ProtectionKeys = .{ .iv = undefined, .hp = undefined, .cipher = cipher };
     switch (cipher) {
-        .aes_128_gcm => {
+        .aes128Gcm => {
             pk.keyLen = 16;
             pk.hpLen = 16;
             hkdfExpandLabel(secret, "quic key", pk.key[0..16]);
@@ -131,14 +131,14 @@ pub fn deriveProtectionKeysForCipher(secret: [32]u8, cipher: Cipher) ProtectionK
             hkdfExpandLabel(secret, "quic hp", pk.hp[0..16]);
             @memset(pk.hp[16..], 0);
         },
-        .aes_256_gcm => {
+        .aes256Gcm => {
             pk.keyLen = 32;
             pk.hpLen = 16;
             hkdfExpandLabel(secret, "quic key", pk.key[0..32]);
             hkdfExpandLabel(secret, "quic hp", pk.hp[0..16]);
             @memset(pk.hp[16..], 0);
         },
-        .chacha20_poly1305 => {
+        .chacha20Poly1305 => {
             pk.keyLen = 32;
             pk.hpLen = 32;
             hkdfExpandLabel(secret, "quic key", pk.key[0..32]);
@@ -157,10 +157,10 @@ pub const InitialSecrets = struct {
 /// Computes the Initial secrets for a destination connection ID.
 pub fn initialSecrets(dcid: []const u8, version: u32) Error!InitialSecrets {
     const salt = try saltForVersion(version);
-    const initial_secret = HkdfSha256.extract(&salt, dcid);
+    const initialSecret = HkdfSha256.extract(&salt, dcid);
     return .{
-        .client = deriveSecret(initial_secret, "client in"),
-        .server = deriveSecret(initial_secret, "server in"),
+        .client = deriveSecret(initialSecret, "client in"),
+        .server = deriveSecret(initialSecret, "server in"),
     };
 }
 
@@ -199,37 +199,37 @@ test "RFC 9001 A.1/A.2 initial secrets and keys (authoritative vectors)" {
     const dcid = [_]u8{ 0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08 };
     const sec = try initialSecrets(&dcid, 0x00000001);
 
-    // client_initial_secret
-    const want_client = [_]u8{
+    // clientInitialSecret
+    const wantClient = [_]u8{
         0xc0, 0x0c, 0xf1, 0x51, 0xca, 0x5b, 0xe0, 0x75,
         0xed, 0x0e, 0xbf, 0xb5, 0xc8, 0x03, 0x23, 0xc4,
         0x2d, 0x6b, 0x7d, 0xb6, 0x78, 0x81, 0x28, 0x9a,
         0xf4, 0x00, 0x8f, 0x1f, 0x6c, 0x35, 0x7a, 0xea,
     };
-    // server_initial_secret
-    const want_server = [_]u8{
+    // serverInitialSecret
+    const wantServer = [_]u8{
         0x3c, 0x19, 0x98, 0x28, 0xfd, 0x13, 0x9e, 0xfd,
         0x21, 0x6c, 0x15, 0x5a, 0xd8, 0x44, 0xcc, 0x81,
         0xfb, 0x82, 0xfa, 0x8d, 0x74, 0x46, 0xfa, 0x7d,
         0x78, 0xbe, 0x80, 0x3a, 0xcd, 0xda, 0x95, 0x1b,
     };
-    try std.testing.expectEqualSlices(u8, &want_client, &sec.client);
-    try std.testing.expectEqualSlices(u8, &want_server, &sec.server);
+    try std.testing.expectEqualSlices(u8, &wantClient, &sec.client);
+    try std.testing.expectEqualSlices(u8, &wantServer, &sec.server);
 
     const cpk = initialProtection(sec, .client);
     const spk = initialProtection(sec, .server);
 
-    const want_ckey = [_]u8{ 0x1f, 0x36, 0x96, 0x13, 0xdd, 0x76, 0xd5, 0x46, 0x77, 0x30, 0xef, 0xcb, 0xe3, 0xb1, 0xa2, 0x2d };
-    const want_civ = [_]u8{ 0xfa, 0x04, 0x4b, 0x2f, 0x42, 0xa3, 0xfd, 0x3b, 0x46, 0xfb, 0x25, 0x5c };
-    const want_chp = [_]u8{ 0x9f, 0x50, 0x44, 0x9e, 0x04, 0xa0, 0xe8, 0x10, 0x28, 0x3a, 0x1e, 0x99, 0x33, 0xad, 0xed, 0xd2 };
-    const want_skey = [_]u8{ 0xcf, 0x3a, 0x53, 0x31, 0x65, 0x3c, 0x36, 0x4c, 0x88, 0xf0, 0xf3, 0x79, 0xb6, 0x06, 0x7e, 0x37 };
-    const want_siv = [_]u8{ 0x0a, 0xc1, 0x49, 0x3c, 0xa1, 0x90, 0x58, 0x53, 0xb0, 0xbb, 0xa0, 0x3e };
-    const want_shp = [_]u8{ 0xc2, 0x06, 0xb8, 0xd9, 0xb9, 0xf0, 0xf3, 0x76, 0x44, 0x43, 0x0b, 0x49, 0x0e, 0xea, 0xa3, 0x14 };
+    const wantCkey = [_]u8{ 0x1f, 0x36, 0x96, 0x13, 0xdd, 0x76, 0xd5, 0x46, 0x77, 0x30, 0xef, 0xcb, 0xe3, 0xb1, 0xa2, 0x2d };
+    const wantCiv = [_]u8{ 0xfa, 0x04, 0x4b, 0x2f, 0x42, 0xa3, 0xfd, 0x3b, 0x46, 0xfb, 0x25, 0x5c };
+    const wantChp = [_]u8{ 0x9f, 0x50, 0x44, 0x9e, 0x04, 0xa0, 0xe8, 0x10, 0x28, 0x3a, 0x1e, 0x99, 0x33, 0xad, 0xed, 0xd2 };
+    const wantSkey = [_]u8{ 0xcf, 0x3a, 0x53, 0x31, 0x65, 0x3c, 0x36, 0x4c, 0x88, 0xf0, 0xf3, 0x79, 0xb6, 0x06, 0x7e, 0x37 };
+    const wantSiv = [_]u8{ 0x0a, 0xc1, 0x49, 0x3c, 0xa1, 0x90, 0x58, 0x53, 0xb0, 0xbb, 0xa0, 0x3e };
+    const wantShp = [_]u8{ 0xc2, 0x06, 0xb8, 0xd9, 0xb9, 0xf0, 0xf3, 0x76, 0x44, 0x43, 0x0b, 0x49, 0x0e, 0xea, 0xa3, 0x14 };
 
-    try std.testing.expectEqualSlices(u8, &want_ckey, cpk.key[0..16]);
-    try std.testing.expectEqualSlices(u8, &want_civ, &cpk.iv);
-    try std.testing.expectEqualSlices(u8, &want_chp, cpk.hp[0..16]);
-    try std.testing.expectEqualSlices(u8, &want_skey, spk.key[0..16]);
-    try std.testing.expectEqualSlices(u8, &want_siv, &spk.iv);
-    try std.testing.expectEqualSlices(u8, &want_shp, spk.hp[0..16]);
+    try std.testing.expectEqualSlices(u8, &wantCkey, cpk.key[0..16]);
+    try std.testing.expectEqualSlices(u8, &wantCiv, &cpk.iv);
+    try std.testing.expectEqualSlices(u8, &wantChp, cpk.hp[0..16]);
+    try std.testing.expectEqualSlices(u8, &wantSkey, spk.key[0..16]);
+    try std.testing.expectEqualSlices(u8, &wantSiv, &spk.iv);
+    try std.testing.expectEqualSlices(u8, &wantShp, spk.hp[0..16]);
 }

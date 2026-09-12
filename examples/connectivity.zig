@@ -28,13 +28,13 @@ pub fn main() !void {
     std.debug.print("\n=== Detailed connectivity probe ===\n", .{});
     const result = httpx.checkConnectivity(.{ .timeoutMs = 3000 });
     if (result.online) {
-        const fam_str: []const u8 = if (result.family) |f| switch (f) {
+        const famStr: []const u8 = if (result.family) |f| switch (f) {
             .ip4 => "IPv4",
             .ip6 => "IPv6",
         } else "?";
         std.debug.print(
             "Online: endpoint={s} family={s} latency={?d}ms\n",
-            .{ result.endpointStr(), fam_str, result.latencyMs },
+            .{ result.endpointStr(), famStr, result.latencyMs },
         );
     } else {
         std.debug.print("Offline: all probes failed.\n", .{});
@@ -45,11 +45,11 @@ pub fn main() !void {
     var client = httpx.Client.init(allocator, io, .{});
     defer client.deinit();
 
-    const client_result = client.checkConnectivity(.{});
-    if (client_result.online) {
+    const clientResult = client.checkConnectivity(.{});
+    if (clientResult.online) {
         std.debug.print("Client: online via {s} ({?d}ms)\n", .{
-            client_result.endpointStr(),
-            client_result.latencyMs,
+            clientResult.endpointStr(),
+            clientResult.latencyMs,
         });
     } else {
         std.debug.print("Client: offline.\n", .{});

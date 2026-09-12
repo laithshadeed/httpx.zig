@@ -64,7 +64,7 @@ pub fn verifyCsrfToken(a: []const u8, b: []const u8) bool {
 }
 
 // Rate limiting
-pub const rateLimit = @import("rate_limit.zig");
+pub const rateLimit = @import("rateLimit.zig");
 pub const RateLimiter = rateLimit.RateLimiter;
 pub const RateLimitError = rateLimit.RateLimitError;
 pub const RateLimitDimension = rateLimit.RateLimitDimension;
@@ -74,11 +74,11 @@ pub const RateLimitResult = rateLimit.RateLimitResult;
 // Tests
 
 test "cors rejects wildcard plus credentials" {
-    const unsafe_cfg = CorsConfig{ .allowAllOrigins = true, .allowCredentials = true };
-    try std.testing.expect(!unsafe_cfg.isSafe());
+    const unsafeCfg = CorsConfig{ .allowAllOrigins = true, .allowCredentials = true };
+    try std.testing.expect(!unsafeCfg.isSafe());
 
-    const safe_cfg = CorsConfig{ .allowAllOrigins = true };
-    try std.testing.expect(safe_cfg.isSafe());
+    const safeCfg = CorsConfig{ .allowAllOrigins = true };
+    try std.testing.expect(safeCfg.isSafe());
 }
 
 test "cors origin matching" {
@@ -92,19 +92,19 @@ test "cors origin matching" {
 test "csrf roundtrip and tamper rejection" {
     var prng = std.Random.DefaultPrng.init(0xC5EED5EED);
     const rng = prng.random();
-    var tok_a: [CSRF_TOKEN_LEN]u8 = undefined;
-    var tok_b: [CSRF_TOKEN_LEN]u8 = undefined;
-    _ = generateCsrfToken(rng, &tok_a);
-    _ = generateCsrfToken(rng, &tok_b);
+    var tokA: [CSRF_TOKEN_LEN]u8 = undefined;
+    var tokB: [CSRF_TOKEN_LEN]u8 = undefined;
+    _ = generateCsrfToken(rng, &tokA);
+    _ = generateCsrfToken(rng, &tokB);
 
-    try std.testing.expect(verifyCsrfToken(&tok_a, &tok_a));
-    try std.testing.expect(!verifyCsrfToken(&tok_a, &tok_b));
+    try std.testing.expect(verifyCsrfToken(&tokA, &tokA));
+    try std.testing.expect(!verifyCsrfToken(&tokA, &tokB));
     // Wrong length always rejected
-    try std.testing.expect(!verifyCsrfToken(tok_a[0..10], tok_a[0..10]));
+    try std.testing.expect(!verifyCsrfToken(tokA[0..10], tokA[0..10]));
 }
 
 test "rate limiter enforces window" {
-    var rl = RateLimiter.init(std.testing.allocator, 3, 1000);
+    var rl = RateLimiter.init(std.testing.allocator, .{ .policy = .{ .limit = 3, .windowMs = 1000 } });
     defer rl.deinit();
 
     try std.testing.expectEqual(@as(?u32, 2), try rl.check("ip:1.2.3.4", 0));
@@ -120,11 +120,11 @@ test "rate limiter enforces window" {
 
 // Built-in composable middlewares
 
-const router_mod = @import("../router/router.zig");
-const Context = router_mod.Context;
-const Response = router_mod.Response;
-const NextFn = router_mod.NextFn;
-const Header = router_mod.Header;
+const routerMod = @import("../router/router.zig");
+const Context = routerMod.Context;
+const Response = routerMod.Response;
+const NextFn = routerMod.NextFn;
+const Header = routerMod.Header;
 
 /// Standard CORS middleware handling preflight OPTIONS and response headers.
 pub fn corsMiddleware(ctx: *Context, next: NextFn) anyerror!Response {
@@ -151,15 +151,15 @@ pub fn corsMiddleware(ctx: *Context, next: NextFn) anyerror!Response {
 /// Sets standard defensive HTTP security headers.
 pub fn securityHeadersMiddleware(ctx: *Context, next: NextFn) anyerror!Response {
     var resp = try next(ctx);
-    const sec_hdrs = [_]Header{
+    const secHdrs = [_]Header{
         .{ .name = "X-Content-Type-Options", .value = "nosniff" },
         .{ .name = "X-Frame-Options", .value = "DENY" },
         .{ .name = "Referrer-Policy", .value = "strict-origin-when-cross-origin" },
         .{ .name = "Content-Security-Policy", .value = "default-src 'self'" },
     };
-    const extra = try ctx.allocator.alloc(Header, resp.headers.len + sec_hdrs.len);
+    const extra = try ctx.allocator.alloc(Header, resp.headers.len + secHdrs.len);
     @memcpy(extra[0..resp.headers.len], resp.headers);
-    @memcpy(extra[resp.headers.len..], &sec_hdrs);
+    @memcpy(extra[resp.headers.len..], &secHdrs);
     resp.headers = extra;
     return resp;
 }
@@ -182,7 +182,7 @@ pub fn loggingMiddleware(ctx: *Context, next: NextFn) anyerror!Response {
 
 test "middleware pipeline execution and headers" {
     const a = std.testing.allocator;
-    var router = router_mod.Router.init(a);
+    var router = routerMod.Router.init(a);
     defer router.deinit();
 
     try router.use(corsMiddleware);

@@ -75,34 +75,34 @@ pub const AssetStore = struct {
         content: []const u8,
         customContentType: ?[]const u8,
     ) !void {
-        var norm_buf: [512]u8 = undefined;
-        const norm_path = normalizePath(&norm_buf, rawPath);
+        var normBuf: [512]u8 = undefined;
+        const normPath = normalizePath(&normBuf, rawPath);
 
-        const owned_key = try self.allocator.dupe(u8, norm_path);
-        errdefer self.allocator.free(owned_key);
+        const ownedKey = try self.allocator.dupe(u8, normPath);
+        errdefer self.allocator.free(ownedKey);
 
-        const ct = customContentType orelse mime.fromPath(norm_path);
+        const ct = customContentType orelse mime.fromPath(normPath);
 
         // Generate deterministic ETag from content hash
-        var hash_buf: [32]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(content, &hash_buf, .{});
-        const hex = std.fmt.bytesToHex(hash_buf[0..8], .lower);
-        const etag_str = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{&hex});
-        errdefer self.allocator.free(etag_str);
+        var hashBuf: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(content, &hashBuf, .{});
+        const hex = std.fmt.bytesToHex(hashBuf[0..8], .lower);
+        const etagStr = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{&hex});
+        errdefer self.allocator.free(etagStr);
 
         self.lock.lock();
         defer self.lock.unlock();
 
-        if (self.assets.fetchRemove(norm_path)) |old| {
+        if (self.assets.fetchRemove(normPath)) |old| {
             self.allocator.free(old.key);
             self.allocator.free(old.value.etag);
         }
 
-        try self.assets.put(owned_key, .{
-            .path = owned_key,
+        try self.assets.put(ownedKey, .{
+            .path = ownedKey,
             .content = content,
             .contentType = ct,
-            .etag = etag_str,
+            .etag = etagStr,
             .mtimeNs = 0,
             .isEmbedded = true,
         });
@@ -110,37 +110,37 @@ pub const AssetStore = struct {
 
     /// Removes a previously registered embedded asset. No-op if absent.
     pub fn unregister(self: *AssetStore, rawPath: []const u8) void {
-        var norm_buf: [512]u8 = undefined;
-        const norm_path = normalizePath(&norm_buf, rawPath);
+        var normBuf: [512]u8 = undefined;
+        const normPath = normalizePath(&normBuf, rawPath);
 
         self.lock.lock();
         defer self.lock.unlock();
 
-        if (self.assets.fetchRemove(norm_path)) |old| {
+        if (self.assets.fetchRemove(normPath)) |old| {
             self.allocator.free(old.key);
             self.allocator.free(old.value.etag);
         }
     }
     /// Looks up an asset by logical path.
     pub fn get(self: *AssetStore, rawPath: []const u8) ?Asset {
-        var norm_buf: [512]u8 = undefined;
-        const norm_path = normalizePath(&norm_buf, rawPath);
+        var normBuf: [512]u8 = undefined;
+        const normPath = normalizePath(&normBuf, rawPath);
 
         self.lock.lock();
         defer self.lock.unlock();
 
-        if (self.assets.get(norm_path)) |a| {
+        if (self.assets.get(normPath)) |a| {
             return a;
         }
 
         // Try directory index fallback (e.g. "" or "admin" -> "index.html" or "admin/index.html")
-        if (norm_path.len == 0) {
+        if (normPath.len == 0) {
             return self.assets.get("index.html");
         }
 
-        var idx_buf: [512]u8 = undefined;
-        const idx_path = std.fmt.bufPrint(&idx_buf, "{s}/index.html", .{norm_path}) catch return null;
-        return self.assets.get(idx_path);
+        var idxBuf: [512]u8 = undefined;
+        const idxPath = std.fmt.bufPrint(&idxBuf, "{s}/index.html", .{normPath}) catch return null;
+        return self.assets.get(idxPath);
     }
 
     /// Returns true if the store has an embedded asset for the given path.
@@ -157,17 +157,17 @@ pub const AssetStore = struct {
 };
 
 // Global default asset store for application-wide single-file embedding
-var g_asset_store: ?AssetStore = null;
-var g_asset_lock: sync.Spinlock = .{};
+var gAssetStore: ?AssetStore = null;
+var gAssetLock: sync.Spinlock = .{};
 
 pub fn globalStore(allocator: Allocator) *AssetStore {
-    g_asset_lock.lock();
-    defer g_asset_lock.unlock();
+    gAssetLock.lock();
+    defer gAssetLock.unlock();
 
-    if (g_asset_store == null) {
-        g_asset_store = AssetStore.init(allocator);
+    if (gAssetStore == null) {
+        gAssetStore = AssetStore.init(allocator);
     }
-    return &g_asset_store.?;
+    return &gAssetStore.?;
 }
 
 /// Registers an embedded asset into the global registry.
@@ -205,10 +205,10 @@ pub fn unregisterEmbedded(allocator: Allocator, rawPath: []const u8) void {
 
 /// Retrieves an embedded asset from the global registry.
 pub fn getEmbedded(rawPath: []const u8) ?Asset {
-    g_asset_lock.lock();
-    defer g_asset_lock.unlock();
+    gAssetLock.lock();
+    defer gAssetLock.unlock();
 
-    if (g_asset_store) |*store| {
+    if (gAssetStore) |*store| {
         return store.get(rawPath);
     }
     return null;

@@ -104,7 +104,7 @@ pub const Jar = struct {
                 const secs = std.fmt.parseInt(i64, trimmed[8..], 10) catch continue;
                 expiresMs = clock.millisNow() + (secs * 1000);
             } else if (std.ascii.startsWithIgnoreCase(trimmed, "expires=")) {
-                // HTTP-date parsing handled via static_files.parseHttpDate.
+                // HTTP-date parsing handled via staticFiles.parseHttpDate.
                 if (@import("../web/static_files/serve.zig").parseHttpDate(trimmed[8..])) |secs| {
                     expiresMs = secs * 1000;
                 }

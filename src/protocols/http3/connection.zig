@@ -12,8 +12,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const frame_mod = @import("frame.zig");
-const qpack_mod = @import("qpack.zig");
+const frameMod = @import("frame.zig");
+const qpackMod = @import("qpack.zig");
 const varint = @import("../quic/varint.zig");
 const h3stream = @import("stream.zig");
 
@@ -36,13 +36,13 @@ pub const Error = error{
 pub const RequestStream = struct {
     id: u64,
     allocator: Allocator,
-    qpack: *qpack_mod.Encoder,
+    qpack: *qpackMod.Encoder,
 
     /// Builds HEADERS frame payload for a response.
     pub fn buildResponseHeaders(
         self: *RequestStream,
         statusCode: u16,
-        headers: []const qpack_mod.FieldLine,
+        headers: []const qpackMod.FieldLine,
     ) ![]u8 {
         var block = std.ArrayList(u8).empty;
         errdefer block.deinit(self.allocator);
@@ -52,9 +52,9 @@ pub const RequestStream = struct {
         self.qpack.beginSection();
 
         // Status pseudo-header
-        var code_buf: [4]u8 = undefined;
-        const code_str = std.fmt.bufPrint(&code_buf, "{d}", .{statusCode}) catch "500";
-        try self.qpack.encodeField(&block, ":status", code_str);
+        var codeBuf: [4]u8 = undefined;
+        const codeStr = std.fmt.bufPrint(&codeBuf, "{d}", .{statusCode}) catch "500";
+        try self.qpack.encodeField(&block, ":status", codeStr);
 
         for (headers) |h| {
             if (std.mem.startsWith(u8, h.name, ":")) continue; // skip other pseudos
@@ -70,7 +70,7 @@ pub const RequestStream = struct {
         var out = std.ArrayList(u8).empty;
         errdefer out.deinit(self.allocator);
         var fh: [16]u8 = undefined;
-        const n = try frame_mod.encodeFrameHeader(&fh, @intFromEnum(frame_mod.FrameType.headers), prefix.items.len + block.items.len);
+        const n = try frameMod.encodeFrameHeader(&fh, @intFromEnum(frameMod.FrameType.headers), prefix.items.len + block.items.len);
         try out.appendSlice(self.allocator, fh[0..n]);
         try out.appendSlice(self.allocator, prefix.items);
         try out.appendSlice(self.allocator, block.items);
@@ -87,7 +87,7 @@ pub const RequestStream = struct {
         scheme: []const u8,
         authority: []const u8,
         path: []const u8,
-        headers: []const qpack_mod.FieldLine,
+        headers: []const qpackMod.FieldLine,
     ) ![]u8 {
         var block = std.ArrayList(u8).empty;
         errdefer block.deinit(self.allocator);
@@ -109,7 +109,7 @@ pub const RequestStream = struct {
         var out = std.ArrayList(u8).empty;
         errdefer out.deinit(self.allocator);
         var fh: [16]u8 = undefined;
-        const n = try frame_mod.encodeFrameHeader(&fh, @intFromEnum(frame_mod.FrameType.headers), prefix.items.len + block.items.len);
+        const n = try frameMod.encodeFrameHeader(&fh, @intFromEnum(frameMod.FrameType.headers), prefix.items.len + block.items.len);
         try out.appendSlice(self.allocator, fh[0..n]);
         try out.appendSlice(self.allocator, prefix.items);
         try out.appendSlice(self.allocator, block.items);
@@ -122,7 +122,7 @@ pub const RequestStream = struct {
         var out = std.ArrayList(u8).empty;
         errdefer out.deinit(self.allocator);
         var fh: [16]u8 = undefined;
-        const n = try frame_mod.encodeFrameHeader(&fh, @intFromEnum(frame_mod.FrameType.data), body.len);
+        const n = try frameMod.encodeFrameHeader(&fh, @intFromEnum(frameMod.FrameType.data), body.len);
         try out.appendSlice(self.allocator, fh[0..n]);
         try out.appendSlice(self.allocator, body);
         return out.toOwnedSlice(self.allocator);
@@ -130,8 +130,8 @@ pub const RequestStream = struct {
 };
 
 /// Control stream builder - SETTINGS frame.
-pub fn buildSettingsFrame(allocator: Allocator, entries: []const frame_mod.SettingEntry) ![]u8 {
-    const payload = try frame_mod.buildSettingsPayload(allocator, entries);
+pub fn buildSettingsFrame(allocator: Allocator, entries: []const frameMod.SettingEntry) ![]u8 {
+    const payload = try frameMod.buildSettingsPayload(allocator, entries);
     defer allocator.free(payload);
 
     var out = std.ArrayList(u8).empty;
@@ -143,7 +143,7 @@ pub fn buildSettingsFrame(allocator: Allocator, entries: []const frame_mod.Setti
     try out.appendSlice(allocator, vb[0..n]);
 
     // SETTINGS frame
-    n = try frame_mod.encodeFrameHeader(&vb, @intFromEnum(frame_mod.FrameType.settings), payload.len);
+    n = try frameMod.encodeFrameHeader(&vb, @intFromEnum(frameMod.FrameType.settings), payload.len);
     try out.appendSlice(allocator, vb[0..n]);
     try out.appendSlice(allocator, payload);
     return out.toOwnedSlice(allocator);
@@ -153,7 +153,7 @@ pub fn buildSettingsFrame(allocator: Allocator, entries: []const frame_mod.Setti
 pub fn buildQpackEncoderStreamPrefix(allocator: Allocator) ![]u8 {
     var out = std.ArrayList(u8).empty;
     var vb: [16]u8 = undefined;
-    const n = try varint.encode(&vb, frame_mod.UniStreamType.qpackEncoder);
+    const n = try varint.encode(&vb, frameMod.UniStreamType.qpackEncoder);
     try out.appendSlice(allocator, vb[0..n]);
     return out.toOwnedSlice(allocator);
 }
@@ -162,7 +162,7 @@ pub fn buildQpackEncoderStreamPrefix(allocator: Allocator) ![]u8 {
 pub fn buildQpackDecoderStreamPrefix(allocator: Allocator) ![]u8 {
     var out = std.ArrayList(u8).empty;
     var vb: [16]u8 = undefined;
-    const n = try varint.encode(&vb, frame_mod.UniStreamType.qpackDecoder);
+    const n = try varint.encode(&vb, frameMod.UniStreamType.qpackDecoder);
     try out.appendSlice(allocator, vb[0..n]);
     return out.toOwnedSlice(allocator);
 }
@@ -198,8 +198,8 @@ pub const Connection = struct {
     controlStreamStarted: bool = false,
 
     // QPACK state
-    qenc: qpack_mod.Encoder,
-    qdec: qpack_mod.Decoder,
+    qenc: qpackMod.Encoder,
+    qdec: qpackMod.Decoder,
 
     // GOAWAY and push tracking
     goawaySent: bool = false,
@@ -234,31 +234,31 @@ pub const Connection = struct {
     /// Runtime-facing connection events.
     pub const Callbacks = struct {
         ctx: ?*anyopaque = null,
-        onHeaders: ?*const fn (ctx: ?*anyopaque, sid: u64, fields: []const qpack_mod.FieldLine, interim: bool) void = null,
+        onHeaders: ?*const fn (ctx: ?*anyopaque, sid: u64, fields: []const qpackMod.FieldLine, interim: bool) void = null,
         onData: ?*const fn (ctx: ?*anyopaque, sid: u64, data: []const u8) void = null,
-        onTrailers: ?*const fn (ctx: ?*anyopaque, sid: u64, fields: []const qpack_mod.FieldLine) void = null,
+        onTrailers: ?*const fn (ctx: ?*anyopaque, sid: u64, fields: []const qpackMod.FieldLine) void = null,
         onMessageEnd: ?*const fn (ctx: ?*anyopaque, sid: u64) void = null,
         onStreamReset: ?*const fn (ctx: ?*anyopaque, sid: u64, code: u64) void = null,
         /// A stream failed the H3 state machine; reset it with `code`.
-        onH3Error: ?*const fn (ctx: ?*anyopaque, sid: u64, code: frame_mod.H3Error) void = null,
+        onH3Error: ?*const fn (ctx: ?*anyopaque, sid: u64, code: frameMod.H3Error) void = null,
         /// Peer GOAWAY processed; stop opening streams at/above the ID.
         onGoaway: ?*const fn (ctx: ?*anyopaque, lastStreamId: u64) void = null,
     };
 
     pub const StreamError = struct {
         sid: u64,
-        code: frame_mod.H3Error,
+        code: frameMod.H3Error,
     };
 
     pub fn init(allocator: Allocator, role: Role) Connection {
-        const initiator_bit: u64 = if (role == .client) 0 else 1;
+        const initiatorBit: u64 = if (role == .client) 0 else 1;
         var self = Connection{
             .allocator = allocator,
             .role = role,
-            .qenc = qpack_mod.Encoder.init(allocator),
-            .qdec = qpack_mod.Decoder.init(allocator),
-            .nextBidiId = initiator_bit,
-            .nextUniId = initiator_bit | 2,
+            .qenc = qpackMod.Encoder.init(allocator),
+            .qdec = qpackMod.Decoder.init(allocator),
+            .nextBidiId = initiatorBit,
+            .nextUniId = initiatorBit | 2,
         };
         self.streams = std.AutoHashMap(u64, h3stream.Stream).init(allocator);
         return self;
@@ -290,7 +290,7 @@ pub const Connection = struct {
             self.qdec.setMaxFieldSectionSize(self.localSettings.maxFieldSectionSize);
         }
 
-        var entries: [4]frame_mod.SettingEntry = undefined;
+        var entries: [4]frameMod.SettingEntry = undefined;
         var count: usize = 0;
 
         entries[count] = .{ .id = 0x6, .value = self.localSettings.maxFieldSectionSize };
@@ -312,40 +312,40 @@ pub const Connection = struct {
     }
 
     /// Processes an incoming SETTINGS frame from the peer's control stream.
-    pub fn processPeerSettings(self: *Connection, settingsEntries: []const frame_mod.SettingEntry) !void {
+    pub fn processPeerSettings(self: *Connection, settingsEntries: []const frameMod.SettingEntry) !void {
         if (self.settingsReceived) return Error.InvalidSettings;
-        var seen_qpack_capacity = false;
-        var seen_max_field_section = false;
-        var seen_blocked_streams = false;
-        var seen_connect = false;
-        var seen_datagram = false;
+        var seenQpackCapacity = false;
+        var seenMaxFieldSection = false;
+        var seenBlockedStreams = false;
+        var seenConnect = false;
+        var seenDatagram = false;
         for (settingsEntries) |entry| {
             switch (entry.id) {
                 0x1 => {
-                    if (seen_qpack_capacity) return Error.InvalidSettings;
-                    seen_qpack_capacity = true;
+                    if (seenQpackCapacity) return Error.InvalidSettings;
+                    seenQpackCapacity = true;
                     self.peerSettings.qpackMaxTableCapacity = entry.value;
                 },
                 0x2 => return Error.InvalidSettings, // ENABLE_PUSH is forbidden in HTTP/3.
                 0x6 => {
-                    if (seen_max_field_section) return Error.InvalidSettings;
-                    seen_max_field_section = true;
+                    if (seenMaxFieldSection) return Error.InvalidSettings;
+                    seenMaxFieldSection = true;
                     self.peerSettings.maxFieldSectionSize = entry.value;
                 },
                 0x7 => {
-                    if (seen_blocked_streams) return Error.InvalidSettings;
-                    seen_blocked_streams = true;
+                    if (seenBlockedStreams) return Error.InvalidSettings;
+                    seenBlockedStreams = true;
                     self.peerSettings.qpackBlockedStreams = entry.value;
                 },
                 0x8 => {
-                    if (seen_connect) return Error.InvalidSettings;
-                    seen_connect = true;
+                    if (seenConnect) return Error.InvalidSettings;
+                    seenConnect = true;
                     if (entry.value > 1) return Error.InvalidSettings;
                     self.peerSettings.enableConnectProtocol = entry.value;
                 },
                 0x33 => {
-                    if (seen_datagram) return Error.InvalidSettings;
-                    seen_datagram = true;
+                    if (seenDatagram) return Error.InvalidSettings;
+                    seenDatagram = true;
                     if (entry.value > 1) return Error.InvalidSettings;
                     self.peerSettings.h3Datagram = entry.value;
                 },
@@ -358,9 +358,9 @@ pub const Connection = struct {
 
     /// Builds a GOAWAY frame (stream ID varint payload).
     pub fn buildGoawayFrame(self: *Connection, streamId: u64) ![]u8 {
-        const out = try frame_mod.encodeSingleVarintFrame(
+        const out = try frameMod.encodeSingleVarintFrame(
             self.allocator,
-            @intFromEnum(frame_mod.FrameType.goaway),
+            @intFromEnum(frameMod.FrameType.goaway),
             streamId,
         );
         self.goawaySent = true;
@@ -379,7 +379,7 @@ pub const Connection = struct {
         switch (frameType) {
             0x0, 0x1, 0x5 => return Error.ProtocolViolation, // DATA, HEADERS, PUSH_PROMISE
             0x4 => {
-                const entries = frame_mod.parseSettingsPayload(payload, self.allocator) catch |e| switch (e) {
+                const entries = frameMod.parseSettingsPayload(payload, self.allocator) catch |e| switch (e) {
                     error.OutOfMemory => return Error.OutOfMemory,
                     else => return Error.InvalidSettings,
                 };
@@ -387,19 +387,19 @@ pub const Connection = struct {
                 try self.processPeerSettings(entries);
             },
             0x7 => {
-                const sid = frame_mod.decodeSingleVarintPayload(payload) catch return Error.ProtocolViolation;
+                const sid = frameMod.decodeSingleVarintPayload(payload) catch return Error.ProtocolViolation;
                 if (self.goawayReceived and sid > self.goawayStreamId) return Error.ProtocolViolation;
                 self.goawayReceived = true;
                 self.goawayStreamId = sid;
             },
             0x3, 0xD => {
-                const entries = frame_mod.validateFramePayload(self.allocator, frameType, payload) catch |e| switch (e) {
+                const entries = frameMod.validateFramePayload(self.allocator, frameType, payload) catch |e| switch (e) {
                     error.OutOfMemory => return Error.OutOfMemory,
                     else => return Error.ProtocolViolation,
                 };
                 self.allocator.free(entries);
                 if (frameType == 0xD) {
-                    const pid = frame_mod.decodeSingleVarintPayload(payload) catch return Error.ProtocolViolation;
+                    const pid = frameMod.decodeSingleVarintPayload(payload) catch return Error.ProtocolViolation;
                     if (pid > self.maxPushId) self.maxPushId = pid;
                 }
             },
@@ -445,7 +445,7 @@ pub const Connection = struct {
         };
     }
 
-    fn fwdHeaders(ctx: ?*anyopaque, sid: u64, fields: []const qpack_mod.FieldLine, interim: bool) void {
+    fn fwdHeaders(ctx: ?*anyopaque, sid: u64, fields: []const qpackMod.FieldLine, interim: bool) void {
         const self: *Connection = @ptrCast(@alignCast(ctx.?));
         if (self.cbs.onHeaders) |cb| cb(self.cbs.ctx, sid, fields, interim);
     }
@@ -455,7 +455,7 @@ pub const Connection = struct {
         if (self.cbs.onData) |cb| cb(self.cbs.ctx, sid, data);
     }
 
-    fn fwdTrailers(ctx: ?*anyopaque, sid: u64, fields: []const qpack_mod.FieldLine) void {
+    fn fwdTrailers(ctx: ?*anyopaque, sid: u64, fields: []const qpackMod.FieldLine) void {
         const self: *Connection = @ptrCast(@alignCast(ctx.?));
         if (self.cbs.onTrailers) |cb| cb(self.cbs.ctx, sid, fields);
     }
@@ -470,7 +470,7 @@ pub const Connection = struct {
         if (self.cbs.onStreamReset) |cb| cb(self.cbs.ctx, sid, code);
     }
 
-    fn fwdStreamError(ctx: ?*anyopaque, sid: u64, code: frame_mod.H3Error) void {
+    fn fwdStreamError(ctx: ?*anyopaque, sid: u64, code: frameMod.H3Error) void {
         const self: *Connection = @ptrCast(@alignCast(ctx.?));
         if (self.cbs.onH3Error) |cb| cb(self.cbs.ctx, sid, code);
     }
@@ -484,7 +484,7 @@ pub const Connection = struct {
         const self: *Connection = @ptrCast(@alignCast(ctx.?));
         const hadGoaway = self.goawayReceived;
         self.processControlFrame(frameType, payload) catch |e| {
-            const code: frame_mod.H3Error = switch (e) {
+            const code: frameMod.H3Error = switch (e) {
                 error.InvalidSettings => .settingsError,
                 error.OutOfMemory => .internalError,
                 else => .frameUnexpected,
@@ -526,14 +526,14 @@ pub const Connection = struct {
             // feed (fragmented types fall through to the post-feed
             // check below).
             if (h3stream.parseUniType(data) catch null) |t| {
-                const pre_dup = switch (t.streamType) {
+                const preDup = switch (t.streamType) {
                     0x00 => self.controlIn != null,
                     0x02 => self.encoderIn != null,
                     0x03 => self.decoderIn != null,
                     else => false,
                 };
-                if (t.streamType == 0x01 or pre_dup) {
-                    const code: frame_mod.H3Error = if (t.streamType == 0x01) .frameUnexpected else .streamCreationError;
+                if (t.streamType == 0x01 or preDup) {
+                    const code: frameMod.H3Error = if (t.streamType == 0x01) .frameUnexpected else .streamCreationError;
                     self.streamError = .{ .sid = sid, .code = code };
                     return Error.ProtocolViolation;
                 }
@@ -570,7 +570,7 @@ pub const Connection = struct {
                 };
                 if (kind == .push or dup) {
                     if (!stp.failed) {
-                        const code: frame_mod.H3Error = if (kind == .push) .frameUnexpected else .streamCreationError;
+                        const code: frameMod.H3Error = if (kind == .push) .frameUnexpected else .streamCreationError;
                         stp.failExtern(code);
                     }
                     var gone = self.streams.fetchRemove(sid).?;
@@ -713,9 +713,9 @@ pub const Connection = struct {
 
     /// Resets `sid` with an H3 code at the current send offset and
     /// stops tracking the stream for inbound bytes.
-    pub fn resetStream(self: *Connection, quic: anytype, sid: u64, code: frame_mod.H3Error, nowMs: u64) !void {
-        const final_size = quic.sendStreamEnd.get(sid) orelse 0;
-        try quic.sendResetStream(sid, @intFromEnum(code), final_size, nowMs);
+    pub fn resetStream(self: *Connection, quic: anytype, sid: u64, code: frameMod.H3Error, nowMs: u64) !void {
+        const finalSize = quic.sendStreamEnd.get(sid) orelse 0;
+        try quic.sendResetStream(sid, @intFromEnum(code), finalSize, nowMs);
         if (self.streams.getPtr(sid)) |stp| stp.failed = true;
     }
 };
@@ -768,7 +768,7 @@ const ConnRec = struct {
     ends: usize = 0,
     resets: usize = 0,
     h3Errors: usize = 0,
-    lastH3Error: ?frame_mod.H3Error = null,
+    lastH3Error: ?frameMod.H3Error = null,
     lastH3ErrorSid: u64 = 0,
     goaways: usize = 0,
     lastGoaway: u64 = 0,
@@ -784,7 +784,7 @@ const ConnRec = struct {
             .onGoaway = onG,
         };
     }
-    fn onH(ctx: ?*anyopaque, sid: u64, fields: []const qpack_mod.FieldLine, interim: bool) void {
+    fn onH(ctx: ?*anyopaque, sid: u64, fields: []const qpackMod.FieldLine, interim: bool) void {
         _ = sid;
         _ = fields;
         _ = interim;
@@ -807,7 +807,7 @@ const ConnRec = struct {
         const r: *ConnRec = @ptrCast(@alignCast(ctx.?));
         r.resets += 1;
     }
-    fn onHE(ctx: ?*anyopaque, sid: u64, code: frame_mod.H3Error) void {
+    fn onHE(ctx: ?*anyopaque, sid: u64, code: frameMod.H3Error) void {
         const r: *ConnRec = @ptrCast(@alignCast(ctx.?));
         r.h3Errors += 1;
         r.lastH3Error = code;
@@ -837,23 +837,23 @@ test "h3conn demuxes uni streams and rejects duplicates" {
     // A second control stream is a creation error, reported precisely
     // without creating state.
     try std.testing.expectError(Error.ProtocolViolation, conn.feedQuic(6, ctrl, false));
-    const dup_err = conn.takeStreamError().?;
-    try std.testing.expectEqual(@as(u64, 6), dup_err.sid);
-    try std.testing.expectEqual(frame_mod.H3Error.streamCreationError, dup_err.code);
+    const dupErr = conn.takeStreamError().?;
+    try std.testing.expectEqual(@as(u64, 6), dupErr.sid);
+    try std.testing.expectEqual(frameMod.H3Error.streamCreationError, dupErr.code);
     try std.testing.expect(!conn.streams.contains(6));
 
     // Push streams are rejected under the no-push policy.
     try std.testing.expectError(Error.ProtocolViolation, conn.feedQuic(10, &.{0x01}, false));
-    const push_err = conn.takeStreamError().?;
-    try std.testing.expectEqual(@as(u64, 10), push_err.sid);
-    try std.testing.expectEqual(frame_mod.H3Error.frameUnexpected, push_err.code);
+    const pushErr = conn.takeStreamError().?;
+    try std.testing.expectEqual(@as(u64, 10), pushErr.sid);
+    try std.testing.expectEqual(frameMod.H3Error.frameUnexpected, pushErr.code);
     try std.testing.expect(!conn.streams.contains(10));
 
     // A peer-owned illegal ID surfaces through takeStreamError.
     try std.testing.expectError(Error.ProtocolViolation, conn.feedQuic(3, &.{0x00}, false));
     const se = conn.takeStreamError().?;
     try std.testing.expectEqual(@as(u64, 3), se.sid);
-    try std.testing.expectEqual(frame_mod.H3Error.streamCreationError, se.code);
+    try std.testing.expectEqual(frameMod.H3Error.streamCreationError, se.code);
     try std.testing.expect(conn.takeStreamError() == null);
 }
 
@@ -869,7 +869,7 @@ test "h3conn routes bidi request bytes to events" {
     const hf = try rs.buildRequestHeaders("GET", "https", "example.com", "/", &.{});
     defer a.free(hf);
     var dfb: [16]u8 = undefined;
-    const dn = try frame_mod.encodeFrameHeader(&dfb, 0x0, 2);
+    const dn = try frameMod.encodeFrameHeader(&dfb, 0x0, 2);
     var wire = std.ArrayList(u8).empty;
     defer wire.deinit(a);
     try wire.appendSlice(a, hf);
@@ -917,14 +917,14 @@ test "h3conn send path offsets prefixes and goaway gating" {
     // and no further streams open.
     const go = try conn.buildGoawayFrame(0);
     defer a.free(go);
-    var peer_ctrl = std.ArrayList(u8).empty;
-    defer peer_ctrl.deinit(a);
-    try peer_ctrl.append(a, 0x00);
-    const peer_settings = try conn.buildControlStream();
-    defer a.free(peer_settings);
-    try peer_ctrl.appendSlice(a, peer_settings[1..]); // settings frame without our type prefix
-    try peer_ctrl.appendSlice(a, go);
-    try conn.feedQuic(3, peer_ctrl.items, false);
+    var peerCtrl = std.ArrayList(u8).empty;
+    defer peerCtrl.deinit(a);
+    try peerCtrl.append(a, 0x00);
+    const peerSettings = try conn.buildControlStream();
+    defer a.free(peerSettings);
+    try peerCtrl.appendSlice(a, peerSettings[1..]); // settings frame without our type prefix
+    try peerCtrl.appendSlice(a, go);
+    try conn.feedQuic(3, peerCtrl.items, false);
     try std.testing.expect(conn.goawayReceived);
     try std.testing.expectEqual(@as(usize, 1), rec.goaways);
     try std.testing.expectEqual(@as(u64, 0), rec.lastGoaway);
@@ -965,7 +965,7 @@ test "h3conn decoder acks drain concatenated" {
     defer mq.deinit();
     try conn.sendControl(&mq, 100); // commits our decoder sizing
 
-    var penc = qpack_mod.Encoder.init(a);
+    var penc = qpackMod.Encoder.init(a);
     defer penc.deinit();
     penc.setMaxTableCapacity(4096);
     penc.beginSection();
@@ -994,13 +994,13 @@ test "h3conn decoder acks drain concatenated" {
     defer s2.deinit(a);
     try penc.encodePrefix(&s2, ric2, ric2);
     try s2.appendSlice(a, f2.items);
-    const enc_bytes = try penc.takeEncoderBytes();
-    defer a.free(enc_bytes);
+    const encBytes = try penc.takeEncoderBytes();
+    defer a.free(encBytes);
 
     var ewire = std.ArrayList(u8).empty;
     defer ewire.deinit(a);
     try ewire.append(a, 0x02);
-    try ewire.appendSlice(a, enc_bytes);
+    try ewire.appendSlice(a, encBytes);
     try conn.feedQuic(6, ewire.items, false);
 
     const wrap = struct {
@@ -1008,7 +1008,7 @@ test "h3conn decoder acks drain concatenated" {
             var out = std.ArrayList(u8).empty;
             errdefer out.deinit(a2);
             var fh: [16]u8 = undefined;
-            const n = try frame_mod.encodeFrameHeader(&fh, 0x1, section.len);
+            const n = try frameMod.encodeFrameHeader(&fh, 0x1, section.len);
             try out.appendSlice(a2, fh[0..n]);
             try out.appendSlice(a2, section);
             return out.toOwnedSlice(a2);
@@ -1027,13 +1027,13 @@ test "h3conn decoder acks drain concatenated" {
     // One SectionAck per dynamic section, hash-map order: {0x80} for
     // stream 0 and {0x84} for stream 4 (7-bit prefix holds small IDs).
     try std.testing.expectEqual(@as(usize, 2), ack.len);
-    var saw_80 = false;
-    var saw_84 = false;
+    var saw80 = false;
+    var saw84 = false;
     for (ack) |b| {
-        if (b == 0x80) saw_80 = true;
-        if (b == 0x84) saw_84 = true;
+        if (b == 0x80) saw80 = true;
+        if (b == 0x84) saw84 = true;
     }
-    try std.testing.expect(saw_80 and saw_84);
+    try std.testing.expect(saw80 and saw84);
 }
 
 test "h3conn blocked streams retry together" {
@@ -1047,7 +1047,7 @@ test "h3conn blocked streams retry together" {
     defer mq.deinit();
     try conn.sendControl(&mq, 100);
 
-    var penc = qpack_mod.Encoder.init(a);
+    var penc = qpackMod.Encoder.init(a);
     defer penc.deinit();
     penc.setMaxTableCapacity(4096);
     penc.beginSection();
@@ -1063,11 +1063,11 @@ test "h3conn blocked streams retry together" {
     defer s1.deinit(a);
     try penc.encodePrefix(&s1, ric, ric);
     try s1.appendSlice(a, f1.items);
-    const enc_bytes = try penc.takeEncoderBytes();
-    defer a.free(enc_bytes);
+    const encBytes = try penc.takeEncoderBytes();
+    defer a.free(encBytes);
 
     var hfb: [16]u8 = undefined;
-    const hn = try frame_mod.encodeFrameHeader(&hfb, 0x1, s1.items.len);
+    const hn = try frameMod.encodeFrameHeader(&hfb, 0x1, s1.items.len);
     var wire = std.ArrayList(u8).empty;
     defer wire.deinit(a);
     try wire.appendSlice(a, hfb[0..hn]);
@@ -1080,7 +1080,7 @@ test "h3conn blocked streams retry together" {
     var ewire = std.ArrayList(u8).empty;
     defer ewire.deinit(a);
     try ewire.append(a, 0x02);
-    try ewire.appendSlice(a, enc_bytes);
+    try ewire.appendSlice(a, encBytes);
     try conn.feedQuic(6, ewire.items, false);
     conn.retryBlockedStreams();
     try std.testing.expectEqual(@as(usize, 2), rec.headers);
@@ -1088,7 +1088,7 @@ test "h3conn blocked streams retry together" {
 
 test "settings frame structure" {
     const a = std.testing.allocator;
-    const entries = [_]frame_mod.SettingEntry{
+    const entries = [_]frameMod.SettingEntry{
         .{ .id = 0x6, .value = 16384 }, // maxFieldSectionSize
     };
     const f = try buildSettingsFrame(a, &entries);
@@ -1126,7 +1126,7 @@ test "qpack capacity changes release the previous table" {
 
 test "request stream builds valid HEADERS + DATA" {
     const a = std.testing.allocator;
-    var qenc = qpack_mod.Encoder.init(a);
+    var qenc = qpackMod.Encoder.init(a);
     defer qenc.deinit();
     var rs = RequestStream{
         .id = 4,
@@ -1134,42 +1134,42 @@ test "request stream builds valid HEADERS + DATA" {
         .qpack = &qenc,
     };
 
-    const hdrs = [_]qpack_mod.FieldLine{
+    const hdrs = [_]qpackMod.FieldLine{
         .{ .name = "content-type", .value = "text/plain" },
     };
-    const head_frame = try rs.buildResponseHeaders(200, &hdrs);
-    defer a.free(head_frame);
+    const headFrame = try rs.buildResponseHeaders(200, &hdrs);
+    defer a.free(headFrame);
 
     // Frame type should be HEADERS (0x01)
-    try std.testing.expectEqual(@as(u8, 0x01), head_frame[0]);
-    var frame_offset: usize = 0;
-    const header_frame = try frame_mod.parseFrame(head_frame, &frame_offset);
-    var decoder = qpack_mod.Decoder.init(a);
-    const decoded = try decoder.decodeSectionWithPrefix(header_frame.payload);
+    try std.testing.expectEqual(@as(u8, 0x01), headFrame[0]);
+    var frameOffset: usize = 0;
+    const headerFrame = try frameMod.parseFrame(headFrame, &frameOffset);
+    var decoder = qpackMod.Decoder.init(a);
+    const decoded = try decoder.decodeSectionCounted(headerFrame.payload, 0, null);
     defer decoder.freeFields(decoded);
     try std.testing.expectEqual(@as(usize, 2), decoded.len);
     try std.testing.expectEqualStrings(":status", decoded[0].name);
     try std.testing.expectEqualStrings("200", decoded[0].value);
 
-    const data_frame = try rs.buildData("hello");
-    defer a.free(data_frame);
-    try std.testing.expectEqual(@as(u8, 0x00), data_frame[0]); // DATA
-    try std.testing.expectEqual(@as(u8, 'h'), data_frame[data_frame.len - 5]);
+    const dataFrame = try rs.buildData("hello");
+    defer a.free(dataFrame);
+    try std.testing.expectEqual(@as(u8, 0x00), dataFrame[0]); // DATA
+    try std.testing.expectEqual(@as(u8, 'h'), dataFrame[dataFrame.len - 5]);
 }
 
 test "request stream builds decodable request headers" {
     const a = std.testing.allocator;
-    var qenc = qpack_mod.Encoder.init(a);
+    var qenc = qpackMod.Encoder.init(a);
     defer qenc.deinit();
     var rs = RequestStream{ .id = 0, .allocator = a, .qpack = &qenc };
-    const headers = [_]qpack_mod.FieldLine{.{ .name = "user-agent", .value = "httpx" }};
+    const headers = [_]qpackMod.FieldLine{.{ .name = "user-agent", .value = "httpx" }};
     const encoded = try rs.buildRequestHeaders("GET", "https", "example.test", "/", &headers);
     defer a.free(encoded);
 
     var offset: usize = 0;
-    const frame = try frame_mod.parseFrame(encoded, &offset);
-    var dec = qpack_mod.Decoder.init(a);
-    const fields = try dec.decodeSectionWithPrefix(frame.payload);
+    const frame = try frameMod.parseFrame(encoded, &offset);
+    var dec = qpackMod.Decoder.init(a);
+    const fields = try dec.decodeSectionCounted(frame.payload, 0, null);
     defer dec.freeFields(fields);
     try std.testing.expectEqual(@as(usize, 5), fields.len);
     try std.testing.expectEqualStrings(":method", fields[0].name);
@@ -1190,7 +1190,7 @@ test "connection builds and processes settings" {
     try std.testing.expectEqual(@as(u8, 0x00), ctrl[0]);
 
     // Process peer settings
-    const entries = [_]frame_mod.SettingEntry{
+    const entries = [_]frameMod.SettingEntry{
         .{ .id = 0x6, .value = 8192 },
         .{ .id = 0x7, .value = 100 },
     };
@@ -1203,7 +1203,7 @@ test "http3 rejects duplicate and forbidden settings" {
     const a = std.testing.allocator;
     var duplicate = Connection.init(a, .client);
     defer duplicate.deinit();
-    const dup = [_]frame_mod.SettingEntry{
+    const dup = [_]frameMod.SettingEntry{
         .{ .id = 0x6, .value = 8192 },
         .{ .id = 0x6, .value = 4096 },
     };
@@ -1211,7 +1211,7 @@ test "http3 rejects duplicate and forbidden settings" {
 
     var forbidden = Connection.init(a, .client);
     defer forbidden.deinit();
-    const enablePush = [_]frame_mod.SettingEntry{.{ .id = 0x2, .value = 0 }};
+    const enablePush = [_]frameMod.SettingEntry{.{ .id = 0x2, .value = 0 }};
     try std.testing.expectError(Error.InvalidSettings, forbidden.processPeerSettings(&enablePush));
 }
 
@@ -1221,8 +1221,8 @@ test "http3 control stream rejects request frames and accepts settings" {
     defer c.deinit();
     try std.testing.expectError(Error.InvalidSettings, c.processControlFrame(0x0, ""));
 
-    const entries = [_]frame_mod.SettingEntry{.{ .id = 0x6, .value = 4096 }};
-    const encoded = try frame_mod.buildSettingsPayload(a, &entries);
+    const entries = [_]frameMod.SettingEntry{.{ .id = 0x6, .value = 4096 }};
+    const encoded = try frameMod.buildSettingsPayload(a, &entries);
     defer a.free(encoded);
     try c.processControlFrame(0x4, encoded);
     try std.testing.expect(c.settingsReceived);

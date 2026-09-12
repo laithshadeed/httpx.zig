@@ -12,8 +12,8 @@ pub const TlsError = errorsMod.TlsError;
 
 pub const KeyType = enum {
     rsa,
-    ecdsa_p256,
-    ecdsa_p384,
+    ecdsaP256,
+    ecdsaP384,
     ed25519,
     unknown,
 };
@@ -59,7 +59,7 @@ pub fn parsePrivateKeyPem(allocator: Allocator, pemBytes: []const u8) TlsError!P
             if (std.mem.eql(u8, label, "RSA PRIVATE KEY")) {
                 keyType = .rsa;
             } else if (std.mem.eql(u8, label, "EC PRIVATE KEY")) {
-                keyType = .ecdsa_p256;
+                keyType = .ecdsaP256;
             }
             return PrivateKey{
                 .der = der,

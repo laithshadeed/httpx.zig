@@ -1,6 +1,6 @@
 # Example: Body Parser Server
 
-Demonstrates body_parser_server.zig using the canonical HTTPX API.
+Demonstrates bodyParserServer.zig using the canonical HTTPX API.
 
 ## Complete Example
 

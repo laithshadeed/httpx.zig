@@ -134,26 +134,26 @@ pub const Address = struct {
                     groups[g] = (@as(u16, self.bytes[g * 2]) << 8) | self.bytes[g * 2 + 1];
                 }
                 // Longest zero run >= 2 gets compressed (RFC 5952)
-                var best_start: usize = 8;
-                var best_len: usize = 0;
+                var bestStart: usize = 8;
+                var bestLen: usize = 0;
                 var i: usize = 0;
                 while (i < 8) {
                     if (groups[i] == 0) {
                         var j = i;
                         while (j < 8 and groups[j] == 0) j += 1;
-                        if (j - i > best_len) {
-                            best_len = j - i;
-                            best_start = i;
+                        if (j - i > bestLen) {
+                            bestLen = j - i;
+                            bestStart = i;
                         }
                         i = j;
                     } else i += 1;
                 }
-                if (best_len < 2) best_start = 8;
+                if (bestLen < 2) bestStart = 8;
 
                 var pos: usize = 0;
                 var gi: usize = 0;
                 while (gi < 8) {
-                    if (gi == best_start) {
+                    if (gi == bestStart) {
                         if (pos < buf.len) {
                             buf[pos] = ':';
                             pos += 1;
@@ -162,13 +162,13 @@ pub const Address = struct {
                             buf[pos] = ':';
                             pos += 1;
                         }
-                        gi += best_len;
+                        gi += bestLen;
                         continue;
                     }
                     if (std.fmt.bufPrint(buf[pos..], "{x}", .{groups[gi]})) |str| {
                         pos += str.len;
                     } else |_| break;
-                    if (gi < 7 and gi + 1 != best_start) {
+                    if (gi < 7 and gi + 1 != bestStart) {
                         if (pos < buf.len) {
                             buf[pos] = ':';
                             pos += 1;
@@ -185,14 +185,14 @@ pub const Address = struct {
     pub fn formatWithPort(self: *const Address, buf: []u8) []const u8 {
         switch (self.family) {
             .ip4 => {
-                var ip_buf: [32]u8 = undefined;
-                const ip_s = self.formatBuf(&ip_buf);
-                return std.fmt.bufPrint(buf, "{s}:{d}", .{ ip_s, self.port }) catch buf[0..0];
+                var ipBuf: [32]u8 = undefined;
+                const ipS = self.formatBuf(&ipBuf);
+                return std.fmt.bufPrint(buf, "{s}:{d}", .{ ipS, self.port }) catch buf[0..0];
             },
             .ip6 => {
-                var ip_buf: [64]u8 = undefined;
-                const ip_s = self.formatBuf(&ip_buf);
-                return std.fmt.bufPrint(buf, "[{s}]:{d}", .{ ip_s, self.port }) catch buf[0..0];
+                var ipBuf: [64]u8 = undefined;
+                const ipS = self.formatBuf(&ipBuf);
+                return std.fmt.bufPrint(buf, "[{s}]:{d}", .{ ipS, self.port }) catch buf[0..0];
             },
         }
     }
@@ -245,8 +245,8 @@ pub fn parseIp4Bytes(text: []const u8) ?[4]u8 {
 }
 
 /// Parses full/compressed IPv6 with optional %zone suffix.
-fn parseIp6Text(text_in: []const u8) Error!Address {
-    var text = text_in;
+fn parseIp6Text(textIn: []const u8) Error!Address {
+    var text = textIn;
 
     // Extract zone
     var zone: u32 = 0;
@@ -258,60 +258,60 @@ fn parseIp6Text(text_in: []const u8) Error!Address {
     }
 
     // Handle embedded IPv4 tail "::ffff:1.2.3.4"
-    var tail_v4: ?[4]u8 = null;
-    if (std.mem.lastIndexOfScalar(u8, text, ':')) |last_colon| {
-        const tail = text[last_colon + 1 ..];
+    var tailV4: ?[4]u8 = null;
+    if (std.mem.lastIndexOfScalar(u8, text, ':')) |lastColon| {
+        const tail = text[lastColon + 1 ..];
         if (std.mem.indexOfScalar(u8, tail, '.') != null) {
-            tail_v4 = parseIp4Bytes(tail) orelse return Error.InvalidAddress;
-            text = text[0 .. last_colon + 1]; // keep trailing colon for compression math
+            tailV4 = parseIp4Bytes(tail) orelse return Error.InvalidAddress;
+            text = text[0 .. lastColon + 1]; // keep trailing colon for compression math
         }
     }
 
     // Find "::" compression point
-    const double_colon = std.mem.indexOf(u8, text, "::");
-    var head_groups: [8]u16 = [_]u16{0} ** 8;
+    const doubleColon = std.mem.indexOf(u8, text, "::");
+    var headGroups: [8]u16 = [_]u16{0} ** 8;
     var headCount: usize = 0;
-    var tail_groups: [8]u16 = [_]u16{0} ** 8;
+    var tailGroups: [8]u16 = [_]u16{0} ** 8;
     var tailCount: usize = 0;
 
-    var head_part: []const u8 = "";
-    var tail_part: []const u8 = "";
-    if (double_colon) |dc| {
-        head_part = text[0..dc];
-        tail_part = text[dc + 2 ..];
+    var headPart: []const u8 = "";
+    var tailPart: []const u8 = "";
+    if (doubleColon) |dc| {
+        headPart = text[0..dc];
+        tailPart = text[dc + 2 ..];
     } else {
-        head_part = text;
+        headPart = text;
     }
 
-    var fit = std.mem.splitScalar(u8, head_part, ':');
+    var fit = std.mem.splitScalar(u8, headPart, ':');
     while (fit.next()) |g| {
         if (g.len == 0) continue;
         if (headCount >= 8) return Error.InvalidAddress;
-        head_groups[headCount] = std.fmt.parseInt(u16, g, 16) catch return Error.InvalidAddress;
+        headGroups[headCount] = std.fmt.parseInt(u16, g, 16) catch return Error.InvalidAddress;
         headCount += 1;
     }
 
-    if (double_colon != null) {
-        var tit = std.mem.splitScalar(u8, tail_part, ':');
+    if (doubleColon != null) {
+        var tit = std.mem.splitScalar(u8, tailPart, ':');
         while (tit.next()) |g| {
             if (g.len == 0) continue;
             if (tailCount >= 8) return Error.InvalidAddress;
-            tail_groups[tailCount] = std.fmt.parseInt(u16, g, 16) catch return Error.InvalidAddress;
+            tailGroups[tailCount] = std.fmt.parseInt(u16, g, 16) catch return Error.InvalidAddress;
             tailCount += 1;
         }
     } else {
         // No compression: must have exactly 8 groups (or 6 + v4 tail)
-        if (headCount != 8 and !(tail_v4 != null and headCount == 6)) return Error.InvalidAddress;
+        if (headCount != 8 and !(tailV4 != null and headCount == 6)) return Error.InvalidAddress;
     }
 
     var out = Address{ .family = .ip6, .port = 0 };
-    const total_from_text = headCount + tailCount;
-    const v4_extra: usize = if (tail_v4 != null) 2 else 0;
-    const zeros = 8 - total_from_text - v4_extra;
-    if (zeros < 0 or total_from_text + v4_extra > 8) return Error.InvalidAddress;
+    const totalFromText = headCount + tailCount;
+    const v4Extra: usize = if (tailV4 != null) 2 else 0;
+    const zeros = 8 - totalFromText - v4Extra;
+    if (zeros < 0 or totalFromText + v4Extra > 8) return Error.InvalidAddress;
 
     var pos: usize = 0;
-    for (head_groups[0..headCount]) |g| {
+    for (headGroups[0..headCount]) |g| {
         out.bytes[pos * 2] = @intCast(g >> 8);
         out.bytes[pos * 2 + 1] = @intCast(g & 0xFF);
         pos += 1;
@@ -319,12 +319,12 @@ fn parseIp6Text(text_in: []const u8) Error!Address {
     for (0..@intCast(zeros)) |_| {
         pos += 1;
     }
-    for (tail_groups[0..tailCount]) |g| {
+    for (tailGroups[0..tailCount]) |g| {
         out.bytes[pos * 2] = @intCast(g >> 8);
         out.bytes[pos * 2 + 1] = @intCast(g & 0xFF);
         pos += 1;
     }
-    if (tail_v4) |v4| {
+    if (tailV4) |v4| {
         out.bytes[pos * 2] = v4[0];
         out.bytes[pos * 2 + 1] = v4[1];
         out.bytes[pos * 2 + 2] = v4[2];
@@ -389,8 +389,8 @@ test "ipv6 loopback roundtrip" {
     const a = Address.loopback6(443);
     try std.testing.expectEqualStrings("::1", a.formatBuf(&buf));
 
-    var port_buf: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("[::1]:443", a.formatWithPort(&port_buf));
+    var portBuf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("[::1]:443", a.formatWithPort(&portBuf));
 }
 
 test "v4 mapped ipv6" {
@@ -399,9 +399,9 @@ test "v4 mapped ipv6" {
     try std.testing.expect(a.isV4Mapped());
     try std.testing.expectEqualStrings("::ffff:192.168.1.1", a.formatBuf(&buf));
 
-    const as_v4 = a.toV4MappedView().?;
-    try std.testing.expectEqual(Family.ip4, as_v4.family);
-    try std.testing.expectEqualStrings("192.168.1.1", as_v4.formatBuf(&buf));
+    const asV4 = a.toV4MappedView().?;
+    try std.testing.expectEqual(Family.ip4, asV4.family);
+    try std.testing.expectEqualStrings("192.168.1.1", asV4.formatBuf(&buf));
 }
 
 test "host:port splitting" {

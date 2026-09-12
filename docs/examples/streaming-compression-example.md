@@ -1,7 +1,7 @@
 # Streaming Compression
 
 Streaming compression over the codec API (`httpx.compression`). See
-`examples/compression_demo.zig` and `examples/streaming.zig`.
+`examples/compressionDemo.zig` and `examples/streaming.zig`.
 
 ```zig
 // One-shot round trip.

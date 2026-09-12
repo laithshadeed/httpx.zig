@@ -15,7 +15,7 @@ const Allocator = std.mem.Allocator;
 const sync = @import("../../common/sync.zig");
 
 pub const tls = std.crypto.tls;
-const max_cipher = tls.max_ciphertext_record_len;
+const maxCipher = tls.max_ciphertext_record_len;
 
 /// How server certificates are verified.
 pub const VerifyMode = enum {
@@ -28,7 +28,7 @@ pub const VerifyMode = enum {
 };
 
 pub const ConnectionOptions = struct {
-    /// Allow peer FIN without TLS close_notify to end the stream. INSECURE
+    /// Allow peer FIN without TLS closeNotify to end the stream. INSECURE
     /// unless the application layer verifies completeness itself (HTTP
     /// Content-Length / chunked framing does). Default: false.
     allowTruncation: bool = false,
@@ -66,25 +66,25 @@ pub const Connection = struct {
     pub const ReadError = error{ ReadFailed, OutOfMemory };
     pub const WriteError = error{WriteFailed};
 
-    var g_ca_lock: std.Io.RwLock = .init;
-    var g_system_bundle: std.crypto.Certificate.Bundle = .empty;
-    var g_system_bundle_loaded: bool = false;
-    var g_system_bundle_lock: sync.Spinlock = .{};
+    var gCaLock: std.Io.RwLock = .init;
+    var gSystemBundle: std.crypto.Certificate.Bundle = .empty;
+    var gSystemBundleLoaded: bool = false;
+    var gSystemBundleLock: sync.Spinlock = .{};
 
     // Process-lifetime system CA cache. Backed by the untracked page
     // allocator on purpose: the bundle lives until process exit (freed by
     // the OS), so routing it through a caller's tracked allocator (e.g. a
     // DebugAllocator) would report a false leak at shutdown.
     fn getOrLoadSystemBundle(io: std.Io) !*std.crypto.Certificate.Bundle {
-        g_system_bundle_lock.lock();
-        defer g_system_bundle_lock.unlock();
+        gSystemBundleLock.lock();
+        defer gSystemBundleLock.unlock();
 
-        if (!g_system_bundle_loaded) {
+        if (!gSystemBundleLoaded) {
             const now = std.Io.Timestamp.now(io, .awake);
-            g_system_bundle.rescan(std.heap.page_allocator, io, now) catch return error.TlsCaUnavailable;
-            g_system_bundle_loaded = true;
+            gSystemBundle.rescan(std.heap.page_allocator, io, now) catch return error.TlsCaUnavailable;
+            gSystemBundleLoaded = true;
         }
-        return &g_system_bundle;
+        return &gSystemBundle;
     }
 
     pub const Config = struct {
@@ -113,34 +113,34 @@ pub const Connection = struct {
         };
 
         const io = conf.io orelse std.Io.Threaded.global_single_threaded.io();
-        var active_bundle: ?*std.crypto.Certificate.Bundle = conf.caBundle;
-        if (conf.verify == .caBundle and active_bundle == null) {
-            active_bundle = getOrLoadSystemBundle(io) catch null;
-            if (active_bundle == null) return error.TlsCaUnavailable;
+        var activeBundle: ?*std.crypto.Certificate.Bundle = conf.caBundle;
+        if (conf.verify == .caBundle and activeBundle == null) {
+            activeBundle = getOrLoadSystemBundle(io) catch null;
+            if (activeBundle == null) return error.TlsCaUnavailable;
         }
 
         const self = allocator.create(Connection) catch return error.OutOfMemory;
         errdefer allocator.destroy(self);
 
-        const bufs_rw = allocator.alloc(u8, max_cipher) catch return error.OutOfMemory;
-        errdefer allocator.free(bufs_rw);
-        const bufs_rr = allocator.alloc(u8, max_cipher) catch return error.OutOfMemory;
-        errdefer allocator.free(bufs_rr);
+        const bufsRw = allocator.alloc(u8, maxCipher) catch return error.OutOfMemory;
+        errdefer allocator.free(bufsRw);
+        const bufsRr = allocator.alloc(u8, maxCipher) catch return error.OutOfMemory;
+        errdefer allocator.free(bufsRr);
         // Combined plaintext-in staging (cipher window + plaintext window).
-        const bufs_tr = allocator.alloc(u8, max_cipher + 16384) catch return error.OutOfMemory;
-        errdefer allocator.free(bufs_tr);
-        const bufs_pw = allocator.alloc(u8, 16384) catch return error.OutOfMemory;
-        errdefer allocator.free(bufs_pw);
+        const bufsTr = allocator.alloc(u8, maxCipher + 16384) catch return error.OutOfMemory;
+        errdefer allocator.free(bufsTr);
+        const bufsPw = allocator.alloc(u8, 16384) catch return error.OutOfMemory;
+        errdefer allocator.free(bufsPw);
         // Initialize EVERYTHING in place on the heap object. tls.Client
         // stores pointers into our reader/writer interfaces; any move of
         // this struct after init would dangle them.
         self.* = .{
             .client = undefined,
             .allowTruncation = conf.allowTruncation,
-            .bufStreamWriter = bufs_rw,
-            .bufStreamReader = bufs_rr,
-            .bufTlsRead = bufs_tr,
-            .bufPlainWrite = bufs_pw,
+            .bufStreamWriter = bufsRw,
+            .bufStreamReader = bufsRr,
+            .bufTlsRead = bufsTr,
+            .bufPlainWrite = bufsPw,
             .streamWriter = undefined,
             .streamReader = undefined,
             .io = io,
@@ -169,17 +169,17 @@ pub const Connection = struct {
         // skipped for `none` (ca=no_verification), so clock/CA issues stay
         // bypassed; only the SAN hostname check remains (no time involved).
         // Literal IPs never send SNI per RFC 6066.
-        const send_sni = conf.host.len > 0 and !isIpLiteral(conf.host);
-        const host_opt: @TypeOf(@as(tls.Client.Options, undefined).host) =
-            if (send_sni) .{ .explicit = conf.host } else .no_verification;
-        const ca_opt: @TypeOf(@as(tls.Client.Options, undefined).ca) = switch (conf.verify) {
+        const sendSni = conf.host.len > 0 and !isIpLiteral(conf.host);
+        const hostOpt: @TypeOf(@as(tls.Client.Options, undefined).host) =
+            if (sendSni) .{ .explicit = conf.host } else .no_verification;
+        const caOpt: @TypeOf(@as(tls.Client.Options, undefined).ca) = switch (conf.verify) {
             .none => .no_verification,
             .selfSigned => .self_signed,
             .caBundle => .{ .bundle = .{
                 .gpa = allocator,
                 .io = io,
-                .lock = &g_ca_lock,
-                .bundle = active_bundle.?,
+                .lock = &gCaLock,
+                .bundle = activeBundle.?,
             } },
         };
 
@@ -187,8 +187,8 @@ pub const Connection = struct {
             &self.streamReader.interface,
             &self.streamWriter.interface,
             .{
-                .host = host_opt,
-                .ca = ca_opt,
+                .host = hostOpt,
+                .ca = caOpt,
                 .read_buffer = self.bufTlsRead,
                 .write_buffer = self.bufPlainWrite,
                 .entropy = &entropy,
@@ -210,7 +210,7 @@ pub const Connection = struct {
     }
 
     pub fn destroy(self: *Connection, allocator: Allocator) void {
-        // In truncation-tolerant mode there is no close_notify contract;
+        // In truncation-tolerant mode there is no closeNotify contract;
         // attempting the write against a vanished peer only risks RST noise.
         if (!self.allowTruncation) self.client.end() catch {};
         var stream = std.Io.net.Stream{ .socket = .{ .handle = self.socketHandle, .address = undefined } };
@@ -231,7 +231,7 @@ pub const Connection = struct {
         self.streamWriter.interface.flush() catch return error.WriteFailed;
     }
 
-    /// Plaintext read; returns 0 on clean TLS EOF (close_notify) or, when
+    /// Plaintext read; returns 0 on clean TLS EOF (closeNotify) or, when
     /// truncation-tolerant, on raw FIN.
     pub fn read(self: *Connection, buffer: []u8) ReadError!usize {
         if (buffer.len == 0) return 0;

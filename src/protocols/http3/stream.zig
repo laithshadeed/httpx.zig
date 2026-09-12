@@ -20,12 +20,12 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const frame_mod = @import("frame.zig");
-const qpack_mod = @import("qpack.zig");
-const quic_varint = @import("../quic/varint.zig");
+const frameMod = @import("frame.zig");
+const qpackMod = @import("qpack.zig");
+const quicVarint = @import("../quic/varint.zig");
 
-pub const H3Error = frame_mod.H3Error;
-pub const FieldLine = qpack_mod.FieldLine;
+pub const H3Error = frameMod.H3Error;
+pub const FieldLine = qpackMod.FieldLine;
 
 pub const Role = enum { client, server };
 
@@ -41,7 +41,7 @@ pub const StreamMode = enum {
 
 /// HTTP message phase on a request/response stream.
 pub const HttpState = enum {
-    need_headers,
+    needHeaders,
     headers,
     data,
     trailers,
@@ -82,28 +82,28 @@ pub const Error = error{
 /// Validates that the peer may open `sid`: HTTP/3 servers never initiate
 /// bidirectional streams, and unidirectional streams must be
 /// peer-initiated. Returns the connection error on misuse, null when ok.
-pub fn checkPeerStreamId(our_role: Role, sid: u64) ?H3Error {
+pub fn checkPeerStreamId(ourRole: Role, sid: u64) ?H3Error {
     const bidi = (sid & 0x02) == 0;
-    const client_init = (sid & 0x01) == 0;
+    const clientInit = (sid & 0x01) == 0;
     if (bidi) {
         // Only clients initiate request streams.
-        if (our_role == .client) return .streamCreationError;
-        if (!client_init) return .streamCreationError;
+        if (ourRole == .client) return .streamCreationError;
+        if (!clientInit) return .streamCreationError;
         return null;
     }
     // Unidirectional: the peer must own the stream.
-    if (our_role == .client and client_init) return .streamCreationError;
-    if (our_role == .server and !client_init) return .streamCreationError;
+    if (ourRole == .client and clientInit) return .streamCreationError;
+    if (ourRole == .server and !clientInit) return .streamCreationError;
     return null;
 }
 
 /// Parses a unidirectional stream type varint. Returns
 /// `error.Truncated` when more bytes are needed.
-pub fn parseUniType(data: []const u8) frame_mod.Error!struct { streamType: u64, len: usize } {
+pub fn parseUniType(data: []const u8) frameMod.Error!struct { streamType: u64, len: usize } {
     var off: usize = 0;
-    const t = quic_varint.decode(data, &off) catch |e| switch (e) {
-        error.Truncated => return frame_mod.Error.Truncated,
-        else => return frame_mod.Error.InvalidFrame,
+    const t = quicVarint.decode(data, &off) catch |e| switch (e) {
+        error.Truncated => return frameMod.Error.Truncated,
+        else => return frameMod.Error.InvalidFrame,
     };
     return .{ .streamType = t, .len = off };
 }
@@ -122,8 +122,8 @@ pub const Stream = struct {
     mode: StreamMode,
     role: Role,
     cbs: Callbacks,
-    qdec: *qpack_mod.Decoder,
-    qenc: *qpack_mod.Encoder,
+    qdec: *qpackMod.Decoder,
+    qenc: *qpackMod.Encoder,
 
     buf: std.ArrayList(u8) = .empty,
     /// Parse cursor: bytes before it are delivered or skipped.
@@ -134,7 +134,7 @@ pub const Stream = struct {
     done: bool = false,
 
     uniKind: UniKind = .undecided,
-    httpState: HttpState = .need_headers,
+    httpState: HttpState = .needHeaders,
     /// A QPACK section parked on `error.Blocked`; retried when encoder
     /// data arrives or more stream bytes feed in.
     blocked: bool = false,
@@ -159,8 +159,8 @@ pub const Stream = struct {
         mode: StreamMode,
         role: Role,
         cbs: Callbacks,
-        qdec: *qpack_mod.Decoder,
-        qenc: *qpack_mod.Encoder,
+        qdec: *qpackMod.Decoder,
+        qenc: *qpackMod.Encoder,
     ) Stream {
         return .{
             .allocator = allocator,
@@ -292,7 +292,7 @@ pub const Stream = struct {
     fn parseControl(self: *Stream) void {
         while (self.off < self.buf.items.len) {
             const start = self.off;
-            const header = frame_mod.parseFrameHeader(self.buf.items, &self.off) catch |e| switch (e) {
+            const header = frameMod.parseFrameHeader(self.buf.items, &self.off) catch |e| switch (e) {
                 error.Truncated => {
                     self.off = start;
                     if (self.fin) self.fail(.frameError);
@@ -314,7 +314,7 @@ pub const Stream = struct {
             }
             const payload = self.buf.items[self.off..][0..n];
             self.off += n;
-            if (frame_mod.checkFrameAllowed(.control, header.frameType)) |code| {
+            if (frameMod.checkFrameAllowed(.control, header.frameType)) |code| {
                 self.fail(code);
                 return;
             }
@@ -370,7 +370,7 @@ pub const Stream = struct {
     fn parseBidi(self: *Stream) void {
         while (self.off < self.buf.items.len) {
             const start = self.off;
-            const header = frame_mod.parseFrameHeader(self.buf.items, &self.off) catch |e| switch (e) {
+            const header = frameMod.parseFrameHeader(self.buf.items, &self.off) catch |e| switch (e) {
                 error.Truncated => {
                     self.off = start;
                     if (self.fin) self.fail(.frameError);
@@ -392,7 +392,7 @@ pub const Stream = struct {
             }
             const payload = self.buf.items[self.off..][0..n];
             self.off += n;
-            if (frame_mod.checkFrameAllowed(.request_bidi, header.frameType)) |code| {
+            if (frameMod.checkFrameAllowed(.requestBidi, header.frameType)) |code| {
                 self.fail(code);
                 return;
             }
@@ -433,7 +433,7 @@ pub const Stream = struct {
         defer self.qdec.freeFields(fields);
         self.blocked = false;
 
-        if (self.httpState == .need_headers) {
+        if (self.httpState == .needHeaders) {
             if (self.mode == .requestRecv) {
                 if (self.validateRequest(fields)) |code| {
                     self.fail(code);
@@ -442,7 +442,7 @@ pub const Stream = struct {
                 self.httpState = .headers;
                 if (self.cbs.onHeaders) |cb| cb(self.cbs.ctx, self.id, fields, false);
             } else {
-                // 1xx sections keep the stream in need_headers (a DATA
+                // 1xx sections keep the stream in needHeaders (a DATA
                 // frame before the final HEADERS is malformed); the
                 // final HEADERS moves to .headers via the same path.
                 const interim = isInterimStatus(fields);
@@ -491,7 +491,7 @@ pub const Stream = struct {
     fn endOfStream(self: *Stream) void {
         // Stream FIN with a partial frame already failed above; an empty
         // stream (or FIN before any HEADERS) is malformed messaging.
-        if (self.httpState == .need_headers) {
+        if (self.httpState == .needHeaders) {
             self.fail(.messageError);
             return;
         }
@@ -516,7 +516,7 @@ pub const Stream = struct {
 
     /// Validates request HEADERS; null when valid, else the H3 error.
     fn validateRequest(self: *Stream, fields: []const FieldLine) ?H3Error {
-        var seen_regular = false;
+        var seenRegular = false;
         var method: ?[]const u8 = null;
         var scheme: ?[]const u8 = null;
         var authority: ?[]const u8 = null;
@@ -529,7 +529,7 @@ pub const Stream = struct {
                 if (c >= 'A' and c <= 'Z') return .messageError;
             }
             if (f.name[0] == ':') {
-                if (seen_regular) return .messageError;
+                if (seenRegular) return .messageError;
                 if (std.mem.eql(u8, f.name, ":method")) {
                     if (method != null or f.value.len == 0) return .messageError;
                     for (f.value) |c| {
@@ -552,7 +552,7 @@ pub const Stream = struct {
                     return .messageError; // unknown pseudo-header
                 }
             } else {
-                seen_regular = true;
+                seenRegular = true;
                 if (std.mem.eql(u8, f.name, "host")) {
                     if (host != null) return .messageError;
                     host = f.value;
@@ -561,8 +561,8 @@ pub const Stream = struct {
             }
         }
         const m = method orelse return .messageError;
-        const is_connect = std.mem.eql(u8, m, "CONNECT");
-        if (is_connect) {
+        const isConnect = std.mem.eql(u8, m, "CONNECT");
+        if (isConnect) {
             // CONNECT omits :scheme/:path and requires :authority.
             if (scheme != null or path != null) return .messageError;
             if (authority == null) return .messageError;
@@ -581,7 +581,7 @@ pub const Stream = struct {
     }
 
     fn validateResponse(self: *Stream, fields: []const FieldLine, interim: bool) ?H3Error {
-        var seen_regular = false;
+        var seenRegular = false;
         var status: ?[]const u8 = null;
         for (fields) |f| {
             if (f.name.len == 0) return .messageError;
@@ -589,7 +589,7 @@ pub const Stream = struct {
                 if (c >= 'A' and c <= 'Z') return .messageError;
             }
             if (f.name[0] == ':') {
-                if (seen_regular) return .messageError;
+                if (seenRegular) return .messageError;
                 if (std.mem.eql(u8, f.name, ":status")) {
                     if (status != null) return .messageError;
                     if (f.value.len != 3) return .messageError;
@@ -598,14 +598,14 @@ pub const Stream = struct {
                     }
                     const code = (f.value[0] - '0') * 100 + (f.value[1] - '0') * 10 + (f.value[2] - '0');
                     if (code < 100 or code > 999) return .messageError;
-                    const is_1xx = f.value[0] == '1';
-                    if (interim != is_1xx) return .messageError;
+                    const is1xx = f.value[0] == '1';
+                    if (interim != is1xx) return .messageError;
                     status = f.value;
                 } else {
                     return .messageError; // unknown pseudo-header
                 }
             } else {
-                seen_regular = true;
+                seenRegular = true;
                 if (self.checkRegularHeader(f.name, f.value)) |code| return code;
             }
         }
@@ -740,7 +740,7 @@ fn testFrame(a: Allocator, ftype: u64, payload: []const u8) ![]u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(a);
     var fh: [16]u8 = undefined;
-    const n = try frame_mod.encodeFrameHeader(&fh, ftype, payload.len);
+    const n = try frameMod.encodeFrameHeader(&fh, ftype, payload.len);
     try out.appendSlice(a, fh[0..n]);
     try out.appendSlice(a, payload);
     return out.toOwnedSlice(a);
@@ -748,7 +748,7 @@ fn testFrame(a: Allocator, ftype: u64, payload: []const u8) ![]u8 {
 
 fn testSection(
     a: Allocator,
-    enc: *qpack_mod.Encoder,
+    enc: *qpackMod.Encoder,
     heads: []const [2][]const u8,
 ) ![]u8 {
     var block = std.ArrayList(u8).empty;
@@ -763,30 +763,30 @@ fn testSection(
     return out.toOwnedSlice(a);
 }
 
-fn testBidi(a: Allocator, rec: *TestRec, sid: u64, mode: StreamMode, qdec: *qpack_mod.Decoder, qenc: *qpack_mod.Encoder) Stream {
+fn testBidi(a: Allocator, rec: *TestRec, sid: u64, mode: StreamMode, qdec: *qpackMod.Decoder, qenc: *qpackMod.Encoder) Stream {
     return Stream.init(a, sid, mode, if (mode == .requestRecv) .server else .client, rec.cbs(), qdec, qenc);
 }
 
 test "h3stream control accepts settings then rejects data" {
     const a = std.testing.allocator;
     var rec = TestRec{};
-    var qdec = qpack_mod.Decoder.init(a);
+    var qdec = qpackMod.Decoder.init(a);
     defer qdec.deinit();
-    var qenc = qpack_mod.Encoder.init(a);
+    var qenc = qpackMod.Encoder.init(a);
     defer qenc.deinit();
     var s = Stream.init(a, 2, .uni, .server, rec.cbs(), &qdec, &qenc);
     defer s.deinit();
 
-    var settings_payload = std.ArrayList(u8).empty;
-    defer settings_payload.deinit(a);
-    try settings_payload.append(a, 0x00); // control type
-    const entries = [_]frame_mod.SettingEntry{.{ .id = 0x6, .value = 4096 }};
-    const sp = try frame_mod.buildSettingsPayload(a, &entries);
+    var settingsPayload = std.ArrayList(u8).empty;
+    defer settingsPayload.deinit(a);
+    try settingsPayload.append(a, 0x00); // control type
+    const entries = [_]frameMod.SettingEntry{.{ .id = 0x6, .value = 4096 }};
+    const sp = try frameMod.buildSettingsPayload(a, &entries);
     defer a.free(sp);
     const sf = try testFrame(a, 0x4, sp);
     defer a.free(sf);
-    try settings_payload.appendSlice(a, sf);
-    s.feed(settings_payload.items, false);
+    try settingsPayload.appendSlice(a, sf);
+    s.feed(settingsPayload.items, false);
     try std.testing.expectEqual(@as(usize, 1), rec.uniTypes);
     try std.testing.expectEqual(@as(usize, 1), rec.controlFrames);
     try std.testing.expectEqual(@as(u64, 0x4), rec.lastControlType);
@@ -801,9 +801,9 @@ test "h3stream control accepts settings then rejects data" {
 test "h3stream fragmented uni type then unknown skip" {
     const a = std.testing.allocator;
     var rec = TestRec{};
-    var qdec = qpack_mod.Decoder.init(a);
+    var qdec = qpackMod.Decoder.init(a);
     defer qdec.deinit();
-    var qenc = qpack_mod.Encoder.init(a);
+    var qenc = qpackMod.Encoder.init(a);
     defer qenc.deinit();
     var s = Stream.init(a, 3, .uni, .client, rec.cbs(), &qdec, &qenc);
     defer s.deinit();
@@ -828,9 +828,9 @@ test "h3stream fragmented uni type then unknown skip" {
 test "h3stream push streams are rejected" {
     const a = std.testing.allocator;
     var rec = TestRec{};
-    var qdec = qpack_mod.Decoder.init(a);
+    var qdec = qpackMod.Decoder.init(a);
     defer qdec.deinit();
-    var qenc = qpack_mod.Encoder.init(a);
+    var qenc = qpackMod.Encoder.init(a);
     defer qenc.deinit();
     var s = Stream.init(a, 2, .uni, .server, rec.cbs(), &qdec, &qenc);
     defer s.deinit();
@@ -841,16 +841,16 @@ test "h3stream push streams are rejected" {
 test "h3stream request headers data fin" {
     const a = std.testing.allocator;
     var rec = TestRec{};
-    var qdec = qpack_mod.Decoder.init(a);
+    var qdec = qpackMod.Decoder.init(a);
     defer qdec.deinit();
-    var qenc = qpack_mod.Encoder.init(a);
+    var qenc = qpackMod.Encoder.init(a);
     defer qenc.deinit();
-    var qenc_peer = qpack_mod.Encoder.init(a);
-    defer qenc_peer.deinit();
+    var qencPeer = qpackMod.Encoder.init(a);
+    defer qencPeer.deinit();
     var s = testBidi(a, &rec, 0, .requestRecv, &qdec, &qenc);
     defer s.deinit();
 
-    const section = try testSection(a, &qenc_peer, &.{
+    const section = try testSection(a, &qencPeer, &.{
         .{ ":method", "GET" },
         .{ ":scheme", "https" },
         .{ ":authority", "example.com" },
@@ -876,11 +876,11 @@ test "h3stream request headers data fin" {
 test "h3stream trailers delivered after data" {
     const a = std.testing.allocator;
     var rec = TestRec{};
-    var qdec = qpack_mod.Decoder.init(a);
+    var qdec = qpackMod.Decoder.init(a);
     defer qdec.deinit();
-    var qenc = qpack_mod.Encoder.init(a);
+    var qenc = qpackMod.Encoder.init(a);
     defer qenc.deinit();
-    var qp = qpack_mod.Encoder.init(a);
+    var qp = qpackMod.Encoder.init(a);
     defer qp.deinit();
     var s = testBidi(a, &rec, 0, .requestRecv, &qdec, &qenc);
     defer s.deinit();
@@ -911,11 +911,11 @@ test "h3stream trailers delivered after data" {
 test "h3stream interim 1xx then final" {
     const a = std.testing.allocator;
     var rec = TestRec{};
-    var qdec = qpack_mod.Decoder.init(a);
+    var qdec = qpackMod.Decoder.init(a);
     defer qdec.deinit();
-    var qenc = qpack_mod.Encoder.init(a);
+    var qenc = qpackMod.Encoder.init(a);
     defer qenc.deinit();
-    var qp = qpack_mod.Encoder.init(a);
+    var qp = qpackMod.Encoder.init(a);
     defer qp.deinit();
     var s = testBidi(a, &rec, 0, .responseRecv, &qdec, &qenc);
     defer s.deinit();
@@ -946,9 +946,9 @@ test "h3stream interim 1xx then final" {
 test "h3stream data before headers is malformed" {
     const a = std.testing.allocator;
     var rec = TestRec{};
-    var qdec = qpack_mod.Decoder.init(a);
+    var qdec = qpackMod.Decoder.init(a);
     defer qdec.deinit();
-    var qenc = qpack_mod.Encoder.init(a);
+    var qenc = qpackMod.Encoder.init(a);
     defer qenc.deinit();
     var s = testBidi(a, &rec, 0, .requestRecv, &qdec, &qenc);
     defer s.deinit();
@@ -987,11 +987,11 @@ test "h3stream header validation matrix" {
     };
     for (cases) |c| {
         var rec = TestRec{};
-        var qdec = qpack_mod.Decoder.init(a);
+        var qdec = qpackMod.Decoder.init(a);
         defer qdec.deinit();
-        var qenc = qpack_mod.Encoder.init(a);
+        var qenc = qpackMod.Encoder.init(a);
         defer qenc.deinit();
-        var qp = qpack_mod.Encoder.init(a);
+        var qp = qpackMod.Encoder.init(a);
         defer qp.deinit();
         var s = testBidi(a, &rec, 0, .requestRecv, &qdec, &qenc);
         defer s.deinit();
@@ -1012,11 +1012,11 @@ test "h3stream header validation matrix" {
 test "h3stream content length mismatch fails at fin" {
     const a = std.testing.allocator;
     var rec = TestRec{};
-    var qdec = qpack_mod.Decoder.init(a);
+    var qdec = qpackMod.Decoder.init(a);
     defer qdec.deinit();
-    var qenc = qpack_mod.Encoder.init(a);
+    var qenc = qpackMod.Encoder.init(a);
     defer qenc.deinit();
-    var qp = qpack_mod.Encoder.init(a);
+    var qp = qpackMod.Encoder.init(a);
     defer qp.deinit();
     var s = testBidi(a, &rec, 0, .requestRecv, &qdec, &qenc);
     defer s.deinit();
@@ -1037,17 +1037,17 @@ test "h3stream content length mismatch fails at fin" {
 test "h3stream qpack blocked parks then resumes" {
     const a = std.testing.allocator;
     var rec = TestRec{};
-    var qdec = qpack_mod.Decoder.init(a);
+    var qdec = qpackMod.Decoder.init(a);
     defer qdec.deinit();
     qdec.setMaxTableCapacity(4096);
-    var qenc = qpack_mod.Encoder.init(a);
+    var qenc = qpackMod.Encoder.init(a);
     defer qenc.deinit();
     var s = testBidi(a, &rec, 0, .requestRecv, &qdec, &qenc);
     defer s.deinit();
 
     // Peer encoder side (shares nothing with our decoder yet): a full
     // valid request whose last field is dynamic.
-    var penc = qpack_mod.Encoder.init(a);
+    var penc = qpackMod.Encoder.init(a);
     defer penc.deinit();
     penc.setMaxTableCapacity(4096);
     penc.beginSection();
@@ -1063,8 +1063,8 @@ test "h3stream qpack blocked parks then resumes" {
     defer section.deinit(a);
     try penc.encodePrefix(&section, ric, ric);
     try section.appendSlice(a, field.items);
-    const enc_bytes = try penc.takeEncoderBytes();
-    defer a.free(enc_bytes);
+    const encBytes = try penc.takeEncoderBytes();
+    defer a.free(encBytes);
 
     const hf = try testFrame(a, 0x1, section.items);
     defer a.free(hf);
@@ -1079,7 +1079,7 @@ test "h3stream qpack blocked parks then resumes" {
     var ewire = std.ArrayList(u8).empty;
     defer ewire.deinit(a);
     try ewire.append(a, 0x02);
-    try ewire.appendSlice(a, enc_bytes);
+    try ewire.appendSlice(a, encBytes);
     es.feed(ewire.items, false);
     try std.testing.expect(rec.lastErr == null);
     s.retryBlocked();
@@ -1094,9 +1094,9 @@ test "h3stream qpack blocked parks then resumes" {
 test "h3stream fin mid-frame and empty fin" {
     const a = std.testing.allocator;
     var rec = TestRec{};
-    var qdec = qpack_mod.Decoder.init(a);
+    var qdec = qpackMod.Decoder.init(a);
     defer qdec.deinit();
-    var qenc = qpack_mod.Encoder.init(a);
+    var qenc = qpackMod.Encoder.init(a);
     defer qenc.deinit();
     var s = testBidi(a, &rec, 0, .requestRecv, &qdec, &qenc);
     defer s.deinit();

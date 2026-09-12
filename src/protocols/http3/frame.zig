@@ -81,9 +81,9 @@ pub fn isGreaseFrameType(v: u64) bool {
 /// frames; any HTTP/3 frame parsed there is a QPACK stream error.
 pub const StreamKind = enum {
     control,
-    request_bidi,
-    qpack_encoder,
-    qpack_decoder,
+    requestBidi,
+    qpackEncoder,
+    qpackDecoder,
     push,
 };
 
@@ -99,7 +99,7 @@ pub fn checkFrameAllowed(kind: StreamKind, frameType: u64) ?H3Error {
             0x0, 0x1, 0x5, 0x0F0701 => return .frameUnexpected,
             else => return null, // unknown: skip + ignore
         },
-        .request_bidi => switch (frameType) {
+        .requestBidi => switch (frameType) {
             0x0, 0x1 => return null,
             0x4, 0x7, 0x3, 0xD, 0x5, 0x0F0700, 0x0F0701 => return .frameUnexpected,
             else => return null, // unknown: skip + ignore
@@ -110,8 +110,8 @@ pub fn checkFrameAllowed(kind: StreamKind, frameType: u64) ?H3Error {
             0x0, 0x1, 0x4, 0x7, 0x3, 0xD, 0x5, 0x0F0700, 0x0F0701 => return .frameUnexpected,
             else => return null,
         },
-        .qpack_encoder => return .qpackEncoderStreamError,
-        .qpack_decoder => return .qpackDecoderStreamError,
+        .qpackEncoder => return .qpackEncoderStreamError,
+        .qpackDecoder => return .qpackDecoderStreamError,
     }
 }
 
@@ -387,7 +387,7 @@ test "reserved frame types are rejected, not skipped" {
         try std.testing.expect(isReservedFrameType(t));
         try std.testing.expectError(Error.InvalidFrame, validateFramePayload(a, t, ""));
         try std.testing.expectEqual(H3Error.frameUnexpected, checkFrameAllowed(.control, t).?);
-        try std.testing.expectEqual(H3Error.frameUnexpected, checkFrameAllowed(.request_bidi, t).?);
+        try std.testing.expectEqual(H3Error.frameUnexpected, checkFrameAllowed(.requestBidi, t).?);
     }
     try std.testing.expect(!isReservedFrameType(0x0));
     try std.testing.expect(!isReservedFrameType(0x21));
@@ -408,7 +408,7 @@ test "grease frame types are recognized and ignored" {
     defer a.free(g);
     // Unknown and grease frames are length-skipped by the caller.
     try std.testing.expect(checkFrameAllowed(.control, 0x21) == null);
-    try std.testing.expect(checkFrameAllowed(.request_bidi, 0x40) == null);
+    try std.testing.expect(checkFrameAllowed(.requestBidi, 0x40) == null);
 }
 
 test "single-varint frames roundtrip with strict shapes" {
@@ -444,17 +444,17 @@ test "frame legality by stream kind" {
         try std.testing.expectEqual(H3Error.frameUnexpected, checkFrameAllowed(.control, t).?);
     }
     // Request streams: only DATA/HEADERS.
-    try std.testing.expect(checkFrameAllowed(.request_bidi, 0x0) == null);
-    try std.testing.expect(checkFrameAllowed(.request_bidi, 0x1) == null);
+    try std.testing.expect(checkFrameAllowed(.requestBidi, 0x0) == null);
+    try std.testing.expect(checkFrameAllowed(.requestBidi, 0x1) == null);
     for ([_]u64{ 0x4, 0x7, 0x3, 0xD, 0x5, 0x0F0700, 0x0F0701 }) |t| {
-        try std.testing.expectEqual(H3Error.frameUnexpected, checkFrameAllowed(.request_bidi, t).?);
+        try std.testing.expectEqual(H3Error.frameUnexpected, checkFrameAllowed(.requestBidi, t).?);
     }
     // No-push policy: defined frames rejected on push streams.
     try std.testing.expectEqual(H3Error.frameUnexpected, checkFrameAllowed(.push, 0x1).?);
     try std.testing.expect(checkFrameAllowed(.push, 0x2A) == null);
     // QPACK streams never carry HTTP/3 frames.
-    try std.testing.expectEqual(H3Error.qpackEncoderStreamError, checkFrameAllowed(.qpack_encoder, 0x4).?);
-    try std.testing.expectEqual(H3Error.qpackDecoderStreamError, checkFrameAllowed(.qpack_decoder, 0x4).?);
+    try std.testing.expectEqual(H3Error.qpackEncoderStreamError, checkFrameAllowed(.qpackEncoder, 0x4).?);
+    try std.testing.expectEqual(H3Error.qpackDecoderStreamError, checkFrameAllowed(.qpackDecoder, 0x4).?);
     // Priority variants are known frame types.
     try std.testing.expectEqual(FrameType.priorityUpdate, FrameType.fromInt(0x0F0700));
     try std.testing.expectEqual(FrameType.priorityUpdatePush, FrameType.fromInt(0x0F0701));

@@ -1,6 +1,6 @@
 # Example: Compression Demo
 
-Demonstrates compression_demo.zig using the canonical HTTPX API.
+Demonstrates compressionDemo.zig using the canonical HTTPX API.
 
 ## Complete Example
 

@@ -1,7 +1,7 @@
 # Session Management Guide
 
 HTTPX has no built-in session store. The recommended pattern is cookie-backed
-sessions in handlers — see `examples/session_server.zig` for a runnable
+sessions in handlers — see `examples/sessionServer.zig` for a runnable
 `/login`, `/dashboard`, `/logout` flow.
 
 ## Cookie-backed sessions

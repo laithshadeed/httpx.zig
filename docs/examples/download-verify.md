@@ -1,6 +1,6 @@
 # Example: Download Verify
 
-Demonstrates download_verify.zig using the canonical HTTPX API.
+Demonstrates downloadVerify.zig using the canonical HTTPX API.
 
 ## Complete Example
 

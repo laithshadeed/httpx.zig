@@ -2,7 +2,7 @@
 //! buffer, flow-control accounting (stream + connection credit), and
 //! FIN/RESET semantics (RFC 9000 sections 2 and 4).
 //!
-//! Design mirrors ngtcp2_strm's fast path: in-order data is delivered
+//! Design mirrors ngtcp2Strm's fast path: in-order data is delivered
 //! immediately; out-of-order chunks are buffered until the hole fills.
 //! A cap on buffered gaps guards against hostile senders.
 
@@ -130,21 +130,21 @@ pub const Stream = struct {
     fn rejectOverlaps(self: *Stream) !void {
         var i: usize = 1;
         while (i < self.pending.items.len) {
-            const prev_end = self.pending.items[i - 1].offset + self.pending.items[i - 1].data.len;
-            const cur_start = self.pending.items[i].offset;
-            if (cur_start < prev_end) {
+            const prevEnd = self.pending.items[i - 1].offset + self.pending.items[i - 1].data.len;
+            const curStart = self.pending.items[i].offset;
+            if (curStart < prevEnd) {
                 // Fully covered -> drop; partially -> trim front.
                 const cur = self.pending.items[i];
-                if (cur.offset + cur.data.len <= prev_end) {
+                if (cur.offset + cur.data.len <= prevEnd) {
                     self.allocator.free(cur.data);
                     _ = self.pending.orderedRemove(i);
                     continue;
                 }
-                const trim_front: usize = @intCast(prev_end - cur.offset);
-                const keep = cur.data[trim_front..];
+                const trimFront: usize = @intCast(prevEnd - cur.offset);
+                const keep = cur.data[trimFront..];
                 const moved = try self.allocator.dupe(u8, keep);
                 self.allocator.free(cur.data);
-                self.pending.items[i] = .{ .offset = prev_end, .data = moved };
+                self.pending.items[i] = .{ .offset = prevEnd, .data = moved };
             }
             i += 1;
         }

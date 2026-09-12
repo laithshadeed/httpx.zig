@@ -1,5 +1,5 @@
 //! QUIC transport parameters (RFC 9000 section 18), encoding order and
-//! validation rules matching ngtcp2_transport_params.
+//! validation rules matching ngtcp2TransportParams.
 //!
 //! Wire: sequence of {varint id, varint length, opaque value}. Absent
 //! numeric parameters take their defaults; presence-sensitive CIDs are
@@ -18,22 +18,22 @@ pub const Error = error{
 };
 
 pub const ParamId = enum(u64) {
-    original_destination_connection_id = 0x00,
-    max_idle_timeout = 0x01,
-    stateless_reset_token = 0x02,
-    max_udp_payload_size = 0x03,
-    initial_max_data = 0x04,
-    initial_max_stream_data_bidi_local = 0x05,
-    initial_max_stream_data_bidi_remote = 0x06,
-    initial_max_stream_data_uni = 0x07,
-    initial_max_streams_bidi = 0x08,
-    initial_max_streams_uni = 0x09,
-    ack_delay_exponent = 0x0A,
-    max_ack_delay = 0x0B,
-    disable_active_migration = 0x0C,
-    active_connection_id_limit = 0x0E,
-    initial_source_connection_id = 0x0F,
-    retry_source_connection_id = 0x10,
+    originalDestinationConnectionId = 0x00,
+    maxIdleTimeout = 0x01,
+    statelessResetToken = 0x02,
+    maxUdpPayloadSize = 0x03,
+    initialMaxData = 0x04,
+    initialMaxStreamDataBidiLocal = 0x05,
+    initialMaxStreamDataBidiRemote = 0x06,
+    initialMaxStreamDataUni = 0x07,
+    initialMaxStreamsBidi = 0x08,
+    initialMaxStreamsUni = 0x09,
+    ackDelayExponent = 0x0A,
+    maxAckDelay = 0x0B,
+    disableActiveMigration = 0x0C,
+    activeConnectionIdLimit = 0x0E,
+    initialSourceConnectionId = 0x0F,
+    retrySourceConnectionId = 0x10,
     _,
 };
 
@@ -52,10 +52,10 @@ pub const Params = struct {
     activeConnectionIdLimit: u64 = 2,
 };
 
-fn putParam(out: *std.ArrayList(u8), gpa: Allocator, id: u64, value_bytes: []const u8) !void {
+fn putParam(out: *std.ArrayList(u8), gpa: Allocator, id: u64, valueBytes: []const u8) !void {
     try putV(out, gpa, id);
-    try putV(out, gpa, value_bytes.len);
-    try out.appendSlice(gpa, value_bytes);
+    try putV(out, gpa, valueBytes.len);
+    try out.appendSlice(gpa, valueBytes);
 }
 
 inline fn putV(out: *std.ArrayList(u8), gpa: Allocator, v: u64) !void {
@@ -76,26 +76,26 @@ pub fn encode(out: *std.ArrayList(u8), gpa: Allocator, p: Params) !void {
     if (p.activeConnectionIdLimit < 2) return Error.InvalidParameter;
     // Only emit non-default values where the spec allows omission.
     if (p.maxIdleTimeoutMs != 0)
-        try putParam(out, gpa, @intFromEnum(ParamId.max_idle_timeout), &u64be(p.maxIdleTimeoutMs));
-    try putParam(out, gpa, @intFromEnum(ParamId.max_udp_payload_size), &u64be(p.maxUdpPayloadSize));
+        try putParam(out, gpa, @intFromEnum(ParamId.maxIdleTimeout), &u64be(p.maxIdleTimeoutMs));
+    try putParam(out, gpa, @intFromEnum(ParamId.maxUdpPayloadSize), &u64be(p.maxUdpPayloadSize));
     if (p.initialMaxData != 0)
-        try putParam(out, gpa, @intFromEnum(ParamId.initial_max_data), &u64be(p.initialMaxData));
+        try putParam(out, gpa, @intFromEnum(ParamId.initialMaxData), &u64be(p.initialMaxData));
     if (p.initialMaxStreamDataBidiLocal != 0)
-        try putParam(out, gpa, @intFromEnum(ParamId.initial_max_stream_data_bidi_local), &u64be(p.initialMaxStreamDataBidiLocal));
+        try putParam(out, gpa, @intFromEnum(ParamId.initialMaxStreamDataBidiLocal), &u64be(p.initialMaxStreamDataBidiLocal));
     if (p.initialMaxStreamDataBidiRemote != 0)
-        try putParam(out, gpa, @intFromEnum(ParamId.initial_max_stream_data_bidi_remote), &u64be(p.initialMaxStreamDataBidiRemote));
+        try putParam(out, gpa, @intFromEnum(ParamId.initialMaxStreamDataBidiRemote), &u64be(p.initialMaxStreamDataBidiRemote));
     if (p.initialMaxStreamDataUni != 0)
-        try putParam(out, gpa, @intFromEnum(ParamId.initial_max_stream_data_uni), &u64be(p.initialMaxStreamDataUni));
+        try putParam(out, gpa, @intFromEnum(ParamId.initialMaxStreamDataUni), &u64be(p.initialMaxStreamDataUni));
     if (p.initialMaxStreamsBidi != 0)
-        try putParam(out, gpa, @intFromEnum(ParamId.initial_max_streams_bidi), &u64be(p.initialMaxStreamsBidi));
+        try putParam(out, gpa, @intFromEnum(ParamId.initialMaxStreamsBidi), &u64be(p.initialMaxStreamsBidi));
     if (p.initialMaxStreamsUni != 0)
-        try putParam(out, gpa, @intFromEnum(ParamId.initial_max_streams_uni), &u64be(p.initialMaxStreamsUni));
+        try putParam(out, gpa, @intFromEnum(ParamId.initialMaxStreamsUni), &u64be(p.initialMaxStreamsUni));
     if (p.ackDelayExponent != 3)
-        try putParam(out, gpa, @intFromEnum(ParamId.ack_delay_exponent), &u64be(p.ackDelayExponent));
+        try putParam(out, gpa, @intFromEnum(ParamId.ackDelayExponent), &u64be(p.ackDelayExponent));
     if (p.maxAckDelayMs != 25)
-        try putParam(out, gpa, @intFromEnum(ParamId.max_ack_delay), &u64be(p.maxAckDelayMs));
+        try putParam(out, gpa, @intFromEnum(ParamId.maxAckDelay), &u64be(p.maxAckDelayMs));
     if (p.activeConnectionIdLimit != 2)
-        try putParam(out, gpa, @intFromEnum(ParamId.active_connection_id_limit), &u64be(p.activeConnectionIdLimit));
+        try putParam(out, gpa, @intFromEnum(ParamId.activeConnectionIdLimit), &u64be(p.activeConnectionIdLimit));
 }
 
 fn dv(data: []const u8, pos: *usize) Error!u64 {
@@ -112,32 +112,32 @@ pub fn decode(data: []const u8) Error!Params {
     var pos: usize = 0;
 
     while (pos < data.len) {
-        const id_raw = try dv(data, &pos);
-        const len_raw = try dv(data, &pos);
-        const len = std.math.cast(usize, len_raw) orelse return Error.InvalidParameter;
+        const idRaw = try dv(data, &pos);
+        const lenRaw = try dv(data, &pos);
+        const len = std.math.cast(usize, lenRaw) orelse return Error.InvalidParameter;
         if (pos > data.len or len > data.len - pos) return Error.Truncated;
 
-        const id: ParamId = @enumFromInt(id_raw);
+        const id: ParamId = @enumFromInt(idRaw);
         if (@intFromEnum(id) < 17) {
             if (seen.isSet(@intCast(@intFromEnum(id)))) return Error.DuplicateParameter;
             seen.set(@intCast(@intFromEnum(id)));
         }
 
         switch (id) {
-            .original_destination_connection_id, .initial_source_connection_id, .retry_source_connection_id => {
+            .originalDestinationConnectionId, .initialSourceConnectionId, .retrySourceConnectionId => {
                 if (len > 20) return Error.InvalidParameter;
             },
-            .stateless_reset_token => {
+            .statelessResetToken => {
                 if (len != 16) return Error.InvalidParameter;
             },
-            .max_idle_timeout, .max_udp_payload_size, .initial_max_data, .initial_max_stream_data_bidi_local, .initial_max_stream_data_bidi_remote, .initial_max_stream_data_uni, .initial_max_streams_bidi, .initial_max_streams_uni, .ack_delay_exponent, .max_ack_delay, .active_connection_id_limit => {
+            .maxIdleTimeout, .maxUdpPayloadSize, .initialMaxData, .initialMaxStreamDataBidiLocal, .initialMaxStreamDataBidiRemote, .initialMaxStreamDataUni, .initialMaxStreamsBidi, .initialMaxStreamsUni, .ackDelayExponent, .maxAckDelay, .activeConnectionIdLimit => {
                 if (len != 1 and len != 2 and len != 4 and len != 8) return Error.InvalidParameter;
             },
             else => {},
         }
 
-        const value_be: u64 = switch (id) {
-            .original_destination_connection_id, .initial_source_connection_id, .retry_source_connection_id, .stateless_reset_token => 0,
+        const valueBe: u64 = switch (id) {
+            .originalDestinationConnectionId, .initialSourceConnectionId, .retrySourceConnectionId, .statelessResetToken => 0,
             else => switch (len) {
                 0 => 0,
                 1 => data[pos],
@@ -149,28 +149,28 @@ pub fn decode(data: []const u8) Error!Params {
         };
 
         switch (id) {
-            .max_idle_timeout => p.maxIdleTimeoutMs = value_be,
-            .max_udp_payload_size => {
-                if (value_be < 1200) return Error.InvalidParameter;
-                p.maxUdpPayloadSize = value_be;
+            .maxIdleTimeout => p.maxIdleTimeoutMs = valueBe,
+            .maxUdpPayloadSize => {
+                if (valueBe < 1200) return Error.InvalidParameter;
+                p.maxUdpPayloadSize = valueBe;
             },
-            .initial_max_data => p.initialMaxData = value_be,
-            .initial_max_stream_data_bidi_local => p.initialMaxStreamDataBidiLocal = value_be,
-            .initial_max_stream_data_bidi_remote => p.initialMaxStreamDataBidiRemote = value_be,
-            .initial_max_stream_data_uni => p.initialMaxStreamDataUni = value_be,
-            .initial_max_streams_bidi => p.initialMaxStreamsBidi = value_be,
-            .initial_max_streams_uni => p.initialMaxStreamsUni = value_be,
-            .ack_delay_exponent => {
-                if (value_be > 20) return Error.InvalidParameter;
-                p.ackDelayExponent = value_be;
+            .initialMaxData => p.initialMaxData = valueBe,
+            .initialMaxStreamDataBidiLocal => p.initialMaxStreamDataBidiLocal = valueBe,
+            .initialMaxStreamDataBidiRemote => p.initialMaxStreamDataBidiRemote = valueBe,
+            .initialMaxStreamDataUni => p.initialMaxStreamDataUni = valueBe,
+            .initialMaxStreamsBidi => p.initialMaxStreamsBidi = valueBe,
+            .initialMaxStreamsUni => p.initialMaxStreamsUni = valueBe,
+            .ackDelayExponent => {
+                if (valueBe > 20) return Error.InvalidParameter;
+                p.ackDelayExponent = valueBe;
             },
-            .max_ack_delay => {
-                if (value_be >= 1 << 14) return Error.InvalidParameter;
-                p.maxAckDelayMs = value_be;
+            .maxAckDelay => {
+                if (valueBe >= 1 << 14) return Error.InvalidParameter;
+                p.maxAckDelayMs = valueBe;
             },
-            .active_connection_id_limit => {
-                if (value_be < 2) return Error.InvalidParameter;
-                p.activeConnectionIdLimit = value_be;
+            .activeConnectionIdLimit => {
+                if (valueBe < 2) return Error.InvalidParameter;
+                p.activeConnectionIdLimit = valueBe;
             },
             else => {}, // unknown / CID-carrying handled by connection
         }
@@ -193,37 +193,37 @@ pub const CidParams = struct {
 /// `decode` (call both on the same block).
 pub fn parseCidParams(data: []const u8) Error!CidParams {
     var out: CidParams = .{};
-    var seen_odcid = false;
-    var seen_iscid = false;
-    var seen_rscid = false;
-    var seen_srt = false;
+    var seenOdcid = false;
+    var seenIscid = false;
+    var seenRscid = false;
+    var seenSrt = false;
     var pos: usize = 0;
     while (pos < data.len) {
         const id = try dv(data, &pos);
-        const len_raw = try dv(data, &pos);
-        const len = std.math.cast(usize, len_raw) orelse return Error.InvalidParameter;
+        const lenRaw = try dv(data, &pos);
+        const len = std.math.cast(usize, lenRaw) orelse return Error.InvalidParameter;
         if (pos > data.len or len > data.len - pos) return Error.Truncated;
         const value = data[pos..][0..len];
         pos += len;
         switch (id) {
             0x00 => {
-                if (seen_odcid or len > 20) return Error.InvalidParameter;
-                seen_odcid = true;
+                if (seenOdcid or len > 20) return Error.InvalidParameter;
+                seenOdcid = true;
                 out.originalDestinationConnectionId = value;
             },
             0x0F => {
-                if (seen_iscid or len > 20) return Error.InvalidParameter;
-                seen_iscid = true;
+                if (seenIscid or len > 20) return Error.InvalidParameter;
+                seenIscid = true;
                 out.initialSourceConnectionId = value;
             },
             0x10 => {
-                if (seen_rscid or len > 20) return Error.InvalidParameter;
-                seen_rscid = true;
+                if (seenRscid or len > 20) return Error.InvalidParameter;
+                seenRscid = true;
                 out.retrySourceConnectionId = value;
             },
             0x02 => {
-                if (seen_srt or len != 16) return Error.InvalidParameter;
-                seen_srt = true;
+                if (seenSrt or len != 16) return Error.InvalidParameter;
+                seenSrt = true;
                 out.statelessResetToken = value;
             },
             else => {},
@@ -287,22 +287,22 @@ test "validation bounds reject hostile values" {
         }
     };
     {
-        const bad = try mk.enc(@intFromEnum(ParamId.max_udp_payload_size), 1199);
+        const bad = try mk.enc(@intFromEnum(ParamId.maxUdpPayloadSize), 1199);
         defer std.testing.allocator.free(bad);
         try std.testing.expectError(Error.InvalidParameter, decode(bad));
     }
     {
-        const bad = try mk.enc(@intFromEnum(ParamId.ack_delay_exponent), 21);
+        const bad = try mk.enc(@intFromEnum(ParamId.ackDelayExponent), 21);
         defer std.testing.allocator.free(bad);
         try std.testing.expectError(Error.InvalidParameter, decode(bad));
     }
     {
-        const bad = try mk.enc(@intFromEnum(ParamId.max_ack_delay), 1 << 14);
+        const bad = try mk.enc(@intFromEnum(ParamId.maxAckDelay), 1 << 14);
         defer std.testing.allocator.free(bad);
         try std.testing.expectError(Error.InvalidParameter, decode(bad));
     }
     {
-        const bad = try mk.enc(@intFromEnum(ParamId.active_connection_id_limit), 1);
+        const bad = try mk.enc(@intFromEnum(ParamId.activeConnectionIdLimit), 1);
         defer std.testing.allocator.free(bad);
         try std.testing.expectError(Error.InvalidParameter, decode(bad));
     }

@@ -11,8 +11,8 @@
 //!   outstanding tickets.
 //!
 //! 0-RTT early data is deliberately NOT implemented (replay risk): tickets
-//! never carry `early_data` extensions and offers containing them are
-//! rejected. Only `psk_dhe_ke` resumption (forward-secret) is supported.
+//! never carry `earlyData` extensions and offers containing them are
+//! rejected. Only `pskDheKe` resumption (forward-secret) is supported.
 //!
 //! Thread-safety: values are thread-confined; the client's session cache
 //! serializes access itself. `TicketKeys` is read-only after creation.
@@ -27,9 +27,9 @@ const Allocator = std.mem.Allocator;
 const tls = std.crypto.tls;
 const ChaCha20Poly1305 = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
 const HkdfSha256 = std.crypto.kdf.hkdf.HkdfSha256;
-const clock_mod = @import("../../common/clock.zig");
-const sync_mod = @import("../../common/sync.zig");
-const handshake_mod = @import("handshake.zig");
+const clockMod = @import("../../common/clock.zig");
+const syncMod = @import("../../common/sync.zig");
+const handshakeMod = @import("handshake.zig");
 
 /// Origin-keyed client session cache for TLS 1.3 resumption. Bounded
 /// (default 32 entries, oldest evicted); internally synchronized for
@@ -37,7 +37,7 @@ const handshake_mod = @import("handshake.zig");
 /// out, so callers keep single ownership of their copies.
 pub const SessionCache = struct {
     allocator: Allocator,
-    mu: sync_mod.Spinlock = .{},
+    mu: syncMod.Spinlock = .{},
     entries: std.ArrayList(CachedEntry) = .empty,
     maxEntries: u32 = 32,
 
@@ -186,16 +186,16 @@ pub fn suiteSupportsResumption(suite: tls.CipherSuite) bool {
 /// handshake engine's helper (kept local so this module never imports
 /// the engine back).
 fn expandLabel(prk: [32]u8, comptime label: []const u8, context: []const u8, out: []u8) void {
-    const full_label = "tls13 " ++ label;
+    const fullLabel = "tls13 " ++ label;
     var info: [2 + 1 + 64 + 1 + 32]u8 = undefined;
     var w: usize = 0;
     info[w] = @intCast(out.len >> 8);
     info[w + 1] = @intCast(out.len & 0xFF);
     w += 2;
-    info[w] = @intCast(full_label.len);
+    info[w] = @intCast(fullLabel.len);
     w += 1;
-    @memcpy(info[w..][0..full_label.len], full_label);
-    w += full_label.len;
+    @memcpy(info[w..][0..fullLabel.len], fullLabel);
+    w += fullLabel.len;
     info[w] = @intCast(context.len);
     w += 1;
     if (context.len > 0) {
@@ -211,7 +211,7 @@ fn expandLabel(prk: [32]u8, comptime label: []const u8, context: []const u8, out
 /// ticket-to-PSK derivation path.
 pub fn clientSessionFromTicket(
     allocator: Allocator,
-    nst: handshake_mod.NewSessionTicket,
+    nst: handshakeMod.NewSessionTicket,
     resumptionMaster: [32]u8,
     suite: tls.CipherSuite,
     host: []const u8,
@@ -234,14 +234,14 @@ pub fn clientSessionFromTicket(
 
 /// Maximum ticket age the server will honor beyond nominal lifetime
 /// (clock-skew tolerance, RFC 8446 Section 4.2.11.2 guidance).
-pub const ticket_skew_ms: i64 = 10_000;
+pub const ticketSkewMs: i64 = 10_000;
 
 /// Ticket plaintext layout (AEAD-sealed, never on the wire in the clear):
 /// magic[4] || suite u16 || createdMs u64 || lifetimeSecs u32 ||
 /// ageAdd u32 || psk[32].
-const ticket_magic: [4]u8 = .{ 'H', 'X', 'P', 'S' };
-const ticket_plain_len: usize = 4 + 2 + 8 + 4 + 4 + 32;
-const ticket_nonce_len: usize = 12;
+const ticketMagic: [4]u8 = .{ 'H', 'X', 'P', 'S' };
+const ticketPlainLen: usize = 4 + 2 + 8 + 4 + 4 + 32;
+const ticketNonceLen: usize = 12;
 
 /// A resumption PSK held by the client, bound to the origin host it was
 /// issued for. The PSK authenticates the *resumed* handshake; the ticket
@@ -249,8 +249,8 @@ const ticket_nonce_len: usize = 12;
 pub const ClientSession = struct {
     /// Opaque ticket blob (owned).
     ticket: []u8,
-    /// Resumption PSK: HKDF-Expand-Label(resumption_master, "resumption",
-    /// ticket_nonce, Hash.length).
+    /// Resumption PSK: HKDF-Expand-Label(resumptionMaster, "resumption",
+    /// ticketNonce, Hash.length).
     psk: [32]u8,
     /// Ticket age-add for obfuscation (owned from the NST).
     ageAdd: u32,
@@ -288,15 +288,15 @@ pub const ClientSession = struct {
     pub fn isUsable(self: *const ClientSession, host: []const u8, nowMs: u64) bool {
         if (!std.mem.eql(u8, self.host, host)) return false;
         if (self.ticket.len == 0) return false;
-        const age_ms = @as(i64, @intCast(nowMs)) - @as(i64, @intCast(self.createdMs));
-        if (age_ms < 0) return false;
-        return age_ms < @as(i64, @intCast(self.lifetimeSecs)) * 1000 + ticket_skew_ms;
+        const ageMs = @as(i64, @intCast(nowMs)) - @as(i64, @intCast(self.createdMs));
+        if (ageMs < 0) return false;
+        return ageMs < @as(i64, @intCast(self.lifetimeSecs)) * 1000 + ticketSkewMs;
     }
 
     /// Obfuscated ticket age for the ClientHello offer (RFC 8446 4.2.11.2).
     pub fn obfuscatedAge(self: *const ClientSession, nowMs: u64) u32 {
-        const age_ms: u64 = nowMs -| self.createdMs;
-        const age: u32 = @truncate(age_ms);
+        const ageMs: u64 = nowMs -| self.createdMs;
+        const age: u32 = @truncate(ageMs);
         return age +% self.ageAdd;
     }
 };
@@ -331,26 +331,26 @@ pub const TicketKeys = struct {
         createdMs: u64,
         lifetimeSecs: u32,
         ageAdd: u32,
-    ) [ticket_nonce_len + ticket_plain_len + ChaCha20Poly1305.tag_length]u8 {
-        var plain: [ticket_plain_len]u8 = undefined;
-        @memcpy(plain[0..4], &ticket_magic);
+    ) [ticketNonceLen + ticketPlainLen + ChaCha20Poly1305.tag_length]u8 {
+        var plain: [ticketPlainLen]u8 = undefined;
+        @memcpy(plain[0..4], &ticketMagic);
         std.mem.writeInt(u16, plain[4..6], @intFromEnum(suite), .big);
         std.mem.writeInt(u64, plain[6..14], createdMs, .big);
         std.mem.writeInt(u32, plain[14..18], lifetimeSecs, .big);
         std.mem.writeInt(u32, plain[18..22], ageAdd, .big);
         @memcpy(plain[22..54], &psk);
-        var out: [ticket_nonce_len + ticket_plain_len + ChaCha20Poly1305.tag_length]u8 = undefined;
-        fillRandom(out[0..ticket_nonce_len]);
+        var out: [ticketNonceLen + ticketPlainLen + ChaCha20Poly1305.tag_length]u8 = undefined;
+        fillRandom(out[0..ticketNonceLen]);
         var tag: [ChaCha20Poly1305.tag_length]u8 = undefined;
         ChaCha20Poly1305.encrypt(
-            out[ticket_nonce_len..][0..ticket_plain_len],
+            out[ticketNonceLen..][0..ticketPlainLen],
             &tag,
             &plain,
             &.{},
-            out[0..ticket_nonce_len].*,
+            out[0..ticketNonceLen].*,
             self.current,
         );
-        @memcpy(out[ticket_nonce_len + ticket_plain_len ..], &tag);
+        @memcpy(out[ticketNonceLen + ticketPlainLen ..], &tag);
         std.crypto.secureZero(u8, &plain);
         return out;
     }
@@ -365,13 +365,13 @@ pub const TicketKeys = struct {
         lifetimeSecs: u32,
         ageAdd: u32,
     } {
-        if (blob.len != ticket_nonce_len + ticket_plain_len + ChaCha20Poly1305.tag_length) {
+        if (blob.len != ticketNonceLen + ticketPlainLen + ChaCha20Poly1305.tag_length) {
             return error.InvalidTicket;
         }
-        const nonce = blob[0..ticket_nonce_len].*;
-        const ct = blob[ticket_nonce_len..][0..ticket_plain_len];
-        const tag = blob[ticket_nonce_len + ticket_plain_len ..][0..ChaCha20Poly1305.tag_length].*;
-        var plain: [ticket_plain_len]u8 = undefined;
+        const nonce = blob[0..ticketNonceLen].*;
+        const ct = blob[ticketNonceLen..][0..ticketPlainLen];
+        const tag = blob[ticketNonceLen + ticketPlainLen ..][0..ChaCha20Poly1305.tag_length].*;
+        var plain: [ticketPlainLen]u8 = undefined;
         var ok = false;
         const keys: [2]?[32]u8 = .{ self.current, self.previous };
         for (keys) |kopt| {
@@ -382,19 +382,19 @@ pub const TicketKeys = struct {
         }
         if (!ok) return error.InvalidTicket;
         defer std.crypto.secureZero(u8, &plain);
-        if (!std.mem.eql(u8, plain[0..4], &ticket_magic)) return error.InvalidTicket;
+        if (!std.mem.eql(u8, plain[0..4], &ticketMagic)) return error.InvalidTicket;
         const suite: tls.CipherSuite = @enumFromInt(std.mem.readInt(u16, plain[4..6], .big));
         const created = std.mem.readInt(u64, plain[6..14], .big);
         const lifetime = std.mem.readInt(u32, plain[14..18], .big);
-        const age_add = std.mem.readInt(u32, plain[18..22], .big);
+        const ageAdd = std.mem.readInt(u32, plain[18..22], .big);
         if (lifetime == 0) return error.InvalidTicket;
-        const age_ms = @as(i64, @intCast(nowMs)) - @as(i64, @intCast(created));
-        if (age_ms < 0 or age_ms > @as(i64, @intCast(lifetime)) * 1000 + ticket_skew_ms) {
+        const ageMs = @as(i64, @intCast(nowMs)) - @as(i64, @intCast(created));
+        if (ageMs < 0 or ageMs > @as(i64, @intCast(lifetime)) * 1000 + ticketSkewMs) {
             return error.TicketExpired;
         }
         var psk: [32]u8 = undefined;
         @memcpy(&psk, plain[22..54]);
-        return .{ .psk = psk, .suite = suite, .createdMs = created, .lifetimeSecs = lifetime, .ageAdd = age_add };
+        return .{ .psk = psk, .suite = suite, .createdMs = created, .lifetimeSecs = lifetime, .ageAdd = ageAdd };
     }
 };
 
@@ -424,7 +424,7 @@ test "ticket seal/open round trip with expiry and rotation" {
     try std.testing.expectEqual(@as(u32, 0xA11CE), opened.ageAdd);
 
     // Expired tickets fail closed.
-    try std.testing.expectError(error.TicketExpired, keys.open(&blob, 1_000_000 + 3600 * 1000 + ticket_skew_ms + 1));
+    try std.testing.expectError(error.TicketExpired, keys.open(&blob, 1_000_000 + 3600 * 1000 + ticketSkewMs + 1));
     // Corrupted blobs fail closed.
     var bad = blob;
     bad[20] ^= 0xFF;
@@ -452,7 +452,7 @@ test "client session usability is host-bound and time-bound" {
     defer s.deinit(a);
     try std.testing.expect(s.isUsable("example.com", 8_000));
     try std.testing.expect(!s.isUsable("other.com", 8_000));
-    try std.testing.expect(!s.isUsable("example.com", 5_000 + 10 * 1000 + ticket_skew_ms));
+    try std.testing.expect(!s.isUsable("example.com", 5_000 + 10 * 1000 + ticketSkewMs));
     // Obfuscation round-trips through wrapping arithmetic.
     const obf = s.obfuscatedAge(9_000);
     try std.testing.expectEqual(@as(u32, 4000) +% 7, obf);

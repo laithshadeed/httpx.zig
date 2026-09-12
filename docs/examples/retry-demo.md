@@ -1,6 +1,6 @@
 # Example: Retry Demo
 
-Demonstrates retry_demo.zig using the canonical HTTPX API.
+Demonstrates retryDemo.zig using the canonical HTTPX API.
 
 ## Complete Example
 

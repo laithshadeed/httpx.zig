@@ -1,7 +1,7 @@
 # TLS HTTPS GET
 
 Local TLS listener setup with a self-signed identity. See
-`examples/tls_get.zig` (`run-tls-get`) and `examples/https_client.zig`
+`examples/tlsGet.zig` (`run-tls-get`) and `examples/httpsClient.zig`
 (`run-https-client`).
 
 ## Features Demonstrated

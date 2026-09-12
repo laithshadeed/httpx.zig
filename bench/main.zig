@@ -23,7 +23,7 @@ const httpx = @import("httpx");
 
 pub const BenchConfig = struct {
     iterations: usize,
-    warmup_iterations: usize,
+    warmupIterations: usize,
     rounds: usize,
 };
 
@@ -32,14 +32,14 @@ pub const BenchMetric = struct {
     category: []const u8,
     rounds: usize,
     iterations: usize,
-    min_ns: f64,
-    avg_ns: f64,
-    max_ns: f64,
-    ops_per_sec: u64,
+    minNs: f64,
+    avgNs: f64,
+    maxNs: f64,
+    opsPerSec: u64,
     unit: []const u8,
 };
 
-var recorded_metrics: std.ArrayList(BenchMetric) = .empty;
+var recordedMetrics: std.ArrayList(BenchMetric) = .empty;
 
 fn nowNanos() i96 {
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -53,13 +53,13 @@ fn runBench(
     cfg: BenchConfig,
     func: *const fn () void,
 ) void {
-    for (0..cfg.warmup_iterations) |_| {
+    for (0..cfg.warmupIterations) |_| {
         func();
     }
 
-    var min_ns: u64 = std.math.maxInt(u64);
-    var max_ns: u64 = 0;
-    var total_ns: u128 = 0;
+    var minNs: u64 = std.math.maxInt(u64);
+    var maxNs: u64 = 0;
+    var totalNs: u128 = 0;
 
     for (0..cfg.rounds) |_| {
         const start = nowNanos();
@@ -68,19 +68,19 @@ fn runBench(
         }
         const end = nowNanos();
 
-        const elapsed_ns = @as(u64, @intCast(end - start));
-        min_ns = @min(min_ns, elapsed_ns);
-        max_ns = @max(max_ns, elapsed_ns);
-        total_ns += elapsed_ns;
+        const elapsedNs = @as(u64, @intCast(end - start));
+        minNs = @min(minNs, elapsedNs);
+        maxNs = @max(maxNs, elapsedNs);
+        totalNs += elapsedNs;
     }
 
-    const avg_ns = @as(u64, @intCast(total_ns / cfg.rounds));
-    const min_ns_per_op = @as(f64, @floatFromInt(min_ns)) / @as(f64, @floatFromInt(cfg.iterations));
-    const avg_ns_per_op = @as(f64, @floatFromInt(avg_ns)) / @as(f64, @floatFromInt(cfg.iterations));
-    const max_ns_per_op = @as(f64, @floatFromInt(max_ns)) / @as(f64, @floatFromInt(cfg.iterations));
+    const avgNs = @as(u64, @intCast(totalNs / cfg.rounds));
+    const minNsPerOp = @as(f64, @floatFromInt(minNs)) / @as(f64, @floatFromInt(cfg.iterations));
+    const avgNsPerOp = @as(f64, @floatFromInt(avgNs)) / @as(f64, @floatFromInt(cfg.iterations));
+    const maxNsPerOp = @as(f64, @floatFromInt(maxNs)) / @as(f64, @floatFromInt(cfg.iterations));
 
-    const throughput = if (avg_ns_per_op > 0.0)
-        @as(u64, @intFromFloat(1_000_000_000.0 / avg_ns_per_op))
+    const throughput = if (avgNsPerOp > 0.0)
+        @as(u64, @intFromFloat(1_000_000_000.0 / avgNsPerOp))
     else
         0;
 
@@ -88,41 +88,41 @@ fn runBench(
         name,
         cfg.rounds,
         cfg.iterations,
-        min_ns_per_op,
-        avg_ns_per_op,
-        max_ns_per_op,
+        minNsPerOp,
+        avgNsPerOp,
+        maxNsPerOp,
         throughput,
         unit,
     });
 
-    recorded_metrics.append(bench_allocator, .{
+    recordedMetrics.append(benchAllocator, .{
         .name = name,
         .category = category,
         .rounds = cfg.rounds,
         .iterations = cfg.iterations,
-        .min_ns = min_ns_per_op,
-        .avg_ns = avg_ns_per_op,
-        .max_ns = max_ns_per_op,
-        .ops_per_sec = throughput,
+        .minNs = minNsPerOp,
+        .avgNs = avgNsPerOp,
+        .maxNs = maxNsPerOp,
+        .opsPerSec = throughput,
         .unit = unit,
     }) catch {};
 }
 
 // Global benchmark states
-var bench_allocator: std.mem.Allocator = undefined;
-var bench_pool: *httpx.WorkerPool = undefined;
-var bench_queue: httpx.concurrency.queue.BoundedQueue(usize) = undefined;
-var bench_router: httpx.router.Router = undefined;
-var bench_dns_cache: *httpx.dns.Cache = undefined;
+var benchAllocator: std.mem.Allocator = undefined;
+var benchPool: *httpx.WorkerPool = undefined;
+var benchQueue: httpx.concurrency.queue.BoundedQueue(usize) = undefined;
+var benchRouter: httpx.router.Router = undefined;
+var benchDnsCache: *httpx.dns.Cache = undefined;
 
-var sample_compress_raw: []const u8 = undefined;
-var sample_gzip_payload: []const u8 = undefined;
-var sample_deflate_payload: []const u8 = undefined;
+var sampleCompressRaw: []const u8 = undefined;
+var sampleGzipPayload: []const u8 = undefined;
+var sampleDeflatePayload: []const u8 = undefined;
 
 // Group 1: Core Operations & Parsing
 
 fn benchHeadersParse() void {
-    var headers = httpx.Headers.init(bench_allocator);
+    var headers = httpx.Headers.init(benchAllocator);
     defer headers.deinit();
 
     headers.append("Content-Type", "application/json") catch {};
@@ -150,17 +150,17 @@ fn benchMethodLookup() void {
     _ = httpx.Method.fromString("DELETE");
 }
 
-const raw_req_head = "GET /api/v1/users?page=1 HTTP/1.1\r\nHost: httpbun.com\r\nUser-Agent: httpx/0.2.0\r\nAccept: application/json\r\n\r\n";
+const rawReqHead = "GET /api/v1/users?page=1 HTTP/1.1\r\nHost: httpbun.com\r\nUser-Agent: httpx/0.2.0\r\nAccept: application/json\r\n\r\n";
 
 fn benchHttp1RequestHead() void {
-    _ = httpx.http1.parser.parseRequestHead(raw_req_head) catch return;
+    _ = httpx.http1.parser.parseRequestHead(rawReqHead) catch return;
 }
 
-const raw_hdr_block = "Host: httpbun.com\r\nUser-Agent: httpx/0.2.0\r\nAccept: application/json\r\nAuthorization: Bearer secret-tok\r\nContent-Type: application/json\r\n\r\n";
+const rawHdrBlock = "Host: httpbun.com\r\nUser-Agent: httpx/0.2.0\r\nAccept: application/json\r\nAuthorization: Bearer secret-tok\r\nContent-Type: application/json\r\n\r\n";
 
 fn benchHttp1HeaderBlock() void {
     var fields: [16]httpx.http1.parser.Field = undefined;
-    _ = httpx.http1.parser.parseHeaderBlock(raw_hdr_block, 0, &fields) catch return;
+    _ = httpx.http1.parser.parseHeaderBlock(rawHdrBlock, 0, &fields) catch return;
 }
 
 // Group 2: Routing & Middleware
@@ -175,52 +175,52 @@ fn dummyHandler(_: *httpx.router.Context) anyerror!httpx.router.Response {
 
 fn benchRouterStaticMatch() void {
     var ctx = httpx.router.Context{
-        .allocator = bench_allocator,
+        .allocator = benchAllocator,
         .path = "/api/v1/health",
         .method = .GET,
     };
-    _ = bench_router.match(.GET, "/api/v1/health", &ctx);
+    _ = benchRouter.match(.GET, "/api/v1/health", &ctx);
 }
 
 fn benchRouterParamMatch() void {
     var ctx = httpx.router.Context{
-        .allocator = bench_allocator,
+        .allocator = benchAllocator,
         .path = "/users/42/profile",
         .method = .GET,
     };
-    _ = bench_router.match(.GET, "/users/42/profile", &ctx);
+    _ = benchRouter.match(.GET, "/users/42/profile", &ctx);
 }
 
 fn benchRouterDispatch() void {
     var ctx = httpx.router.Context{
-        .allocator = bench_allocator,
+        .allocator = benchAllocator,
         .path = "/api/v1/health",
         .method = .GET,
     };
-    _ = bench_router.dispatch(&ctx);
+    _ = benchRouter.dispatch(&ctx);
 }
 
 fn benchRouterTypedMatch() void {
     var ctx = httpx.router.Context{
-        .allocator = bench_allocator,
+        .allocator = benchAllocator,
         .path = "/users/42/posts/99",
         .method = .GET,
     };
-    _ = bench_router.match(.GET, "/users/42/posts/99", &ctx);
+    _ = benchRouter.match(.GET, "/users/42/posts/99", &ctx);
 }
 
 fn benchRouterMiss() void {
     var ctx = httpx.router.Context{
-        .allocator = bench_allocator,
+        .allocator = benchAllocator,
         .path = "/no/such/route",
         .method = .GET,
     };
-    _ = bench_router.dispatch(&ctx);
+    _ = benchRouter.dispatch(&ctx);
 }
 
 fn benchRouterReverse() void {
-    const u = bench_router.url("bench_user_post", .{ .userId = 7, .postId = 9 }) catch return;
-    defer bench_allocator.free(u);
+    const u = benchRouter.url("bench_user_post", .{ .userId = 7, .postId = 9 }) catch return;
+    defer benchAllocator.free(u);
     std.mem.doNotOptimizeAway(u.len);
 }
 
@@ -234,7 +234,7 @@ const UserProfile = struct {
     score: f64,
 };
 
-const sample_user_val = UserProfile{
+const sampleUserVal = UserProfile{
     .id = 1001,
     .username = "alice_dev",
     .email = "alice@example.com",
@@ -242,16 +242,16 @@ const sample_user_val = UserProfile{
     .score = 99.4,
 };
 
-const sample_json_bytes = "{\"id\":1001,\"username\":\"alice_dev\",\"email\":\"alice@example.com\",\"active\":true,\"score\":99.4}";
+const sampleJsonBytes = "{\"id\":1001,\"username\":\"alice_dev\",\"email\":\"alice@example.com\",\"active\":true,\"score\":99.4}";
 
 fn benchJsonStringify() void {
-    const str = std.json.Stringify.valueAlloc(bench_allocator, sample_user_val, .{}) catch return;
-    defer bench_allocator.free(str);
+    const str = std.json.Stringify.valueAlloc(benchAllocator, sampleUserVal, .{}) catch return;
+    defer benchAllocator.free(str);
     std.mem.doNotOptimizeAway(str.len);
 }
 
 fn benchJsonParse() void {
-    const parsed = std.json.parseFromSlice(UserProfile, bench_allocator, sample_json_bytes, .{}) catch return;
+    const parsed = std.json.parseFromSlice(UserProfile, benchAllocator, sampleJsonBytes, .{}) catch return;
     defer parsed.deinit();
     std.mem.doNotOptimizeAway(parsed.value.id);
 }
@@ -264,44 +264,44 @@ fn benchBasicAuthEncode() void {
 }
 
 fn benchBasicAuthDecode() void {
-    var decode_buf: [256]u8 = undefined;
-    _ = httpx.auth.basic.parse("Basic YmVuY2htYXJrX3VzZXI6cGFzc3dvcmQxMjMh", &decode_buf) catch return;
+    var decodeBuf: [256]u8 = undefined;
+    _ = httpx.auth.basic.parse("Basic YmVuY2htYXJrX3VzZXI6cGFzc3dvcmQxMjMh", &decodeBuf) catch return;
 }
 
 fn benchBearerTokenParse() void {
-    const header_val = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3j";
-    _ = httpx.auth.bearer.parseBearer(header_val);
+    const headerVal = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3j";
+    _ = httpx.auth.bearer.parseBearer(headerVal);
 }
 
 // Group 5: Compression & Codecs
 
 fn benchGzipCompress() void {
-    const compressed = httpx.compression.compress(bench_allocator, .gzip, sample_compress_raw) catch return;
-    defer bench_allocator.free(compressed);
+    const compressed = httpx.compression.compress(benchAllocator, .gzip, sampleCompressRaw) catch return;
+    defer benchAllocator.free(compressed);
     std.mem.doNotOptimizeAway(compressed.len);
 }
 
 fn benchGzipDecompress() void {
-    const decompressed = httpx.compression.decompress(bench_allocator, .gzip, sample_gzip_payload) catch return;
-    defer bench_allocator.free(decompressed);
+    const decompressed = httpx.compression.decompress(benchAllocator, .gzip, sampleGzipPayload) catch return;
+    defer benchAllocator.free(decompressed);
     std.mem.doNotOptimizeAway(decompressed.len);
 }
 
 fn benchDeflateCompress() void {
-    const compressed = httpx.compression.compress(bench_allocator, .deflate, sample_compress_raw) catch return;
-    defer bench_allocator.free(compressed);
+    const compressed = httpx.compression.compress(benchAllocator, .deflate, sampleCompressRaw) catch return;
+    defer benchAllocator.free(compressed);
     std.mem.doNotOptimizeAway(compressed.len);
 }
 
 fn benchDeflateDecompress() void {
-    const decompressed = httpx.compression.decompress(bench_allocator, .deflate, sample_deflate_payload) catch return;
-    defer bench_allocator.free(decompressed);
+    const decompressed = httpx.compression.decompress(benchAllocator, .deflate, sampleDeflatePayload) catch return;
+    defer benchAllocator.free(decompressed);
     std.mem.doNotOptimizeAway(decompressed.len);
 }
 
 // Group 6: Web & DOM Parsing
 
-const sample_html_doc =
+const sampleHtmlDoc =
     \\<!DOCTYPE html>
     \\<html lang="en">
     \\<head><meta charset="utf-8"><title>HTTPX Benchmark</title></head>
@@ -315,53 +315,53 @@ const sample_html_doc =
 ;
 
 fn benchHtmlParse() void {
-    var arena = std.heap.ArenaAllocator.init(bench_allocator);
+    var arena = std.heap.ArenaAllocator.init(benchAllocator);
     defer arena.deinit();
-    _ = httpx.parsing.html.parse(arena.allocator(), sample_html_doc, .{}) catch return;
+    _ = httpx.parsing.html.parse(arena.allocator(), sampleHtmlDoc, .{}) catch return;
 }
 
-const sample_template_src = "<h1>{{ title }}</h1>{% for item in items %}<p>{{ item }}</p>{% endfor %}";
+const sampleTemplateSrc = "<h1>{{ title }}</h1>{% for item in items %}<p>{{ item }}</p>{% endfor %}";
 
 fn benchTemplateParse() void {
-    var parser = httpx.templates.parser.Parser.init(bench_allocator, "bench.html", sample_template_src);
+    var parser = httpx.templates.parser.Parser.init(benchAllocator, "bench.html", sampleTemplateSrc);
     var ast = parser.parse() catch return;
     defer ast.deinit();
 }
 
-var bench_template_ast: ?httpx.templates.parser.TemplateAst = null;
+var benchTemplateAst: ?httpx.templates.parser.TemplateAst = null;
 
 fn benchTemplateRender() void {
-    const ast = bench_template_ast orelse return;
-    var ctx = httpx.templates.Context.init(bench_allocator, .{
+    const ast = benchTemplateAst orelse return;
+    var ctx = httpx.templates.Context.init(benchAllocator, .{
         .title = "Bench",
         .items = [_][]const u8{ "a", "b", "c" },
     }) catch return;
     defer ctx.deinit();
     const renderer = httpx.templates.renderer.Renderer{};
-    const out = renderer.renderToString(bench_allocator, &ast, &ctx, null) catch return;
-    defer bench_allocator.free(out);
+    const out = renderer.renderToString(benchAllocator, &ast, &ctx, null) catch return;
+    defer benchAllocator.free(out);
     std.mem.doNotOptimizeAway(out.len);
 }
 
 fn benchTemplateIncremental() void {
-    _ = httpx.parsing.html.changedRanges(bench_allocator, sample_html_doc, sample_html_doc) catch return;
+    _ = httpx.parsing.html.changedRanges(benchAllocator, sampleHtmlDoc, sampleHtmlDoc) catch return;
 }
 
-var bench_watcher: ?*httpx.Watcher = null;
+var benchWatcher: ?*httpx.Watcher = null;
 
 fn benchWatcherScan() void {
-    const w = bench_watcher orelse return;
+    const w = benchWatcher orelse return;
     _ = w.scan() catch false;
 }
 
-var bench_dep_graph: ?*httpx.web.watcherDependency.DependencyGraph = null;
+var benchDepGraph: ?*httpx.web.watcherDependency.DependencyGraph = null;
 
 fn benchWatcherDeps() void {
-    const g = bench_dep_graph orelse return;
-    const affected = g.affectedSet(bench_allocator, "base.html") catch return;
+    const g = benchDepGraph orelse return;
+    const affected = g.affectedSet(benchAllocator, "base.html") catch return;
     defer {
-        for (affected) |s| bench_allocator.free(s);
-        bench_allocator.free(affected);
+        for (affected) |s| benchAllocator.free(s);
+        benchAllocator.free(affected);
     }
     std.mem.doNotOptimizeAway(affected.len);
 }
@@ -372,12 +372,12 @@ fn benchWorkerPoolSubmit() void {
     const Noop = struct {
         fn run(_: ?*anyopaque, _: *std.atomic.Value(bool)) void {}
     };
-    bench_pool.submit(Noop.run, null, null) catch return;
+    benchPool.submit(Noop.run, null, null) catch return;
 }
 
 fn benchConcurrencyQueue() void {
-    bench_queue.push(42) catch return;
-    _ = bench_queue.pop() catch return;
+    benchQueue.push(42) catch return;
+    _ = benchQueue.pop() catch return;
 }
 
 // Group 8: DNS Subsystem
@@ -394,10 +394,10 @@ fn dummyDnsLookup(
 }
 
 fn benchDnsCacheHit() void {
-    const addrs = bench_dns_cache.resolve("httpbun.com") catch return;
+    const addrs = benchDnsCache.resolve("httpbun.com") catch return;
     defer {
-        for (addrs) |a| bench_allocator.free(a);
-        bench_allocator.free(addrs);
+        for (addrs) |a| benchAllocator.free(a);
+        benchAllocator.free(addrs);
     }
     std.mem.doNotOptimizeAway(addrs.len);
 }
@@ -440,10 +440,10 @@ fn benchH3VarIntDecode() void {
 
 // Group 10: TLS Record Cryptography & X.509 Parsing
 
-var sample_tls_payload: [1024]u8 = undefined;
-const sample_tls_key: [32]u8 = [_]u8{0x42} ** 32;
-const sample_tls_iv: [12]u8 = [_]u8{0x24} ** 12;
-const sample_cert_pem =
+var sampleTlsPayload: [1024]u8 = undefined;
+const sampleTlsKey: [32]u8 = [_]u8{0x42} ** 32;
+const sampleTlsIv: [12]u8 = [_]u8{0x24} ** 12;
+const sampleCertPem =
     \\-----BEGIN CERTIFICATE-----
     \\MIIBmTCCAT+gAwIBAgIURhx0CMJWTUTFJXV9z2OlmW/cNlcwCgYIKoZIzj0EAwIw
     \\FDESMBAGA1UEAwwJMTI3LjAuMC4xMB4XDTI2MDkwOTE4MTczOFoXDTM2MDkwNjE4
@@ -459,29 +459,29 @@ const sample_cert_pem =
 
 fn benchTlsRecordSeal() void {
     const rec = httpx.tls.record.encodeRecord(
-        .application_data,
-        &sample_tls_payload,
+        .applicationData,
+        &sampleTlsPayload,
         0,
-        &sample_tls_key,
-        &sample_tls_iv,
-        .chacha20_poly1305,
+        &sampleTlsKey,
+        &sampleTlsIv,
+        .chacha20Poly1305,
     ) catch return;
     std.mem.doNotOptimizeAway(rec.len);
 }
 
 fn benchCertParse() void {
-    var chain = httpx.tls.certificate.parseCertificateChainPem(bench_allocator, sample_cert_pem) catch return;
+    var chain = httpx.tls.certificate.parseCertificateChainPem(benchAllocator, sampleCertPem) catch return;
     defer chain.deinit();
     std.mem.doNotOptimizeAway(chain.count());
 }
 
 // Group 11: Loopback End-to-End Client/Server Request
 
-var loopback_server: *httpx.Server = undefined;
-var loopback_thread: std.Thread = undefined;
-var loopback_client: httpx.Client = undefined;
-var loopback_url: [64]u8 = undefined;
-var loopback_url_slice: []const u8 = undefined;
+var loopbackServer: *httpx.Server = undefined;
+var loopbackThread: std.Thread = undefined;
+var loopbackClient: httpx.Client = undefined;
+var loopbackUrl: [64]u8 = undefined;
+var loopbackUrlSlice: []const u8 = undefined;
 
 fn loopbackPingHandler(_: *httpx.router.Context) anyerror!httpx.router.Response {
     return httpx.router.Response{
@@ -492,19 +492,19 @@ fn loopbackPingHandler(_: *httpx.router.Context) anyerror!httpx.router.Response 
 }
 
 fn benchClientServerLoopback() void {
-    var res = loopback_client.get(loopback_url_slice, .{}) catch return;
+    var res = loopbackClient.get(loopbackUrlSlice, .{}) catch return;
     defer res.deinit();
     std.mem.doNotOptimizeAway(res.status);
 }
 
 // Group 12: HTTP/2 pooled loopback (h2c prior knowledge, one server conn)
 
-var h2_bench_listener: httpx.tcp.Listener = undefined;
-var h2_bench_thread: std.Thread = undefined;
-var h2_bench_client: httpx.Client = undefined;
-var h2_bench_url: [64]u8 = undefined;
-var h2_bench_url_slice: []const u8 = undefined;
-var h2_bench_io: std.Io = undefined;
+var h2BenchListener: httpx.tcp.Listener = undefined;
+var h2BenchThread: std.Thread = undefined;
+var h2BenchClient: httpx.Client = undefined;
+var h2BenchUrl: [64]u8 = undefined;
+var h2BenchUrlSlice: []const u8 = undefined;
+var h2BenchIo: std.Io = undefined;
 
 fn h2BenchHandler(_: ?*anyopaque, method: []const u8, path: []const u8, _: []const httpx.http2.transport.Header, _: []const u8) anyerror!httpx.http2.transport.HandlerResponse {
     if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/ping")) {
@@ -514,25 +514,25 @@ fn h2BenchHandler(_: ?*anyopaque, method: []const u8, path: []const u8, _: []con
 }
 
 fn h2BenchServe() void {
-    var conn = h2_bench_listener.accept(h2_bench_io) catch return;
+    var conn = h2BenchListener.accept(h2BenchIo) catch return;
     defer conn.close();
-    httpx.http2.transport.serveConnection(bench_allocator, &conn, h2BenchHandler, null) catch {};
+    httpx.http2.transport.serveConnection(benchAllocator, &conn, h2BenchHandler, null) catch {};
 }
 
 fn benchH2PooledGet() void {
-    var res = h2_bench_client.get(h2_bench_url_slice, .{ .httpVersion = .http2 }) catch return;
+    var res = h2BenchClient.get(h2BenchUrlSlice, .{ .httpVersion = .http2 }) catch return;
     defer res.deinit();
     std.mem.doNotOptimizeAway(res.status);
 }
 
 // Group 13: HTTP/3 live loopback (fresh QUIC+TLS handshake per op)
 
-var h3_bench_server: H3BenchServer = undefined;
-var h3_bench_thread: std.Thread = undefined;
-var h3_bench_client: httpx.Client = undefined;
-var h3_bench_url: [128]u8 = undefined;
-var h3_bench_url_slice: []const u8 = undefined;
-var h3_bench_stop: std.atomic.Value(bool) = .init(false);
+var h3BenchServer: H3BenchServer = undefined;
+var h3BenchThread: std.Thread = undefined;
+var h3BenchClient: httpx.Client = undefined;
+var h3BenchUrl: [128]u8 = undefined;
+var h3BenchUrlSlice: []const u8 = undefined;
+var h3BenchStop: std.atomic.Value(bool) = .init(false);
 
 const H3BenchServer = struct {
     ep: httpx.quic.Endpoint = undefined,
@@ -548,22 +548,22 @@ const H3BenchServer = struct {
         const acc: *Acc = @ptrCast(@alignCast(c.?));
         if (acc.sid == std.math.maxInt(u64) and sid % 4 == 0) acc.sid = sid;
         if (sid != acc.sid) return;
-        acc.buf.appendSlice(bench_allocator, data) catch return;
+        acc.buf.appendSlice(benchAllocator, data) catch return;
         if (fin) acc.fin = true;
     }
 
     fn run(srv: *H3BenchServer) void {
-        while (!h3_bench_stop.load(.acquire)) {
+        while (!h3BenchStop.load(.acquire)) {
             serveOne(srv) catch continue;
         }
     }
 
     fn serveOne(srv: *H3BenchServer) !void {
-        const alloc = bench_allocator;
+        const alloc = benchAllocator;
         var qconn = try httpx.quic.Connection.init(alloc, .server, .{}, 0xB1);
         defer qconn.deinit();
         srv.ep.conn = qconn;
-        var drv = httpx.quic.HandshakeDriver.initServer(alloc, .{ .certChainPem = bench_cert_pem, .privateKeyPem = bench_key_pem });
+        var drv = httpx.quic.HandshakeDriver.initServer(alloc, .{ .certChainPem = benchCertPem, .privateKeyPem = benchKeyPem });
         defer drv.deinit();
         qconn.tls = .{ .ctx = &drv, .start = httpx.quic.HandshakeDriver.clientStart, .onData = httpx.quic.HandshakeDriver.onData };
         try httpx.quic.handshake.serveHandshake(&srv.ep, &srv.pump, &drv, 10_000);
@@ -572,9 +572,9 @@ const H3BenchServer = struct {
         var acc = Acc{};
         defer acc.buf.deinit(alloc);
         qconn.cbs = .{ .ctx = &acc, .onStreamData = onStream };
-        const start: u64 = @intCast(@divTrunc(std.Io.Timestamp.now(h3_bench_io, .awake).toNanoseconds(), 1_000_000));
+        const start: u64 = @intCast(@divTrunc(std.Io.Timestamp.now(h3BenchIo, .awake).toNanoseconds(), 1_000_000));
         while (true) {
-            const now: u64 = @intCast(@divTrunc(std.Io.Timestamp.now(h3_bench_io, .awake).toNanoseconds(), 1_000_000));
+            const now: u64 = @intCast(@divTrunc(std.Io.Timestamp.now(h3BenchIo, .awake).toNanoseconds(), 1_000_000));
             if (now -| start > 10_000) return error.Timeout;
             try httpx.quic.handshake.feedPumped(&srv.ep, &srv.pump, null, 200, now);
             if (!acc.fin) continue;
@@ -582,9 +582,9 @@ const H3BenchServer = struct {
             const fr = try httpx.http3.frame.parseFrame(acc.buf.items, &off);
             const fields = try h3.qdec.decodeSectionWithPrefix(fr.payload);
             defer h3.qdec.freeFields(fields);
-            var bench_qenc = httpx.http3.qpack.Encoder.init(alloc);
-            defer bench_qenc.deinit();
-            var rs = httpx.http3.RequestStream{ .id = acc.sid, .allocator = alloc, .qpack = &bench_qenc };
+            var benchQenc = httpx.http3.qpack.Encoder.init(alloc);
+            defer benchQenc.deinit();
+            var rs = httpx.http3.RequestStream{ .id = acc.sid, .allocator = alloc, .qpack = &benchQenc };
             const rhead = try rs.buildResponseHeaders(200, &.{});
             defer alloc.free(rhead);
             const rdata = try rs.buildData("pong");
@@ -601,25 +601,25 @@ const H3BenchServer = struct {
 
     fn sendH3(conn: *httpx.quic.Connection, sid: u64, bytes: []const u8) !void {
         const B = struct {
-            var s_id: u64 = 0;
-            var s_data: []const u8 = "";
+            var sId: u64 = 0;
+            var sData: []const u8 = "";
             pub fn build(gpa: std.mem.Allocator, payload: *std.ArrayList(u8)) httpx.quic.connection.Error!void {
-                httpx.quic.frames.encode(payload, gpa, .{ .stream = .{ .id = s_id, .offset = 0, .data = s_data, .fin = true } }) catch
+                httpx.quic.frames.encode(payload, gpa, .{ .stream = .{ .id = sId, .offset = 0, .data = sData, .fin = true } }) catch
                     return httpx.quic.connection.Error.OutOfMemory;
             }
         };
-        B.s_id = sid;
-        B.s_data = bytes;
+        B.sId = sid;
+        B.sData = bytes;
         try conn.sendFrames(.application, B.build, 0);
     }
 };
 
-var h3_bench_io: std.Io = undefined;
+var h3BenchIo: std.Io = undefined;
 
 fn benchH3Get() void {
-    var res = h3_bench_client.get(h3_bench_url_slice, .{
+    var res = h3BenchClient.get(h3BenchUrlSlice, .{
         .httpVersion = .http3,
-        .tls = .{ .verify = .caBundle, .caPem = bench_cert_pem },
+        .tls = .{ .verify = .caBundle, .caPem = benchCertPem },
         .timeoutMs = 10_000,
     }) catch return;
     defer res.deinit();
@@ -628,8 +628,8 @@ fn benchH3Get() void {
 
 // Group 14: TLS handshakes, full vs PSK-resumed (raw native client)
 
-const bench_cert_pem = sample_cert_pem;
-const bench_key_pem =
+const benchCertPem = sampleCertPem;
+const benchKeyPem =
     \\-----BEGIN PRIVATE KEY-----
     \\MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgyp549r9FrXbm02Cn
     \\81gAdAbUzHatPYQWVDIWnQdCMPChRANCAATvUPikzRIA8ryx237GUQRJlf8Qmgod
@@ -637,26 +637,26 @@ const bench_key_pem =
     \\-----END PRIVATE KEY-----
 ;
 
-var tls_bench_listener: httpx.tcp.Listener = undefined;
-var tls_bench_thread: std.Thread = undefined;
-var tls_bench_port: u16 = 0;
-var tls_bench_stop: std.atomic.Value(bool) = .init(false);
-var tls_bench_io: std.Io = undefined;
-var tls_bench_session: ?httpx.tls.ClientSession = null;
+var tlsBenchListener: httpx.tcp.Listener = undefined;
+var tlsBenchThread: std.Thread = undefined;
+var tlsBenchPort: u16 = 0;
+var tlsBenchStop: std.atomic.Value(bool) = .init(false);
+var tlsBenchIo: std.Io = undefined;
+var tlsBenchSession: ?httpx.tls.ClientSession = null;
 
 fn tlsBenchServe() void {
-    while (!tls_bench_stop.load(.acquire)) {
-        var sock = tls_bench_listener.accept(tls_bench_io) catch {
-            if (tls_bench_stop.load(.acquire)) return;
+    while (!tlsBenchStop.load(.acquire)) {
+        var sock = tlsBenchListener.accept(tlsBenchIo) catch {
+            if (tlsBenchStop.load(.acquire)) return;
             continue;
         };
         defer sock.close();
         var srv = httpx.tls.TlsServer.init(.{
-            .allocator = bench_allocator,
-            .defaultIdentity = .{ .certChainPem = bench_cert_pem, .privateKeyPem = bench_key_pem },
+            .allocator = benchAllocator,
+            .defaultIdentity = .{ .certChainPem = benchCertPem, .privateKeyPem = benchKeyPem },
             .ticketKeys = .{ .current = [_]u8{0xBE} ** 32 },
         });
-        var conn = srv.handshake(tls_bench_io, &sock) catch continue;
+        var conn = srv.handshake(tlsBenchIo, &sock) catch continue;
         defer conn.deinit();
         var b: [8]u8 = undefined;
         _ = conn.read(&b) catch continue;
@@ -665,16 +665,16 @@ fn tlsBenchServe() void {
 }
 
 fn tlsBenchDial(session: ?*const httpx.tls.ClientSession) void {
-    var sock = httpx.tcp.connect(tls_bench_io, "127.0.0.1", tls_bench_port) catch return;
+    var sock = httpx.tcp.connect(tlsBenchIo, "127.0.0.1", tlsBenchPort) catch return;
     defer sock.close();
     var cli = httpx.tls.TlsClient.init(.{
-        .allocator = bench_allocator,
+        .allocator = benchAllocator,
         .verify = .caBundle,
-        .caPem = bench_cert_pem,
+        .caPem = benchCertPem,
         .session = session,
         .captureSession = true,
     });
-    var conn = cli.handshake(tls_bench_io, &sock, "127.0.0.1") catch return;
+    var conn = cli.handshake(tlsBenchIo, &sock, "127.0.0.1") catch return;
     defer conn.deinit();
     conn.writeAll("ping") catch return;
     var b: [8]u8 = undefined;
@@ -692,164 +692,164 @@ fn benchTlsFullHandshake() void {
 }
 
 fn benchTlsResumedHandshake() void {
-    if (tls_bench_session) |*s| {
+    if (tlsBenchSession) |*s| {
         tlsBenchDial(s);
     }
 }
 
 pub fn main() !void {
-    bench_allocator = std.heap.smp_allocator;
-    recorded_metrics = std.ArrayList(BenchMetric).empty;
-    defer recorded_metrics.deinit(bench_allocator);
+    benchAllocator = std.heap.smp_allocator;
+    recordedMetrics = std.ArrayList(BenchMetric).empty;
+    defer recordedMetrics.deinit(benchAllocator);
 
     const io = std.Io.Threaded.global_single_threaded.io();
 
     // 1. Initialize WorkerPool
-    var pool = try httpx.WorkerPool.init(bench_allocator, .{ .workers = 2, .queueCapacity = 256 });
+    var pool = try httpx.WorkerPool.init(benchAllocator, .{ .workers = 2, .queueCapacity = 256 });
     try pool.start();
     defer pool.deinit();
-    bench_pool = &pool;
+    benchPool = &pool;
 
     // 2. Initialize BoundedQueue
-    bench_queue = try httpx.concurrency.queue.BoundedQueue(usize).init(bench_allocator, 1024);
-    defer bench_queue.deinit();
+    benchQueue = try httpx.concurrency.queue.BoundedQueue(usize).init(benchAllocator, 1024);
+    defer benchQueue.deinit();
 
     // 3. Initialize Router with diverse routes
-    bench_router = httpx.router.Router.init(bench_allocator);
-    defer bench_router.deinit();
-    try bench_router.get("/", dummyHandler, .{});
-    try bench_router.get("/api/v1/health", dummyHandler, .{});
-    try bench_router.get("/api/v1/status", dummyHandler, .{});
-    try bench_router.get("/users/{id}", dummyHandler, .{});
-    try bench_router.get("/users/{id}/profile", dummyHandler, .{});
-    try bench_router.get("/users/{id}/posts", dummyHandler, .{});
-    try bench_router.get("/items/{category}/{id}", dummyHandler, .{});
-    try bench_router.get("/docs", dummyHandler, .{});
-    try bench_router.get("/users/{userId:int}/posts/{postId:int}", dummyHandler, .{ .name = "bench_user_post" });
-    try bench_router.get("/openapi.json", dummyHandler, .{});
+    benchRouter = httpx.router.Router.init(benchAllocator);
+    defer benchRouter.deinit();
+    try benchRouter.get("/", dummyHandler, .{});
+    try benchRouter.get("/api/v1/health", dummyHandler, .{});
+    try benchRouter.get("/api/v1/status", dummyHandler, .{});
+    try benchRouter.get("/users/{id}", dummyHandler, .{});
+    try benchRouter.get("/users/{id}/profile", dummyHandler, .{});
+    try benchRouter.get("/users/{id}/posts", dummyHandler, .{});
+    try benchRouter.get("/items/{category}/{id}", dummyHandler, .{});
+    try benchRouter.get("/docs", dummyHandler, .{});
+    try benchRouter.get("/users/{userId:int}/posts/{postId:int}", dummyHandler, .{ .name = "bench_user_post" });
+    try benchRouter.get("/openapi.json", dummyHandler, .{});
 
     // 4. Initialize DNS Cache
-    var dns_cache = httpx.dns.Cache.init(bench_allocator, io, .{}, dummyDnsLookup, null);
-    defer dns_cache.deinit();
-    bench_dns_cache = &dns_cache;
+    var dnsCache = httpx.dns.Cache.init(benchAllocator, io, .{}, dummyDnsLookup, null);
+    defer dnsCache.deinit();
+    benchDnsCache = &dnsCache;
     // Prime the cache with an entry
-    const primed = try bench_dns_cache.resolve("httpbun.com");
+    const primed = try benchDnsCache.resolve("httpbun.com");
     defer {
-        for (primed) |a| bench_allocator.free(a);
-        bench_allocator.free(primed);
+        for (primed) |a| benchAllocator.free(a);
+        benchAllocator.free(primed);
     }
 
     // 5. Initialize watcher + dependency graph for watcher benchmarks.
-    var bench_w = try httpx.Watcher.init(bench_allocator, io, .{ .dirPath = "examples/web/templates" });
-    defer bench_w.deinit();
-    bench_watcher = bench_w;
-    var bench_g = httpx.web.watcherDependency.DependencyGraph.init(bench_allocator);
-    defer bench_g.deinit();
+    var benchW = try httpx.Watcher.init(benchAllocator, io, .{ .dirPath = "examples/web/templates" });
+    defer benchW.deinit();
+    benchWatcher = benchW;
+    var benchG = httpx.web.watcherDependency.DependencyGraph.init(benchAllocator);
+    defer benchG.deinit();
     var gi: usize = 0;
     while (gi < 64) : (gi += 1) {
         var nb: [32]u8 = undefined;
         const dep = try std.fmt.bufPrint(&nb, "page-{d}.html", .{gi});
-        bench_g.addEdge(dep, "base.html") catch {};
+        benchG.addEdge(dep, "base.html") catch {};
     }
-    bench_dep_graph = &bench_g;
+    benchDepGraph = &benchG;
 
     // 6. Initialize Compression Sample Data (1024 bytes repetitive JSON payload)
-    const json_chunk = "{\"id\":1001,\"name\":\"Benchmark Item\",\"active\":true,\"category\":\"networking\"},";
-    var comp_raw = std.ArrayList(u8).empty;
-    defer comp_raw.deinit(bench_allocator);
-    while (comp_raw.items.len < 1024) {
-        try comp_raw.appendSlice(bench_allocator, json_chunk);
+    const jsonChunk = "{\"id\":1001,\"name\":\"Benchmark Item\",\"active\":true,\"category\":\"networking\"},";
+    var compRaw = std.ArrayList(u8).empty;
+    defer compRaw.deinit(benchAllocator);
+    while (compRaw.items.len < 1024) {
+        try compRaw.appendSlice(benchAllocator, jsonChunk);
     }
-    sample_compress_raw = comp_raw.items;
-    sample_gzip_payload = try httpx.compression.compress(bench_allocator, .gzip, sample_compress_raw);
-    defer bench_allocator.free(sample_gzip_payload);
-    sample_deflate_payload = try httpx.compression.compress(bench_allocator, .deflate, sample_compress_raw);
-    defer bench_allocator.free(sample_deflate_payload);
+    sampleCompressRaw = compRaw.items;
+    sampleGzipPayload = try httpx.compression.compress(benchAllocator, .gzip, sampleCompressRaw);
+    defer benchAllocator.free(sampleGzipPayload);
+    sampleDeflatePayload = try httpx.compression.compress(benchAllocator, .deflate, sampleCompressRaw);
+    defer benchAllocator.free(sampleDeflatePayload);
 
     // 6. Initialize Local Loopback Server & Client
-    var srv = try httpx.Server.init(bench_allocator, io, .{
+    var srv = try httpx.Server.init(benchAllocator, io, .{
         .port = 0,
         .enableDocs = false,
         .keepAlive = true,
         .maxConnections = 100000,
     });
     try srv.router.get("/ping", loopbackPingHandler, .{});
-    loopback_server = &srv;
+    loopbackServer = &srv;
 
-    loopback_thread = try std.Thread.spawn(.{}, httpx.Server.run, .{&srv});
+    loopbackThread = try std.Thread.spawn(.{}, httpx.Server.run, .{&srv});
     defer {
-        loopback_client.deinit();
+        loopbackClient.deinit();
         srv.requestShutdown();
-        loopback_thread.join();
+        loopbackThread.join();
         srv.deinit();
     }
 
     const boundPort = srv.localPort();
-    loopback_url_slice = try std.fmt.bufPrint(&loopback_url, "http://127.0.0.1:{d}/ping", .{boundPort});
-    loopback_client = httpx.Client.init(bench_allocator, io, .{});
+    loopbackUrlSlice = try std.fmt.bufPrint(&loopbackUrl, "http://127.0.0.1:{d}/ping", .{boundPort});
+    loopbackClient = httpx.Client.init(benchAllocator, io, .{});
 
     // Warm up loopback connection
     {
-        var warmup_res = try loopback_client.get(loopback_url_slice, .{});
-        warmup_res.deinit();
+        var warmupRes = try loopbackClient.get(loopbackUrlSlice, .{});
+        warmupRes.deinit();
     }
 
     // 7. HTTP/2 pooled loopback (h2c, one server connection, pooled client).
     // Each teardown defer is registered only after its setup succeeds,
     // so a fatal setup error exits without joining garbage threads.
-    h2_bench_io = io;
-    h2_bench_listener = try httpx.tcp.Listener.bind(io, 0);
-    const h2port = h2_bench_listener.localPort();
-    h2_bench_thread = try std.Thread.spawn(.{}, h2BenchServe, .{});
-    h2_bench_url_slice = try std.fmt.bufPrint(&h2_bench_url, "http://127.0.0.1:{d}/ping", .{h2port});
-    h2_bench_client = httpx.Client.init(bench_allocator, io, .{});
+    h2BenchIo = io;
+    h2BenchListener = try httpx.tcp.Listener.bind(io, 0);
+    const h2port = h2BenchListener.localPort();
+    h2BenchThread = try std.Thread.spawn(.{}, h2BenchServe, .{});
+    h2BenchUrlSlice = try std.fmt.bufPrint(&h2BenchUrl, "http://127.0.0.1:{d}/ping", .{h2port});
+    h2BenchClient = httpx.Client.init(benchAllocator, io, .{});
     {
-        var warmup_res = try h2_bench_client.get(h2_bench_url_slice, .{ .httpVersion = .http2 });
-        warmup_res.deinit();
+        var warmupRes = try h2BenchClient.get(h2BenchUrlSlice, .{ .httpVersion = .http2 });
+        warmupRes.deinit();
     }
     defer {
         // Client close unblocks the single-connection server; then join.
-        h2_bench_client.deinit();
-        h2_bench_thread.join();
-        h2_bench_listener.close(io);
+        h2BenchClient.deinit();
+        h2BenchThread.join();
+        h2BenchListener.close(io);
     }
 
     // 8. HTTP/3 live loopback (fresh QUIC+TLS handshake per op)
-    h3_bench_io = io;
-    h3_bench_server.ep = try httpx.quic.transport.Endpoint.initPort(bench_allocator, io, try httpx.quic.Connection.init(bench_allocator, .server, .{}, 0xB1), 0);
-    const h3port = h3_bench_server.ep.localPort();
-    try h3_bench_server.pump.start(&h3_bench_server.ep, bench_allocator);
-    h3_bench_thread = try std.Thread.spawn(.{}, H3BenchServer.run, .{&h3_bench_server});
-    h3_bench_url_slice = try std.fmt.bufPrint(&h3_bench_url, "https://127.0.0.1:{d}/ping", .{h3port});
-    h3_bench_client = httpx.Client.init(bench_allocator, io, .{});
+    h3BenchIo = io;
+    h3BenchServer.ep = try httpx.quic.transport.Endpoint.initPort(benchAllocator, io, try httpx.quic.Connection.init(benchAllocator, .server, .{}, 0xB1), 0);
+    const h3port = h3BenchServer.ep.localPort();
+    try h3BenchServer.pump.start(&h3BenchServer.ep, benchAllocator);
+    h3BenchThread = try std.Thread.spawn(.{}, H3BenchServer.run, .{&h3BenchServer});
+    h3BenchUrlSlice = try std.fmt.bufPrint(&h3BenchUrl, "https://127.0.0.1:{d}/ping", .{h3port});
+    h3BenchClient = httpx.Client.init(benchAllocator, io, .{});
     defer {
         // Stop flag + pump stop abort in-flight server waits instantly;
         // then join, then release client and endpoint.
-        h3_bench_stop.store(true, .release);
-        h3_bench_server.pump.stop();
-        h3_bench_thread.join();
-        h3_bench_client.deinit();
-        h3_bench_server.ep.deinit();
+        h3BenchStop.store(true, .release);
+        h3BenchServer.pump.stop();
+        h3BenchThread.join();
+        h3BenchClient.deinit();
+        h3BenchServer.ep.deinit();
     }
 
     // 9. TLS loopback server (tickets enabled) + one captured session
-    tls_bench_io = io;
-    tls_bench_listener = try httpx.tcp.Listener.bind(io, 0);
-    tls_bench_port = tls_bench_listener.localPort();
-    tls_bench_thread = try std.Thread.spawn(.{}, tlsBenchServe, .{});
+    tlsBenchIo = io;
+    tlsBenchListener = try httpx.tcp.Listener.bind(io, 0);
+    tlsBenchPort = tlsBenchListener.localPort();
+    tlsBenchThread = try std.Thread.spawn(.{}, tlsBenchServe, .{});
     defer {
-        tls_bench_stop.store(true, .release);
-        tls_bench_listener.close(io);
-        tls_bench_thread.join();
+        tlsBenchStop.store(true, .release);
+        tlsBenchListener.close(io);
+        tlsBenchThread.join();
     }
     {
         // Prime the resumption session (full handshake + read captures NST).
-        var sock = try httpx.tcp.connect(io, "127.0.0.1", tls_bench_port);
+        var sock = try httpx.tcp.connect(io, "127.0.0.1", tlsBenchPort);
         defer sock.close();
         var cli = httpx.tls.TlsClient.init(.{
-            .allocator = bench_allocator,
+            .allocator = benchAllocator,
             .verify = .caBundle,
-            .caPem = bench_cert_pem,
+            .caPem = benchCertPem,
             .captureSession = true,
         });
         var conn = try cli.handshake(io, &sock, "127.0.0.1");
@@ -863,10 +863,10 @@ pub fn main() !void {
             got += n;
         }
         if (conn.takeCapturedSession()) |taken| {
-            tls_bench_session = taken;
+            tlsBenchSession = taken;
         } else return error.NoSessionCaptured;
     }
-    defer if (tls_bench_session) |*s| s.deinit(bench_allocator);
+    defer if (tlsBenchSession) |*s| s.deinit(benchAllocator);
 
     std.debug.print("=================================================================================\n", .{});
     std.debug.print("                         httpx.zig Benchmark Suite                              \n", .{});
@@ -878,90 +878,90 @@ pub fn main() !void {
     });
     std.debug.print("Timestamp:   2026-09-07\n\n", .{});
 
-    const fast_cfg = BenchConfig{ .iterations = 2_000_000, .warmup_iterations = 20_000, .rounds = 5 };
-    const core_cfg = BenchConfig{ .iterations = 200_000, .warmup_iterations = 5_000, .rounds = 5 };
-    const med_cfg = BenchConfig{ .iterations = 50_000, .warmup_iterations = 1_000, .rounds = 5 };
-    const io_cfg = BenchConfig{ .iterations = 5_000, .warmup_iterations = 200, .rounds = 5 };
-    const tls_cfg = BenchConfig{ .iterations = 5_000, .warmup_iterations = 100, .rounds = 5 };
-    const net_cfg = BenchConfig{ .iterations = 1_000, .warmup_iterations = 50, .rounds = 3 };
-    const hs_cfg = BenchConfig{ .iterations = 100, .warmup_iterations = 10, .rounds = 3 };
-    const h3_cfg = BenchConfig{ .iterations = 20, .warmup_iterations = 2, .rounds = 3 };
-    @memset(&sample_tls_payload, 0xAB);
+    const fastCfg = BenchConfig{ .iterations = 2_000_000, .warmupIterations = 20_000, .rounds = 5 };
+    const coreCfg = BenchConfig{ .iterations = 200_000, .warmupIterations = 5_000, .rounds = 5 };
+    const medCfg = BenchConfig{ .iterations = 50_000, .warmupIterations = 1_000, .rounds = 5 };
+    const ioCfg = BenchConfig{ .iterations = 5_000, .warmupIterations = 200, .rounds = 5 };
+    const tlsCfg = BenchConfig{ .iterations = 5_000, .warmupIterations = 100, .rounds = 5 };
+    const netCfg = BenchConfig{ .iterations = 1_000, .warmupIterations = 50, .rounds = 3 };
+    const hsCfg = BenchConfig{ .iterations = 100, .warmupIterations = 10, .rounds = 3 };
+    const h3Cfg = BenchConfig{ .iterations = 20, .warmupIterations = 2, .rounds = 3 };
+    @memset(&sampleTlsPayload, 0xAB);
 
     std.debug.print("[1] Core Operations & Parsing:\n", .{});
-    runBench("Core Operations", "headers_parse", "ops/sec", core_cfg, benchHeadersParse);
-    runBench("Core Operations", "uri_parse", "ops/sec", core_cfg, benchUriParse);
-    runBench("Core Operations", "status_lookup", "ops/sec", fast_cfg, benchStatusLookup);
-    runBench("Core Operations", "method_lookup", "ops/sec", fast_cfg, benchMethodLookup);
-    runBench("Core Operations", "http1_request_head", "ops/sec", core_cfg, benchHttp1RequestHead);
-    runBench("Core Operations", "http1_header_block", "ops/sec", core_cfg, benchHttp1HeaderBlock);
+    runBench("Core Operations", "headers_parse", "ops/sec", coreCfg, benchHeadersParse);
+    runBench("Core Operations", "uri_parse", "ops/sec", coreCfg, benchUriParse);
+    runBench("Core Operations", "status_lookup", "ops/sec", fastCfg, benchStatusLookup);
+    runBench("Core Operations", "method_lookup", "ops/sec", fastCfg, benchMethodLookup);
+    runBench("Core Operations", "http1_request_head", "ops/sec", coreCfg, benchHttp1RequestHead);
+    runBench("Core Operations", "http1_header_block", "ops/sec", coreCfg, benchHttp1HeaderBlock);
 
     std.debug.print("\n[2] Server Routing & Dispatch:\n", .{});
-    runBench("Routing", "router_static_match", "ops/sec", core_cfg, benchRouterStaticMatch);
-    runBench("Routing", "router_param_match", "ops/sec", core_cfg, benchRouterParamMatch);
-    runBench("Routing", "router_dispatch", "ops/sec", core_cfg, benchRouterDispatch);
-    runBench("Routing", "router_typed_match", "ops/sec", core_cfg, benchRouterTypedMatch);
-    runBench("Routing", "router_miss_404", "ops/sec", core_cfg, benchRouterMiss);
-    runBench("Routing", "router_reverse", "ops/sec", core_cfg, benchRouterReverse);
+    runBench("Routing", "router_static_match", "ops/sec", coreCfg, benchRouterStaticMatch);
+    runBench("Routing", "router_param_match", "ops/sec", coreCfg, benchRouterParamMatch);
+    runBench("Routing", "router_dispatch", "ops/sec", coreCfg, benchRouterDispatch);
+    runBench("Routing", "router_typed_match", "ops/sec", coreCfg, benchRouterTypedMatch);
+    runBench("Routing", "router_miss_404", "ops/sec", coreCfg, benchRouterMiss);
+    runBench("Routing", "router_reverse", "ops/sec", coreCfg, benchRouterReverse);
 
     std.debug.print("\n[3] Data Serialization:\n", .{});
-    runBench("Serialization", "json_stringify", "ops/sec", core_cfg, benchJsonStringify);
-    runBench("Serialization", "json_parse", "ops/sec", core_cfg, benchJsonParse);
+    runBench("Serialization", "json_stringify", "ops/sec", coreCfg, benchJsonStringify);
+    runBench("Serialization", "json_parse", "ops/sec", coreCfg, benchJsonParse);
 
     std.debug.print("\n[4] Authentication & Security:\n", .{});
-    runBench("Security", "basic_auth_encode", "ops/sec", core_cfg, benchBasicAuthEncode);
-    runBench("Security", "basic_auth_decode", "ops/sec", core_cfg, benchBasicAuthDecode);
-    runBench("Security", "bearer_token_parse", "ops/sec", fast_cfg, benchBearerTokenParse);
+    runBench("Security", "basic_auth_encode", "ops/sec", coreCfg, benchBasicAuthEncode);
+    runBench("Security", "basic_auth_decode", "ops/sec", coreCfg, benchBasicAuthDecode);
+    runBench("Security", "bearer_token_parse", "ops/sec", fastCfg, benchBearerTokenParse);
 
     std.debug.print("\n[5] Compression & Codecs (1 KiB payload):\n", .{});
-    runBench("Compression", "gzip_compress", "ops/sec", med_cfg, benchGzipCompress);
-    runBench("Compression", "gzip_decompress", "ops/sec", med_cfg, benchGzipDecompress);
-    runBench("Compression", "deflate_compress", "ops/sec", med_cfg, benchDeflateCompress);
-    runBench("Compression", "deflate_decompress", "ops/sec", med_cfg, benchDeflateDecompress);
+    runBench("Compression", "gzip_compress", "ops/sec", medCfg, benchGzipCompress);
+    runBench("Compression", "gzip_decompress", "ops/sec", medCfg, benchGzipDecompress);
+    runBench("Compression", "deflate_compress", "ops/sec", medCfg, benchDeflateCompress);
+    runBench("Compression", "deflate_decompress", "ops/sec", medCfg, benchDeflateDecompress);
 
     std.debug.print("\n[6] Web & Document Parsing:\n", .{});
-    runBench("Parsing", "html_parse", "ops/sec", med_cfg, benchHtmlParse);
-    runBench("Parsing", "template_parse", "ops/sec", med_cfg, benchTemplateParse);
+    runBench("Parsing", "html_parse", "ops/sec", medCfg, benchHtmlParse);
+    runBench("Parsing", "template_parse", "ops/sec", medCfg, benchTemplateParse);
     {
-        var parser = httpx.templates.parser.Parser.init(bench_allocator, "bench.html", sample_template_src);
-        bench_template_ast = parser.parse() catch null;
+        var parser = httpx.templates.parser.Parser.init(benchAllocator, "bench.html", sampleTemplateSrc);
+        benchTemplateAst = parser.parse() catch null;
     }
-    runBench("Parsing", "template_render", "ops/sec", med_cfg, benchTemplateRender);
-    if (bench_template_ast) |*ast| ast.deinit();
-    runBench("Parsing", "template_incremental", "ops/sec", med_cfg, benchTemplateIncremental);
-    runBench("Watcher", "watcher_scan", "ops/sec", med_cfg, benchWatcherScan);
-    runBench("Watcher", "watcher_deps", "ops/sec", med_cfg, benchWatcherDeps);
+    runBench("Parsing", "template_render", "ops/sec", medCfg, benchTemplateRender);
+    if (benchTemplateAst) |*ast| ast.deinit();
+    runBench("Parsing", "template_incremental", "ops/sec", medCfg, benchTemplateIncremental);
+    runBench("Watcher", "watcher_scan", "ops/sec", medCfg, benchWatcherScan);
+    runBench("Watcher", "watcher_deps", "ops/sec", medCfg, benchWatcherDeps);
 
     std.debug.print("\n[7] Concurrency & Queues:\n", .{});
-    runBench("Concurrency", "worker_pool_submit", "ops/sec", core_cfg, benchWorkerPoolSubmit);
-    runBench("Concurrency", "concurrency_queue", "ops/sec", core_cfg, benchConcurrencyQueue);
+    runBench("Concurrency", "worker_pool_submit", "ops/sec", coreCfg, benchWorkerPoolSubmit);
+    runBench("Concurrency", "concurrency_queue", "ops/sec", coreCfg, benchConcurrencyQueue);
 
     std.debug.print("\n[8] DNS Resolution Subsystem:\n", .{});
-    runBench("DNS", "dns_cache_hit", "ops/sec", core_cfg, benchDnsCacheHit);
+    runBench("DNS", "dns_cache_hit", "ops/sec", coreCfg, benchDnsCacheHit);
 
     std.debug.print("\n[9] HTTP/2 & QUIC / HTTP/3 Primitives:\n", .{});
-    runBench("Protocols", "h2_frame_header", "ops/sec", fast_cfg, benchHttp2FrameHeader);
-    runBench("Protocols", "hpack_int_encode", "ops/sec", fast_cfg, benchHpackIntEncode);
-    runBench("Protocols", "hpack_int_decode", "ops/sec", fast_cfg, benchHpackIntDecode);
-    runBench("Protocols", "h3_varint_encode", "ops/sec", fast_cfg, benchH3VarIntEncode);
-    runBench("Protocols", "h3_varint_decode", "ops/sec", fast_cfg, benchH3VarIntDecode);
+    runBench("Protocols", "h2_frame_header", "ops/sec", fastCfg, benchHttp2FrameHeader);
+    runBench("Protocols", "hpack_int_encode", "ops/sec", fastCfg, benchHpackIntEncode);
+    runBench("Protocols", "hpack_int_decode", "ops/sec", fastCfg, benchHpackIntDecode);
+    runBench("Protocols", "h3_varint_encode", "ops/sec", fastCfg, benchH3VarIntEncode);
+    runBench("Protocols", "h3_varint_decode", "ops/sec", fastCfg, benchH3VarIntDecode);
 
     std.debug.print("\n[10] TLS Cryptography (1 KiB record, P-256 chain):\n", .{});
-    runBench("TLS", "tls_record_seal", "ops/sec", core_cfg, benchTlsRecordSeal);
-    runBench("TLS", "tls_cert_parse", "ops/sec", tls_cfg, benchCertParse);
+    runBench("TLS", "tls_record_seal", "ops/sec", coreCfg, benchTlsRecordSeal);
+    runBench("TLS", "tls_cert_parse", "ops/sec", tlsCfg, benchCertParse);
 
     std.debug.print("\n[11] Local Loopback Client/Server (HTTP/1.1 keep-alive):\n", .{});
-    runBench("Network", "client_server_get", "req/sec", io_cfg, benchClientServerLoopback);
+    runBench("Network", "client_server_get", "req/sec", ioCfg, benchClientServerLoopback);
 
     std.debug.print("\n[12] HTTP/2 Pooled Requests (h2c, amortized via session pool):\n", .{});
-    runBench("Network", "h2_pooled_get", "req/sec", net_cfg, benchH2PooledGet);
+    runBench("Network", "h2_pooled_get", "req/sec", netCfg, benchH2PooledGet);
 
     std.debug.print("\n[13] HTTP/3 Live Requests (fresh QUIC+TLS handshake per op):\n", .{});
-    runBench("Network", "h3_get", "req/sec", h3_cfg, benchH3Get);
+    runBench("Network", "h3_get", "req/sec", h3Cfg, benchH3Get);
 
     std.debug.print("\n[14] TLS Handshakes (full vs PSK-resumed, loopback):\n", .{});
-    runBench("TLS", "tls_full_handshake", "ops/sec", hs_cfg, benchTlsFullHandshake);
-    runBench("TLS", "tls_resumed_handshake", "ops/sec", hs_cfg, benchTlsResumedHandshake);
+    runBench("TLS", "tls_full_handshake", "ops/sec", hsCfg, benchTlsFullHandshake);
+    runBench("TLS", "tls_resumed_handshake", "ops/sec", hsCfg, benchTlsResumedHandshake);
 
     std.debug.print("\n=================================================================================\n", .{});
     std.debug.print("                         Generated Markdown Table                                \n", .{});
@@ -969,23 +969,23 @@ pub fn main() !void {
 
     std.debug.print("| Benchmark | Category | Avg Latency | Throughput | Target |\n", .{});
     std.debug.print("| :--- | :--- | :---: | :---: | :---: |\n", .{});
-    for (recorded_metrics.items) |m| {
-        if (m.avg_ns < 1000.0) {
+    for (recordedMetrics.items) |m| {
+        if (m.avgNs < 1000.0) {
             std.debug.print("| `{s}` | {s} | {d:.2} ns/op | **{d} {s}** | `{s}-{s}` |\n", .{
                 m.name,
                 m.category,
-                m.avg_ns,
-                m.ops_per_sec,
+                m.avgNs,
+                m.opsPerSec,
                 m.unit,
                 @tagName(builtin.cpu.arch),
                 @tagName(builtin.os.tag),
             });
-        } else if (m.avg_ns < 1_000_000.0) {
+        } else if (m.avgNs < 1_000_000.0) {
             std.debug.print("| `{s}` | {s} | {d:.2} µs/op | **{d} {s}** | `{s}-{s}` |\n", .{
                 m.name,
                 m.category,
-                m.avg_ns / 1000.0,
-                m.ops_per_sec,
+                m.avgNs / 1000.0,
+                m.opsPerSec,
                 m.unit,
                 @tagName(builtin.cpu.arch),
                 @tagName(builtin.os.tag),
@@ -994,8 +994,8 @@ pub fn main() !void {
             std.debug.print("| `{s}` | {s} | {d:.2} ms/op | **{d} {s}** | `{s}-{s}` |\n", .{
                 m.name,
                 m.category,
-                m.avg_ns / 1_000_000.0,
-                m.ops_per_sec,
+                m.avgNs / 1_000_000.0,
+                m.opsPerSec,
                 m.unit,
                 @tagName(builtin.cpu.arch),
                 @tagName(builtin.os.tag),

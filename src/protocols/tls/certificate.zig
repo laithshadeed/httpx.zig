@@ -8,7 +8,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const crypto = std.crypto;
 const Certificate = crypto.Certificate;
-const der_mod = Certificate.der;
+const derMod = Certificate.der;
 const errorsMod = @import("errors.zig");
 pub const TlsError = errorsMod.TlsError;
 
@@ -24,7 +24,7 @@ pub const X509Certificate = struct {
         if (derBytes.len < 64 or derBytes[0] != 0x30) return TlsError.InvalidCertificate;
 
         // Verify outer SEQUENCE length indicator
-        const header_len: usize = if (derBytes[1] < 0x80)
+        const headerLen: usize = if (derBytes[1] < 0x80)
             2
         else if (derBytes[1] == 0x81)
             3
@@ -33,7 +33,7 @@ pub const X509Certificate = struct {
         else
             return TlsError.InvalidCertificate;
 
-        if (derBytes.len < header_len) return TlsError.InvalidCertificate;
+        if (derBytes.len < headerLen) return TlsError.InvalidCertificate;
 
         const cert: Certificate = .{
             .buffer = derBytes,
@@ -81,12 +81,12 @@ pub const X509Certificate = struct {
         return nowSec < self.parsed.validity.not_before;
     }
 
-    /// Returns not_before timestamp in seconds.
+    /// Returns notBefore timestamp in seconds.
     pub fn notBefore(self: X509Certificate) i64 {
         return self.parsed.validity.not_before;
     }
 
-    /// Returns not_after timestamp in seconds.
+    /// Returns notAfter timestamp in seconds.
     pub fn notAfter(self: X509Certificate) i64 {
         return self.parsed.validity.not_after;
     }
@@ -107,12 +107,12 @@ pub const X509Certificate = struct {
                 search = idx + 1;
                 continue;
             }
-            const oct_len: usize = der[pos + 1];
-            if (oct_len & 0x80 != 0 or pos + 2 + oct_len > der.len) {
+            const octLen: usize = der[pos + 1];
+            if (octLen & 0x80 != 0 or pos + 2 + octLen > der.len) {
                 search = idx + 1;
                 continue;
             }
-            const inner = der[pos + 2 ..][0..oct_len];
+            const inner = der[pos + 2 ..][0..octLen];
             // Expect SEQUENCE, then optional cA BOOLEAN TRUE.
             if (inner.len >= 2 and inner[0] == 0x30 and inner[1] + 2 <= inner.len) {
                 const seq = inner[2..][0..inner[1]];
@@ -213,15 +213,15 @@ pub fn checkDerStructure(der: []const u8) bool {
 
 /// Decodes base64 body of a PEM block with the given label.
 pub fn decodePemBlock(allocator: Allocator, pem: []const u8, label: []const u8) TlsError![]u8 {
-    var begin_buf: [128]u8 = undefined;
-    const begin_tag = std.fmt.bufPrint(&begin_buf, "-----BEGIN {s}-----", .{label}) catch return TlsError.InvalidCertificate;
-    var end_buf: [128]u8 = undefined;
-    const end_tag = std.fmt.bufPrint(&end_buf, "-----END {s}-----", .{label}) catch return TlsError.InvalidCertificate;
+    var beginBuf: [128]u8 = undefined;
+    const beginTag = std.fmt.bufPrint(&beginBuf, "-----BEGIN {s}-----", .{label}) catch return TlsError.InvalidCertificate;
+    var endBuf: [128]u8 = undefined;
+    const endTag = std.fmt.bufPrint(&endBuf, "-----END {s}-----", .{label}) catch return TlsError.InvalidCertificate;
 
-    const begin_idx = std.mem.indexOf(u8, pem, begin_tag) orelse return TlsError.InvalidCertificate;
-    const body_start = begin_idx + begin_tag.len;
-    const endIdx = std.mem.indexOfPos(u8, pem, body_start, end_tag) orelse return TlsError.InvalidCertificate;
-    const body = pem[body_start..endIdx];
+    const beginIdx = std.mem.indexOf(u8, pem, beginTag) orelse return TlsError.InvalidCertificate;
+    const bodyStart = beginIdx + beginTag.len;
+    const endIdx = std.mem.indexOfPos(u8, pem, bodyStart, endTag) orelse return TlsError.InvalidCertificate;
+    const body = pem[bodyStart..endIdx];
 
     // Strip whitespace and newlines
     var clean = std.ArrayList(u8).empty;
@@ -248,14 +248,14 @@ pub fn parseCertificateChainPem(allocator: Allocator, pem: []const u8) TlsError!
         list.deinit(allocator);
     }
 
-    var search_from: usize = 0;
-    while (std.mem.indexOfPos(u8, pem, search_from, "-----BEGIN CERTIFICATE-----")) |idx| {
+    var searchFrom: usize = 0;
+    while (std.mem.indexOfPos(u8, pem, searchFrom, "-----BEGIN CERTIFICATE-----")) |idx| {
         const der = try decodePemBlock(allocator, pem[idx..], "CERTIFICATE");
         list.append(allocator, der) catch {
             allocator.free(der);
             return TlsError.OutOfMemory;
         };
-        search_from = idx + 26;
+        searchFrom = idx + 26;
     }
 
     if (list.items.len == 0) return TlsError.InvalidCertificate;
@@ -267,8 +267,8 @@ pub fn parseCertificateChainPem(allocator: Allocator, pem: []const u8) TlsError!
 }
 
 test "X509Certificate parse invalid bytes" {
-    const invalid_der = [_]u8{ 0x30, 0x05, 0x00, 0x01, 0x02 };
-    try std.testing.expectError(TlsError.InvalidCertificate, X509Certificate.parseDer(&invalid_der));
+    const invalidDer = [_]u8{ 0x30, 0x05, 0x00, 0x01, 0x02 };
+    try std.testing.expectError(TlsError.InvalidCertificate, X509Certificate.parseDer(&invalidDer));
 }
 
 test "decodePemBlock reject malformed" {
@@ -281,7 +281,7 @@ test "checkDerStructure rejects truncation without panicking" {
     try std.testing.expect(!checkDerStructure("not-a-valid-cert"));
     try std.testing.expect(!checkDerStructure(&[_]u8{ 0x30, 0x05, 0x00, 0x01, 0x02 }));
     // Truncated real certificate.
-    const real = @embedFile("testdata/localhost_cert.pem");
+    const real = @embedFile("testdata/localhostCert.pem");
     const alloc = std.testing.allocator;
     const der = try decodePemBlock(alloc, real, "CERTIFICATE");
     defer alloc.free(der);

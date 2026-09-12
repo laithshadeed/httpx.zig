@@ -1,6 +1,6 @@
 # Example: Download Custom Progress
 
-Demonstrates download_custom_progress.zig using the canonical HTTPX API.
+Demonstrates downloadCustomProgress.zig using the canonical HTTPX API.
 
 ## Complete Example
 

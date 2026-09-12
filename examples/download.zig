@@ -11,12 +11,12 @@ pub fn main() !void {
     defer client.deinit();
 
     // Use httpbun.com /bytes/90 (or /payload) endpoint (default limit on httpbun.com is 90 bytes, or payload endpoint)
-    const sample_url = "https://httpbun.com/bytes/90";
-    std.debug.print("==> Downloading {s} with zero-config progress bar...\n", .{sample_url});
+    const sampleUrl = "https://httpbun.com/bytes/90";
+    std.debug.print("==> Downloading {s} with zero-config progress bar...\n", .{sampleUrl});
 
     // 1. Download to a specific directory (automatically uses URL basename "1048576")
     const result1 = client.download(
-        sample_url,
+        sampleUrl,
         .{
             .path = "downloads/",
             .progress = .enabled,
@@ -36,7 +36,7 @@ pub fn main() !void {
 
     // 2. Download with explicit custom destination filename
     const result2 = client.download(
-        sample_url,
+        sampleUrl,
         .{
             .path = "downloads/custom_named_doc.bin",
             .progress = .enabled,

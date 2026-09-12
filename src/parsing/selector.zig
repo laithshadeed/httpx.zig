@@ -17,7 +17,7 @@ const AttrSel = struct {
 const PseudoKind = enum {
     firstChild,
     lastChild,
-    nth_child,
+    nthChild,
     not,
     none,
 };
@@ -110,8 +110,8 @@ pub fn matchesSelector(tree: *const Tree, nodeIdx: u32, sel: *const ParsedSelect
 
 fn matchesSequence(tree: *const Tree, nodeIdx: u32, seq: *const Sequence) bool {
     if (seq.compounds.len == 0) return false;
-    const last_cmp = &seq.compounds[seq.compounds.len - 1];
-    if (!matchesCompound(tree, nodeIdx, last_cmp)) return false;
+    const lastCmp = &seq.compounds[seq.compounds.len - 1];
+    if (!matchesCompound(tree, nodeIdx, lastCmp)) return false;
     if (seq.compounds.len == 1) return true;
 
     var current = nodeIdx;
@@ -180,8 +180,8 @@ fn matchesSimple(tree: *const Tree, nodeIdx: u32, s: *const Simple) bool {
         if (!std.ascii.eqlIgnoreCase(node.tag, t)) return false;
     }
     if (s.id) |id| {
-        const node_id = node.attr("id") orelse return false;
-        if (!std.mem.eql(u8, node_id, id)) return false;
+        const nodeId = node.attr("id") orelse return false;
+        if (!std.mem.eql(u8, nodeId, id)) return false;
     }
     for (s.classes) |cls| {
         if (!node.hasClass(cls)) return false;
@@ -190,8 +190,8 @@ fn matchesSimple(tree: *const Tree, nodeIdx: u32, s: *const Simple) bool {
         if (!matchesAttr(node, &asel)) return false;
     }
     if (!matchesPseudo(tree, nodeIdx, &s.pseudo)) return false;
-    if (s.notSel) |not_cmp| {
-        if (matchesCompound(tree, nodeIdx, not_cmp)) return false;
+    if (s.notSel) |notCmp| {
+        if (matchesCompound(tree, nodeIdx, notCmp)) return false;
     }
     return true;
 }
@@ -230,7 +230,7 @@ fn matchesPseudo(tree: *const Tree, nodeIdx: u32, p: *const Pseudo) bool {
             while (s != NO_NODE and tree.get(s).kind == .text) s = tree.get(s).prevSibling;
             return s == nodeIdx;
         },
-        .nth_child => {
+        .nthChild => {
             const par = tree.get(nodeIdx).parent;
             if (par == NO_NODE) return false;
             var pos: i32 = 0;
@@ -267,9 +267,9 @@ fn parseSequence(al: Allocator, src: []const u8) SelectorError!Sequence {
 
     var i: usize = 0;
     while (i < src.len) {
-        const ws_start = i;
+        const wsStart = i;
         while (i < src.len and (src[i] == ' ' or src[i] == '\t')) : (i += 1) {}
-        const had_ws = i > ws_start;
+        const hadWs = i > wsStart;
 
         if (i >= src.len) break;
 
@@ -291,7 +291,7 @@ fn parseSequence(al: Allocator, src: []const u8) SelectorError!Sequence {
                 while (i < src.len and src[i] == ' ') : (i += 1) {}
             },
             else => {
-                if (had_ws and compounds.items.len > 0) comb = .descendant;
+                if (hadWs and compounds.items.len > 0) comb = .descendant;
             },
         }
 
@@ -357,12 +357,12 @@ fn parseCompound(al: Allocator, src: []const u8, pos: *usize) SelectorError!Comp
 
 fn parseAttrSel(src: []const u8, pos: *usize) SelectorError!AttrSel {
     while (pos.* < src.len and src[pos.*] == ' ') : (pos.* += 1) {}
-    const name_start = pos.*;
+    const nameStart = pos.*;
     while (pos.* < src.len and src[pos.*] != ']' and src[pos.*] != '=' and
         src[pos.*] != '^' and src[pos.*] != '$' and src[pos.*] != '*' and
         src[pos.*] != '~' and src[pos.*] != ' ') : (pos.* += 1)
     {}
-    const name = src[name_start..pos.*];
+    const name = src[nameStart..pos.*];
     while (pos.* < src.len and src[pos.*] == ' ') : (pos.* += 1) {}
 
     if (pos.* >= src.len or src[pos.*] == ']') {
@@ -431,10 +431,10 @@ fn parsePseudo(al: Allocator, src: []const u8, pos: *usize, simple: *Simple) Sel
             const nstr = std.mem.trim(u8, src[nstart..pos.*], " ");
             if (pos.* < src.len) pos.* += 1;
             if (std.fmt.parseInt(i32, nstr, 10)) |n| {
-                return .{ .kind = .nth_child, .nthN = 0, .nthOf = n };
+                return .{ .kind = .nthChild, .nthN = 0, .nthOf = n };
             } else |_| {}
         }
-        return .{ .kind = .nth_child, .nthN = 1, .nthOf = 0 };
+        return .{ .kind = .nthChild, .nthN = 1, .nthOf = 0 };
     }
     if (std.ascii.eqlIgnoreCase(name, "not")) {
         if (pos.* < src.len and src[pos.*] == '(') {
@@ -446,10 +446,10 @@ fn parsePseudo(al: Allocator, src: []const u8, pos: *usize, simple: *Simple) Sel
                 if (src[pos.*] == ')') depth -= 1;
             }
             const inner = src[nstart .. pos.* - 1];
-            const not_cmp = try al.create(Compound);
-            var inner_pos: usize = 0;
-            not_cmp.* = try parseCompound(al, inner, &inner_pos);
-            simple.notSel = not_cmp;
+            const notCmp = try al.create(Compound);
+            var innerPos: usize = 0;
+            notCmp.* = try parseCompound(al, inner, &innerPos);
+            simple.notSel = notCmp;
         }
         return .{ .kind = .not };
     }
@@ -468,33 +468,33 @@ test "selectors query tree-sitter-derived dom" {
     var tree = try html.parse(al,
         \\<div id="main" class="wrap"><p class="intro">Hi</p><p>Bye <a href="/x" class="link">X</a></p><ul><li>1</li><li>2</li></ul></div>
     , .{});
-    var sel_tag = try parseSelector(al, "p");
-    defer sel_tag.deinit();
-    try std.testing.expectEqual(@as(usize, 2), (try selectAll(al, &tree, 0, &sel_tag)).len);
-    var sel_id = try parseSelector(al, "#main");
-    defer sel_id.deinit();
-    try std.testing.expect((try selectFirst(al, &tree, 0, &sel_id)) != null);
-    var sel_class = try parseSelector(al, ".intro");
-    defer sel_class.deinit();
-    try std.testing.expect((try selectFirst(al, &tree, 0, &sel_class)) != null);
-    var sel_attr = try parseSelector(al, "a[href=/x]");
-    defer sel_attr.deinit();
-    try std.testing.expect((try selectFirst(al, &tree, 0, &sel_attr)) != null);
-    var sel_desc = try parseSelector(al, "div a.link");
-    defer sel_desc.deinit();
-    try std.testing.expect((try selectFirst(al, &tree, 0, &sel_desc)) != null);
-    var sel_child = try parseSelector(al, "ul > li");
-    defer sel_child.deinit();
-    try std.testing.expectEqual(@as(usize, 2), (try selectAll(al, &tree, 0, &sel_child)).len);
-    var sel_group = try parseSelector(al, "h1, a.link");
-    defer sel_group.deinit();
-    try std.testing.expect((try selectFirst(al, &tree, 0, &sel_group)) != null);
-    var sel_first = try parseSelector(al, "li:first-child");
-    defer sel_first.deinit();
-    try std.testing.expect((try selectFirst(al, &tree, 0, &sel_first)) != null);
-    var sel_not = try parseSelector(al, "p:not(.intro)");
-    defer sel_not.deinit();
-    try std.testing.expect((try selectFirst(al, &tree, 0, &sel_not)) != null);
+    var selTag = try parseSelector(al, "p");
+    defer selTag.deinit();
+    try std.testing.expectEqual(@as(usize, 2), (try selectAll(al, &tree, 0, &selTag)).len);
+    var selId = try parseSelector(al, "#main");
+    defer selId.deinit();
+    try std.testing.expect((try selectFirst(al, &tree, 0, &selId)) != null);
+    var selClass = try parseSelector(al, ".intro");
+    defer selClass.deinit();
+    try std.testing.expect((try selectFirst(al, &tree, 0, &selClass)) != null);
+    var selAttr = try parseSelector(al, "a[href=/x]");
+    defer selAttr.deinit();
+    try std.testing.expect((try selectFirst(al, &tree, 0, &selAttr)) != null);
+    var selDesc = try parseSelector(al, "div a.link");
+    defer selDesc.deinit();
+    try std.testing.expect((try selectFirst(al, &tree, 0, &selDesc)) != null);
+    var selChild = try parseSelector(al, "ul > li");
+    defer selChild.deinit();
+    try std.testing.expectEqual(@as(usize, 2), (try selectAll(al, &tree, 0, &selChild)).len);
+    var selGroup = try parseSelector(al, "h1, a.link");
+    defer selGroup.deinit();
+    try std.testing.expect((try selectFirst(al, &tree, 0, &selGroup)) != null);
+    var selFirst = try parseSelector(al, "li:first-child");
+    defer selFirst.deinit();
+    try std.testing.expect((try selectFirst(al, &tree, 0, &selFirst)) != null);
+    var selNot = try parseSelector(al, "p:not(.intro)");
+    defer selNot.deinit();
+    try std.testing.expect((try selectFirst(al, &tree, 0, &selNot)) != null);
 }
 
 fn isSelectorStop(c: u8) bool {

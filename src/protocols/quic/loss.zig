@@ -2,7 +2,7 @@
 //!
 //! Constants follow ngtcp2/rcvry.h: kPacketThreshold=3, kTimeThreshold
 //! =9/8, kGranularity=1ms, PTO backoff 2^ptoCount, persistent-congestion
-//! duration = (srtt + max(4*rttvar, granularity) + max_ack_delay) * 3.
+//! duration = (srtt + max(4*rttvar, granularity) + maxAckDelay) * 3.
 
 const std = @import("std");
 
@@ -39,10 +39,10 @@ pub const RttStats = struct {
             return;
         }
 
-        // min_rtt from the uncorrected sample.
+        // minRtt from the uncorrected sample.
         self.minRttMs = @min(self.minRttMs, raw);
 
-        // Ack-delay correction only when sample >= min_rtt + delay budget.
+        // Ack-delay correction only when sample >= minRtt + delay budget.
         var sample = raw;
         const budget = @min(peerMaxAckDelayMs, raw -| self.minRttMs);
         if (raw > self.minRttMs) sample = raw - budget;
@@ -111,19 +111,19 @@ pub const Recovery = struct {
 
         const largest = self.largestAckedPn orelse return;
         const srtt: u64 = if (self.rtt.firstSampleTsMs == null) self.rtt.initialRttMs else self.rtt.smoothedRttMs;
-        const loss_delay = @max(srtt * TT_NUM / TT_DEN, GranularityMs);
+        const lossDelay = @max(srtt * TT_NUM / TT_DEN, GranularityMs);
 
         for (packets) |p| {
             if (p.pn >= largest) continue; // not yet beyond threshold
 
-            // Packet threshold: lost when largest_newly_acked >= pn + K.
-            const thresh_lost = largest - p.pn >= PacketThreshold;
+            // Packet threshold: lost when largestNewlyAcked >= pn + K.
+            const threshLost = largest - p.pn >= PacketThreshold;
 
-            // Time threshold: lost when now >= ts + loss_delay.
-            const expiry = p.tsMs +| loss_delay;
-            const time_lost = nowMs >= expiry;
+            // Time threshold: lost when now >= ts + lossDelay.
+            const expiry = p.tsMs +| lossDelay;
+            const timeLost = nowMs >= expiry;
 
-            if (thresh_lost or time_lost) {
+            if (threshLost or timeLost) {
                 try lostOut.append(gpa, p);
                 // Persistent-congestion window bookkeeping.
                 self.noteLostForPc(p.tsMs);
@@ -164,8 +164,8 @@ pub const Recovery = struct {
     /// Current PTO duration including backoff (ms).
     pub fn ptoDuration(self: *const Recovery, appSpace: bool) u64 {
         const base = self.rtt.ptoBase(appSpace and self.cfg.includeAckDelayInPto, self.cfg.maxAckDelayMs);
-        const backoff_shift: u5 = @intCast(@min(self.ptoCount, 30));
-        return base <<| backoff_shift;
+        const backoffShift: u5 = @intCast(@min(self.ptoCount, 30));
+        return base <<| backoffShift;
     }
 
     pub fn onPtoExpired(self: *Recovery) void {
@@ -238,7 +238,7 @@ test "time threshold fires at 9/8 srtt" {
     var lost = std.ArrayList(SentPacket).empty;
     defer lost.deinit(std.testing.allocator);
 
-    // loss_delay = 900; packet sent at t=100 expires at 1000.
+    // lossDelay = 900; packet sent at t=100 expires at 1000.
     const pkts = [_]SentPacket{
         .{ .pn = 5, .tsMs = 100, .inFlightBytes = 1200, .ackEliciting = true },
     };

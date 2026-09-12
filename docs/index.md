@@ -178,24 +178,24 @@ zig build run-all-simple_get
 Runnable examples live in `examples/` (see the [README](https://github.com/muhammad-fiaz/httpx.zig#examples)
 for the full list), including:
 
-- `simple_server.zig`: basic HTTP server
-- `simple_get.zig`: basic HTTP client GET
-- `full_integration.zig`: end-to-end client + server lifecycle
-- `websocket_server.zig`: WebSocket handshake and frames
-- `sse_server.zig`: Server-Sent Events
+- `simpleServer.zig`: basic HTTP server
+- `simpleGet.zig`: basic HTTP client GET
+- `fullIntegration.zig`: end-to-end client + server lifecycle
+- `websocketServer.zig`: WebSocket handshake and frames
+- `sseServer.zig`: Server-Sent Events
 - `multipart.zig`: multipart/form-data uploads
-- `metrics_server.zig`: Prometheus exposition and snapshots
-- `session_server.zig`: cookie-based session flow
-- `health_check.zig`: liveness/readiness probes
-- `proxy_demo.zig`: HTTP proxy and SOCKS5h tunneling
-- `concurrent_demo.zig`: parallel getAll / requestAll
-- `connection_pool.zig`: keep-alive pooling
-- `static_files.zig`, `static_site.zig`, `static_embedded.zig`: filesystem, site, and single-file embedded assets
-- `spa_server.zig`, `spa_fallback.zig`: single-page applications
-- `http2_client.zig`, `http2_multiplex.zig`: HTTP/2 and HPACK
-- `http3_client.zig`, `http3_quic.zig`: HTTP/3, QPACK, and QUIC framing
-- `tls_server.zig`, `tls_get.zig`, `tls_mtls.zig`: TLS listener and identities
-- `graphql_server.zig`: GraphQL over HTTP
+- `metricsServer.zig`: Prometheus exposition and snapshots
+- `sessionServer.zig`: cookie-based session flow
+- `healthCheck.zig`: liveness/readiness probes
+- `proxyDemo.zig`: HTTP proxy and SOCKS5h tunneling
+- `concurrentDemo.zig`: parallel getAll / requestAll
+- `connectionPool.zig`: keep-alive pooling
+- `staticFiles.zig`, `staticSite.zig`, `staticEmbedded.zig`: filesystem, site, and single-file embedded assets
+- `spaServer.zig`, `spaFallback.zig`: single-page applications
+- `http2Client.zig`, `http2Multiplex.zig`: HTTP/2 and HPACK
+- `http3Client.zig`, `http3Quic.zig`: HTTP/3, QPACK, and QUIC framing
+- `tlsServer.zig`, `tlsGet.zig`, `tlsMtls.zig`: TLS listener and identities
+- `graphqlServer.zig`: GraphQL over HTTP
 - `template-basic`, `template-loops`, `template-inheritance`, `template-includes`: template engine features
 - `website`: embedded single-file website demo
 

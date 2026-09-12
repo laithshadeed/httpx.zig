@@ -64,11 +64,11 @@ pub const TrustStore = struct {
     /// Follows `Bundle.parseCert` semantics: the bytes are appended to the
     /// bundle store and indexed by subject (expired anchors are skipped).
     pub fn addCertDer(self: *TrustStore, derBytes: []const u8) TlsError!void {
-        const now_sec: i64 = @divFloor(clock.millisNow(), 1000);
+        const nowSec: i64 = @divFloor(clock.millisNow(), 1000);
         const start: u32 = @intCast(self.bundle.bytes.items.len);
         self.bundle.bytes.appendSlice(self.allocator, derBytes) catch return TlsError.OutOfMemory;
         errdefer self.bundle.bytes.items.len = start;
-        self.bundle.parseCert(self.allocator, start, now_sec) catch |err| switch (err) {
+        self.bundle.parseCert(self.allocator, start, nowSec) catch |err| switch (err) {
             error.OutOfMemory => return TlsError.OutOfMemory,
             else => return TlsError.InvalidCertificate,
         };
@@ -76,17 +76,17 @@ pub const TrustStore = struct {
 
     /// Parses and adds all PEM-encoded CA certificates to the trust store.
     pub fn addCertPem(self: *TrustStore, pemBytes: []const u8) TlsError!void {
-        var search_from: usize = 0;
+        var searchFrom: usize = 0;
         var added: usize = 0;
-        while (std.mem.indexOfPos(u8, pemBytes, search_from, "-----BEGIN CERTIFICATE-----")) |idx| {
+        while (std.mem.indexOfPos(u8, pemBytes, searchFrom, "-----BEGIN CERTIFICATE-----")) |idx| {
             const certMod = @import("certificate.zig");
             const der = certMod.decodePemBlock(self.allocator, pemBytes[idx..], "CERTIFICATE") catch break;
             defer self.allocator.free(der);
             self.addCertDer(der) catch return TlsError.OutOfMemory;
             added += 1;
-            search_from = idx + 26;
+            searchFrom = idx + 26;
         }
-        if (added == 0 and search_from == 0) return TlsError.InvalidCertificate;
+        if (added == 0 and searchFrom == 0) return TlsError.InvalidCertificate;
     }
 
     /// Verifies a parsed peer certificate against the trusted bundle.

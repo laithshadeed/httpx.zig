@@ -2,8 +2,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const err_mod = @import("error.zig");
-pub const TemplateError = err_mod.TemplateError;
+const errMod = @import("error.zig");
+pub const TemplateError = errMod.TemplateError;
 
 pub const LoaderConfig = struct {
     directory: []const u8 = "templates",
@@ -63,26 +63,26 @@ pub const Loader = struct {
     /// first (single-file deployment), then the filesystem.
     pub fn load(self: Loader, allocator: Allocator, name: []const u8) ![]u8 {
         // 1. Check embedded assets registry first for single-file deployment
-        const assets_mod = @import("../assets.zig");
-        if (assets_mod.getEmbedded(name)) |embedded| {
+        const assetsMod = @import("../assets.zig");
+        if (assetsMod.getEmbedded(name)) |embedded| {
             if (embedded.content.len > self.maxFileSize) return TemplateError.SizeLimitExceeded;
             return allocator.dupe(u8, embedded.content);
         }
 
-        var pref_buf: [512]u8 = undefined;
-        if (std.fmt.bufPrint(&pref_buf, "{s}/{s}", .{ self.directory, name })) |pref_path| {
-            if (assets_mod.getEmbedded(pref_path)) |embedded| {
+        var prefBuf: [512]u8 = undefined;
+        if (std.fmt.bufPrint(&prefBuf, "{s}/{s}", .{ self.directory, name })) |prefPath| {
+            if (assetsMod.getEmbedded(prefPath)) |embedded| {
                 if (embedded.content.len > self.maxFileSize) return TemplateError.SizeLimitExceeded;
                 return allocator.dupe(u8, embedded.content);
             }
         } else |_| {}
 
         // 2. Fall back to filesystem read via the canonical fs helper.
-        const full_path = try self.resolvePath(allocator, name);
-        defer allocator.free(full_path);
+        const fullPath = try self.resolvePath(allocator, name);
+        defer allocator.free(fullPath);
 
-        const fs_mod = @import("../../utils/fs.zig");
-        return fs_mod.readFileLimited(allocator, full_path, self.maxFileSize) catch |err| switch (err) {
+        const fsMod = @import("../../utils/fs.zig");
+        return fsMod.readFileLimited(allocator, fullPath, self.maxFileSize) catch |err| switch (err) {
             error.FileNotFound => TemplateError.TemplateNotFound,
             error.IsDir => TemplateError.TemplateNotFound,
             error.FileTooBig => TemplateError.SizeLimitExceeded,

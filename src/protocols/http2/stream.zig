@@ -9,30 +9,30 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 pub const ErrorCode = enum(u32) {
-    no_error = 0x00,
-    protocol_error = 0x01,
-    internal_error = 0x02,
-    flow_control_error = 0x03,
-    settings_timeout = 0x04,
-    stream_closed = 0x05,
-    frame_size_error = 0x06,
-    refused_stream = 0x07,
+    noError = 0x00,
+    protocolError = 0x01,
+    internalError = 0x02,
+    flowControlError = 0x03,
+    settingsTimeout = 0x04,
+    streamClosed = 0x05,
+    frameSizeError = 0x06,
+    refusedStream = 0x07,
     cancel = 0x08,
-    compression_error = 0x09,
-    connect_error = 0x0a,
-    enhance_your_calm = 0x0b,
-    inadequate_security = 0x0c,
+    compressionError = 0x09,
+    connectError = 0x0a,
+    enhanceYourCalm = 0x0b,
+    inadequateSecurity = 0x0c,
     http11Required = 0x0d,
     _,
 
     pub fn name(self: ErrorCode) []const u8 {
         return switch (self) {
-            .protocol_error => "PROTOCOL_ERROR",
-            .stream_closed => "STREAM_CLOSED",
-            .frame_size_error => "FRAME_SIZE_ERROR",
-            .flow_control_error => "FLOW_CONTROL_ERROR",
-            .refused_stream => "REFUSED_STREAM",
-            .compression_error => "COMPRESSION_ERROR",
+            .protocolError => "PROTOCOL_ERROR",
+            .streamClosed => "STREAM_CLOSED",
+            .frameSizeError => "FRAME_SIZE_ERROR",
+            .flowControlError => "FLOW_CONTROL_ERROR",
+            .refusedStream => "REFUSED_STREAM",
+            .compressionError => "COMPRESSION_ERROR",
             else => @tagName(self),
         };
     }
@@ -43,34 +43,34 @@ pub const State = enum {
     reservedLocal,
     reservedRemote,
     open,
-    half_closed_local,
-    half_closed_remote,
+    halfClosedLocal,
+    halfClosedRemote,
     closed,
 
     pub fn isActive(self: State) bool {
         return switch (self) {
-            .open, .half_closed_local, .half_closed_remote => true,
+            .open, .halfClosedLocal, .halfClosedRemote => true,
             else => false,
         };
     }
 
     /// May we send DATA on this stream?
     pub fn canSendData(self: State) bool {
-        return self == .open or self == .half_closed_remote;
+        return self == .open or self == .halfClosedRemote;
     }
 
     /// May we send HEADERS (request/response/trailers)?
-    /// half_closed_remote allows the response side of an exchange.
+    /// halfClosedRemote allows the response side of an exchange.
     pub fn canSendHeaders(self: State) bool {
         return switch (self) {
-            .idle, .reservedLocal, .open, .half_closed_remote => true,
+            .idle, .reservedLocal, .open, .halfClosedRemote => true,
             else => false,
         };
     }
 
     /// May we receive DATA?
     pub fn canRecvData(self: State) bool {
-        return self == .open or self == .half_closed_local;
+        return self == .open or self == .halfClosedLocal;
     }
 
     /// May we receive HEADERS (trailers included)?
@@ -123,14 +123,14 @@ pub const Stream = struct {
         if (!self.state.canSendHeaders()) return error.InvalidState;
         if (self.endStreamSent) return error.InvalidState;
         switch (self.state) {
-            .idle => self.state = if (endStream) State.half_closed_local else State.open,
-            .reservedLocal => self.state = .half_closed_remote,
+            .idle => self.state = if (endStream) State.halfClosedLocal else State.open,
+            .reservedLocal => self.state = .halfClosedRemote,
             .open => {
-                if (endStream) self.state = .half_closed_local;
+                if (endStream) self.state = .halfClosedLocal;
             },
             // Response/trailer headers on a half-closed(remote) stream do
             // not change our own direction; END_STREAM closes it.
-            .half_closed_remote => {
+            .halfClosedRemote => {
                 if (endStream) self.state = .closed;
             },
             else => return error.InvalidState,
@@ -145,7 +145,7 @@ pub const Stream = struct {
             // (mirrors onSendHeaders); otherwise it half-closes its side.
             // Getting this wrong leaks the stream (and, server-side, the
             // concurrency slot) forever.
-            self.state = if (self.state == .half_closed_remote) .closed else .half_closed_local;
+            self.state = if (self.state == .halfClosedRemote) .closed else .halfClosedLocal;
             self.endStreamSent = true;
         }
     }
@@ -165,20 +165,20 @@ pub const Stream = struct {
     pub fn onRecvHeaders(self: *Stream, endStream: bool) RecvError!void {
         switch (self.state) {
             .idle => {
-                self.state = if (endStream) .half_closed_remote else .open;
+                self.state = if (endStream) .halfClosedRemote else .open;
                 self.endStreamRecv = endStream;
             },
             .reservedRemote => {
-                self.state = if (endStream) .closed else .half_closed_local;
+                self.state = if (endStream) .closed else .halfClosedLocal;
                 self.endStreamRecv = endStream;
             },
             .open => {
                 if (endStream) {
-                    self.state = .half_closed_remote;
+                    self.state = .halfClosedRemote;
                     self.endStreamRecv = true;
                 }
             },
-            .half_closed_local => {
+            .halfClosedLocal => {
                 if (endStream) {
                     self.state = .closed;
                     self.endStreamRecv = true;
@@ -186,7 +186,7 @@ pub const Stream = struct {
                 // Trailers without END_STREAM on a half-closed(local) stream:
                 // legal (we may still be sending).
             },
-            .half_closed_remote, .closed, .reservedLocal => return RecvError.StreamClosed,
+            .halfClosedRemote, .closed, .reservedLocal => return RecvError.StreamClosed,
         }
     }
 
@@ -194,18 +194,18 @@ pub const Stream = struct {
         switch (self.state) {
             .open => {
                 if (endStream) {
-                    self.state = .half_closed_remote;
+                    self.state = .halfClosedRemote;
                     self.endStreamRecv = true;
                 }
             },
-            .half_closed_local => {
+            .halfClosedLocal => {
                 if (endStream) {
                     self.state = .closed;
                     self.endStreamRecv = true;
                 }
             },
             .idle, .reservedLocal, .reservedRemote => return RecvError.ProtocolError,
-            .half_closed_remote, .closed => return RecvError.StreamClosed,
+            .halfClosedRemote, .closed => return RecvError.StreamClosed,
         }
     }
 
@@ -246,7 +246,7 @@ test "state transitions open path" {
     try std.testing.expectEqual(State.open, s.state);
 
     try s.onSendData(true);
-    try std.testing.expectEqual(State.half_closed_local, s.state);
+    try std.testing.expectEqual(State.halfClosedLocal, s.state);
 
     try s.onRecvHeaders(true); // trailers w/ END_STREAM closes
     try std.testing.expectEqual(State.closed, s.state);
@@ -255,9 +255,9 @@ test "state transitions open path" {
 test "data after full close is StreamClosed" {
     var s = Stream.init(std.testing.allocator, 3);
     defer s.deinit();
-    try s.onSendHeaders(true); // -> half_closed_local
-    try std.testing.expectEqual(State.half_closed_local, s.state);
-    // Receiving DATA (no END_STREAM) on half_closed_local is legal.
+    try s.onSendHeaders(true); // -> halfClosedLocal
+    try std.testing.expectEqual(State.halfClosedLocal, s.state);
+    // Receiving DATA (no END_STREAM) on halfClosedLocal is legal.
     try s.onRecvData(false);
     // Peer sends END_STREAM too: fully closed.
     try s.onRecvData(true);

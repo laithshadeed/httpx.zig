@@ -109,46 +109,46 @@ pub const Parser = struct {
 
         if (c == '!') {
             self.pos += 1;
-            self.currentToken = .{ .kind = .punctuator_bang, .text = self.source[start..self.pos], .pos = start };
+            self.currentToken = .{ .kind = .punctuatorBang, .text = self.source[start..self.pos], .pos = start };
         } else if (c == '$') {
             self.pos += 1;
-            self.currentToken = .{ .kind = .punctuator_dollar, .text = self.source[start..self.pos], .pos = start };
+            self.currentToken = .{ .kind = .punctuatorDollar, .text = self.source[start..self.pos], .pos = start };
         } else if (c == '&') {
             self.pos += 1;
-            self.currentToken = .{ .kind = .punctuator_amp, .text = self.source[start..self.pos], .pos = start };
+            self.currentToken = .{ .kind = .punctuatorAmp, .text = self.source[start..self.pos], .pos = start };
         } else if (c == '(') {
             self.pos += 1;
-            self.currentToken = .{ .kind = .punctuator_paren_l, .text = self.source[start..self.pos], .pos = start };
+            self.currentToken = .{ .kind = .punctuatorParenL, .text = self.source[start..self.pos], .pos = start };
         } else if (c == ')') {
             self.pos += 1;
-            self.currentToken = .{ .kind = .punctuator_paren_r, .text = self.source[start..self.pos], .pos = start };
+            self.currentToken = .{ .kind = .punctuatorParenR, .text = self.source[start..self.pos], .pos = start };
         } else if (c == ':') {
             self.pos += 1;
-            self.currentToken = .{ .kind = .punctuator_colon, .text = self.source[start..self.pos], .pos = start };
+            self.currentToken = .{ .kind = .punctuatorColon, .text = self.source[start..self.pos], .pos = start };
         } else if (c == '=') {
             self.pos += 1;
-            self.currentToken = .{ .kind = .punctuator_equals, .text = self.source[start..self.pos], .pos = start };
+            self.currentToken = .{ .kind = .punctuatorEquals, .text = self.source[start..self.pos], .pos = start };
         } else if (c == '@') {
             self.pos += 1;
-            self.currentToken = .{ .kind = .punctuator_at, .text = self.source[start..self.pos], .pos = start };
+            self.currentToken = .{ .kind = .punctuatorAt, .text = self.source[start..self.pos], .pos = start };
         } else if (c == '[') {
             self.pos += 1;
-            self.currentToken = .{ .kind = .punctuator_bracket_l, .text = self.source[start..self.pos], .pos = start };
+            self.currentToken = .{ .kind = .punctuatorBracketL, .text = self.source[start..self.pos], .pos = start };
         } else if (c == ']') {
             self.pos += 1;
-            self.currentToken = .{ .kind = .punctuator_bracket_r, .text = self.source[start..self.pos], .pos = start };
+            self.currentToken = .{ .kind = .punctuatorBracketR, .text = self.source[start..self.pos], .pos = start };
         } else if (c == '{') {
             self.pos += 1;
-            self.currentToken = .{ .kind = .punctuator_brace_l, .text = self.source[start..self.pos], .pos = start };
+            self.currentToken = .{ .kind = .punctuatorBraceL, .text = self.source[start..self.pos], .pos = start };
         } else if (c == '|') {
             self.pos += 1;
-            self.currentToken = .{ .kind = .punctuator_pipe, .text = self.source[start..self.pos], .pos = start };
+            self.currentToken = .{ .kind = .punctuatorPipe, .text = self.source[start..self.pos], .pos = start };
         } else if (c == '}') {
             self.pos += 1;
-            self.currentToken = .{ .kind = .punctuator_brace_r, .text = self.source[start..self.pos], .pos = start };
+            self.currentToken = .{ .kind = .punctuatorBraceR, .text = self.source[start..self.pos], .pos = start };
         } else if (c == '.' and self.pos + 2 < self.source.len and self.source[self.pos + 1] == '.' and self.source[self.pos + 2] == '.') {
             self.pos += 3;
-            self.currentToken = .{ .kind = .punctuator_spread, .text = self.source[start..self.pos], .pos = start };
+            self.currentToken = .{ .kind = .punctuatorSpread, .text = self.source[start..self.pos], .pos = start };
         } else if (isNameStart(c)) {
             while (self.pos < self.source.len and isNameContinue(self.source[self.pos])) {
                 self.pos += 1;
@@ -178,7 +178,7 @@ pub const Parser = struct {
                 }
             }
             self.currentToken = .{
-                .kind = if (isFloat) .float_value else .int_value,
+                .kind = if (isFloat) .floatValue else .intValue,
                 .text = self.source[start..self.pos],
                 .pos = start,
             };
@@ -205,7 +205,7 @@ pub const Parser = struct {
             }
             const content = self.source[strStart..self.pos];
             self.pos += 1; // skip closing quote
-            self.currentToken = .{ .kind = .string_value, .text = content, .pos = start };
+            self.currentToken = .{ .kind = .stringValue, .text = content, .pos = start };
         } else {
             return error.UnexpectedCharacter;
         }
@@ -222,7 +222,7 @@ pub const Parser = struct {
     }
 
     fn parseDefinition(self: *Parser) ParseError!ast.Definition {
-        if (self.currentToken.kind == .punctuator_brace_l) {
+        if (self.currentToken.kind == .punctuatorBraceL) {
             // Shorthand query
             const selSet = try self.parseSelectionSet();
             return ast.Definition{
@@ -257,12 +257,12 @@ pub const Parser = struct {
         }
 
         var varDefs: []const ast.VariableDefinition = &.{};
-        if (self.currentToken.kind == .punctuator_paren_l) {
+        if (self.currentToken.kind == .punctuatorParenL) {
             varDefs = try self.parseVariableDefinitions();
         }
 
         var directives: []const ast.Directive = &.{};
-        if (self.currentToken.kind == .punctuator_at) {
+        if (self.currentToken.kind == .punctuatorAt) {
             directives = try self.parseDirectives();
         }
 
@@ -296,7 +296,7 @@ pub const Parser = struct {
         try self.advance();
 
         var directives: []const ast.Directive = &.{};
-        if (self.currentToken.kind == .punctuator_at) {
+        if (self.currentToken.kind == .punctuatorAt) {
             directives = try self.parseDirectives();
         }
 
@@ -312,25 +312,25 @@ pub const Parser = struct {
     fn parseVariableDefinitions(self: *Parser) ParseError![]const ast.VariableDefinition {
         try self.advance(); // consume '('
         var list = std.ArrayList(ast.VariableDefinition).empty;
-        while (self.currentToken.kind != .punctuator_paren_r and self.currentToken.kind != .eof) {
-            if (self.currentToken.kind != .punctuator_dollar) return error.ExpectedDollar;
+        while (self.currentToken.kind != .punctuatorParenR and self.currentToken.kind != .eof) {
+            if (self.currentToken.kind != .punctuatorDollar) return error.ExpectedDollar;
             try self.advance();
             if (self.currentToken.kind != .name) return error.ExpectedVariableName;
             const varName = self.currentToken.text;
             try self.advance();
 
-            if (self.currentToken.kind != .punctuator_colon) return error.ExpectedColon;
+            if (self.currentToken.kind != .punctuatorColon) return error.ExpectedColon;
             try self.advance();
 
             var isList = false;
             var typeName: []const u8 = "";
-            if (self.currentToken.kind == .punctuator_bracket_l) {
+            if (self.currentToken.kind == .punctuatorBracketL) {
                 isList = true;
                 try self.advance();
                 if (self.currentToken.kind != .name) return error.ExpectedTypeName;
                 typeName = self.currentToken.text;
                 try self.advance();
-                if (self.currentToken.kind != .punctuator_bracket_r) return error.ExpectedClosingBracket;
+                if (self.currentToken.kind != .punctuatorBracketR) return error.ExpectedClosingBracket;
                 try self.advance();
             } else if (self.currentToken.kind == .name) {
                 typeName = self.currentToken.text;
@@ -340,13 +340,13 @@ pub const Parser = struct {
             }
 
             var isNonNull = false;
-            if (self.currentToken.kind == .punctuator_bang) {
+            if (self.currentToken.kind == .punctuatorBang) {
                 isNonNull = true;
                 try self.advance();
             }
 
             var defaultVal: ?ast.Value = null;
-            if (self.currentToken.kind == .punctuator_equals) {
+            if (self.currentToken.kind == .punctuatorEquals) {
                 try self.advance();
                 defaultVal = try self.parseValue();
             }
@@ -359,20 +359,20 @@ pub const Parser = struct {
                 .defaultValue = defaultVal,
             });
         }
-        if (self.currentToken.kind != .punctuator_paren_r) return error.ExpectedClosingParen;
+        if (self.currentToken.kind != .punctuatorParenR) return error.ExpectedClosingParen;
         try self.advance();
         return try list.toOwnedSlice(self.allocator);
     }
 
     fn parseDirectives(self: *Parser) ParseError![]const ast.Directive {
         var list = std.ArrayList(ast.Directive).empty;
-        while (self.currentToken.kind == .punctuator_at) {
+        while (self.currentToken.kind == .punctuatorAt) {
             try self.advance();
             if (self.currentToken.kind != .name) return error.ExpectedDirectiveName;
             const name = self.currentToken.text;
             try self.advance();
             var args: []const ast.Argument = &.{};
-            if (self.currentToken.kind == .punctuator_paren_l) {
+            if (self.currentToken.kind == .punctuatorParenL) {
                 args = try self.parseArguments();
             }
             try list.append(self.allocator, .{ .name = name, .arguments = args });
@@ -383,46 +383,46 @@ pub const Parser = struct {
     fn parseArguments(self: *Parser) ParseError![]const ast.Argument {
         try self.advance(); // consume '('
         var list = std.ArrayList(ast.Argument).empty;
-        while (self.currentToken.kind != .punctuator_paren_r and self.currentToken.kind != .eof) {
+        while (self.currentToken.kind != .punctuatorParenR and self.currentToken.kind != .eof) {
             if (self.currentToken.kind != .name) return error.ExpectedArgumentName;
             const name = self.currentToken.text;
             try self.advance();
-            if (self.currentToken.kind != .punctuator_colon) return error.ExpectedColon;
+            if (self.currentToken.kind != .punctuatorColon) return error.ExpectedColon;
             try self.advance();
             const val = try self.parseValue();
             try list.append(self.allocator, .{ .name = name, .value = val });
         }
-        if (self.currentToken.kind != .punctuator_paren_r) return error.ExpectedClosingParen;
+        if (self.currentToken.kind != .punctuatorParenR) return error.ExpectedClosingParen;
         try self.advance();
         return try list.toOwnedSlice(self.allocator);
     }
 
     fn parseSelectionSet(self: *Parser) ParseError![]const ast.Selection {
-        if (self.currentToken.kind != .punctuator_brace_l) return error.ExpectedBraceOpen;
+        if (self.currentToken.kind != .punctuatorBraceL) return error.ExpectedBraceOpen;
         self.currentDepth += 1;
         if (self.currentDepth > self.limits.maxDepth) return error.MaxQueryDepthExceeded;
         defer self.currentDepth -= 1;
 
         try self.advance(); // consume '{'
         var list = std.ArrayList(ast.Selection).empty;
-        while (self.currentToken.kind != .punctuator_brace_r and self.currentToken.kind != .eof) {
+        while (self.currentToken.kind != .punctuatorBraceR and self.currentToken.kind != .eof) {
             const sel = try self.parseSelection();
             try list.append(self.allocator, sel);
         }
-        if (self.currentToken.kind != .punctuator_brace_r) return error.ExpectedBraceClose;
+        if (self.currentToken.kind != .punctuatorBraceR) return error.ExpectedBraceClose;
         try self.advance();
         return try list.toOwnedSlice(self.allocator);
     }
 
     fn parseSelection(self: *Parser) ParseError!ast.Selection {
-        if (self.currentToken.kind == .punctuator_spread) {
+        if (self.currentToken.kind == .punctuatorSpread) {
             try self.advance(); // consume '...'
             if (self.currentToken.kind == .name and !std.mem.eql(u8, self.currentToken.text, "on")) {
-                const frag_name = self.currentToken.text;
+                const fragName = self.currentToken.text;
                 try self.advance();
                 var dirs: []const ast.Directive = &.{};
-                if (self.currentToken.kind == .punctuator_at) dirs = try self.parseDirectives();
-                return ast.Selection{ .fragmentSpread = .{ .name = frag_name, .directives = dirs } };
+                if (self.currentToken.kind == .punctuatorAt) dirs = try self.parseDirectives();
+                return ast.Selection{ .fragmentSpread = .{ .name = fragName, .directives = dirs } };
             } else {
                 var typeCondition: ?[]const u8 = null;
                 if (self.currentToken.kind == .name and std.mem.eql(u8, self.currentToken.text, "on")) {
@@ -432,7 +432,7 @@ pub const Parser = struct {
                     try self.advance();
                 }
                 var dirs: []const ast.Directive = &.{};
-                if (self.currentToken.kind == .punctuator_at) dirs = try self.parseDirectives();
+                if (self.currentToken.kind == .punctuatorAt) dirs = try self.parseDirectives();
                 const selSet = try self.parseSelectionSet();
                 return ast.Selection{
                     .inlineFragment = .{
@@ -451,7 +451,7 @@ pub const Parser = struct {
         var alias: ?[]const u8 = null;
         var name: []const u8 = name1;
 
-        if (self.currentToken.kind == .punctuator_colon) {
+        if (self.currentToken.kind == .punctuatorColon) {
             alias = name1;
             try self.advance();
             if (self.currentToken.kind != .name) return error.ExpectedFieldName;
@@ -460,18 +460,18 @@ pub const Parser = struct {
         }
 
         var args: []const ast.Argument = &.{};
-        if (self.currentToken.kind == .punctuator_paren_l) {
+        if (self.currentToken.kind == .punctuatorParenL) {
             args = try self.parseArguments();
         }
 
         var dirs: []const ast.Directive = &.{};
-        if (self.currentToken.kind == .punctuator_at) {
+        if (self.currentToken.kind == .punctuatorAt) {
             dirs = try self.parseDirectives();
         }
 
-        var sub_sel: []const ast.Selection = &.{};
-        if (self.currentToken.kind == .punctuator_brace_l) {
-            sub_sel = try self.parseSelectionSet();
+        var subSel: []const ast.Selection = &.{};
+        if (self.currentToken.kind == .punctuatorBraceL) {
+            subSel = try self.parseSelectionSet();
         }
 
         return ast.Selection{
@@ -480,31 +480,31 @@ pub const Parser = struct {
                 .name = name,
                 .arguments = args,
                 .directives = dirs,
-                .selectionSet = sub_sel,
+                .selectionSet = subSel,
             },
         };
     }
 
     pub fn parseValue(self: *Parser) !ast.Value {
         switch (self.currentToken.kind) {
-            .punctuator_dollar => {
+            .punctuatorDollar => {
                 try self.advance();
                 if (self.currentToken.kind != .name) return error.ExpectedVariableName;
                 const v = self.currentToken.text;
                 try self.advance();
                 return ast.Value{ .variable = v };
             },
-            .int_value => {
+            .intValue => {
                 const val = std.fmt.parseInt(i64, self.currentToken.text, 10) catch return error.InvalidInt;
                 try self.advance();
                 return ast.Value{ .int = val };
             },
-            .float_value => {
+            .floatValue => {
                 const val = std.fmt.parseFloat(f64, self.currentToken.text) catch return error.InvalidFloat;
                 try self.advance();
                 return ast.Value{ .float = val };
             },
-            .string_value => {
+            .stringValue => {
                 const val = self.currentToken.text;
                 try self.advance();
                 return ast.Value{ .string = val };
@@ -522,30 +522,30 @@ pub const Parser = struct {
                     return ast.Value{ .enumVal = txt };
                 }
             },
-            .punctuator_bracket_l => {
+            .punctuatorBracketL => {
                 try self.advance();
                 var items = std.ArrayList(ast.Value).empty;
-                while (self.currentToken.kind != .punctuator_bracket_r and self.currentToken.kind != .eof) {
+                while (self.currentToken.kind != .punctuatorBracketR and self.currentToken.kind != .eof) {
                     const item = try self.parseValue();
                     try items.append(self.allocator, item);
                 }
-                if (self.currentToken.kind != .punctuator_bracket_r) return error.ExpectedBracketClose;
+                if (self.currentToken.kind != .punctuatorBracketR) return error.ExpectedBracketClose;
                 try self.advance();
                 return ast.Value{ .list = try items.toOwnedSlice(self.allocator) };
             },
-            .punctuator_brace_l => {
+            .punctuatorBraceL => {
                 try self.advance();
                 var fields = std.ArrayList(ast.ObjectField).empty;
-                while (self.currentToken.kind != .punctuator_brace_r and self.currentToken.kind != .eof) {
+                while (self.currentToken.kind != .punctuatorBraceR and self.currentToken.kind != .eof) {
                     if (self.currentToken.kind != .name) return error.ExpectedFieldName;
-                    const fn_name = self.currentToken.text;
+                    const fnName = self.currentToken.text;
                     try self.advance();
-                    if (self.currentToken.kind != .punctuator_colon) return error.ExpectedColon;
+                    if (self.currentToken.kind != .punctuatorColon) return error.ExpectedColon;
                     try self.advance();
                     const val = try self.parseValue();
-                    try fields.append(self.allocator, .{ .name = fn_name, .value = val });
+                    try fields.append(self.allocator, .{ .name = fnName, .value = val });
                 }
-                if (self.currentToken.kind != .punctuator_brace_r) return error.ExpectedBraceClose;
+                if (self.currentToken.kind != .punctuatorBraceR) return error.ExpectedBraceClose;
                 try self.advance();
                 return ast.Value{ .object = try fields.toOwnedSlice(self.allocator) };
             },

@@ -26,26 +26,26 @@ pub const FrameType = enum(u64) {
     padding = 0x00,
     ping = 0x01,
     ack = 0x02,
-    ack_ecn = 0x03,
+    ackEcn = 0x03,
     resetStream = 0x04,
     stopSending = 0x05,
     crypto = 0x06,
     newToken = 0x07,
-    stream_base = 0x08, // 0x08..0x0F with FIN/LEN/OFF bits
+    streamBase = 0x08, // 0x08..0x0F with FIN/LEN/OFF bits
     maxData = 0x10,
     maxStreamData = 0x11,
-    max_streams_bidi = 0x12,
-    max_streams_uni = 0x13,
+    maxStreamsBidi = 0x12,
+    maxStreamsUni = 0x13,
     dataBlocked = 0x14,
     streamDataBlocked = 0x15,
-    streams_blocked_bidi = 0x16,
-    streams_blocked_uni = 0x17,
+    streamsBlockedBidi = 0x16,
+    streamsBlockedUni = 0x17,
     newConnectionId = 0x18,
     retireConnectionId = 0x19,
     pathChallenge = 0x1A,
     pathResponse = 0x1B,
-    connection_close_transport = 0x1C,
-    connection_close_application = 0x1D,
+    connectionCloseTransport = 0x1C,
+    connectionCloseApplication = 0x1D,
     handshakeDone = 0x1E,
     _,
 
@@ -154,34 +154,34 @@ pub fn decode(data: []const u8, pos: *usize) Error!Frame {
             // Validate: first range must not underflow below zero pn space.
             if (firstRange > largest) return Error.InvalidFrame;
 
-            const range_count_raw = try dv(data, pos);
-            const rangeCount: usize = @intCast(range_count_raw);
+            const rangeCountRaw = try dv(data, pos);
+            const rangeCount: usize = @intCast(rangeCountRaw);
             if (rangeCount > 64) return Error.InvalidFrame;
 
-            var ranges_buf: [64]AckRange = undefined;
-            var prev_low: u64 = largest - firstRange;
+            var rangesBuf: [64]AckRange = undefined;
+            var prevLow: u64 = largest - firstRange;
             for (0..rangeCount) |i| {
                 const gap = try dv(data, pos);
                 const len = try dv(data, pos);
                 // gap counts missing packets between prev low edge and this
-                // block's high edge: cur_high = prev_low - gap - 2
-                if (gap + 2 > prev_low) return Error.InvalidFrame;
-                const cur_high = prev_low - gap - 2;
-                if (len > cur_high + 1) return Error.InvalidFrame;
-                ranges_buf[i] = .{ .gap = gap, .length = len };
-                prev_low = cur_high + 1 - len;
+                // block's high edge: curHigh = prevLow - gap - 2
+                if (gap + 2 > prevLow) return Error.InvalidFrame;
+                const curHigh = prevLow - gap - 2;
+                if (len > curHigh + 1) return Error.InvalidFrame;
+                rangesBuf[i] = .{ .gap = gap, .length = len };
+                prevLow = curHigh + 1 - len;
             }
 
-            var result_ranges: []AckRange = &.{};
+            var resultRanges: []AckRange = &.{};
             if (rangeCount > 0) {
-                result_ranges = try allocRanges(ranges_buf[0..rangeCount]);
+                resultRanges = try allocRanges(rangesBuf[0..rangeCount]);
             }
 
             var f = Ack{
                 .largestAcknowledged = largest,
                 .ackDelay = delay,
                 .firstRange = firstRange,
-                .ranges = result_ranges,
+                .ranges = resultRanges,
             };
 
             if (raw == 0x03) {
@@ -451,22 +451,22 @@ pub fn encodeAckFromBlocks(
     if (top.len == 0 or top.len - 1 > top.highest) return error.InvalidFrame;
     const firstRange = top.highest - (top.highest -| (top.len - 1));
 
-    const type_byte: u8 = if (ecn != null) 0x03 else 0x02;
-    try out.append(gpa, type_byte);
+    const typeByte: u8 = if (ecn != null) 0x03 else 0x02;
+    try out.append(gpa, typeByte);
     try putV(out, gpa, largest);
     try putV(out, gpa, ackDelay);
     try putV(out, gpa, firstRange);
     try putV(out, gpa, blocks.len - 1);
 
-    var prev_low: u64 = top.highest -| (top.len -| 1);
+    var prevLow: u64 = top.highest -| (top.len -| 1);
     for (blocks[1..]) |b| {
-        if (b.highest >= prev_low) return error.InvalidFrame;
-        if (b.len == 0 or b.highest +| 1 >= prev_low) return error.InvalidFrame; // adjacent would have coalesced
-        const gap = prev_low - b.highest - 2;
+        if (b.highest >= prevLow) return error.InvalidFrame;
+        if (b.len == 0 or b.highest +| 1 >= prevLow) return error.InvalidFrame; // adjacent would have coalesced
+        const gap = prevLow - b.highest - 2;
         try putV(out, gpa, gap);
         try putV(out, gpa, b.len - 1);
         if (b.len - 1 > b.highest) return error.InvalidFrame;
-        prev_low = b.highest -| (b.len -| 1);
+        prevLow = b.highest -| (b.len -| 1);
     }
 
     if (ecn) |e| {
@@ -523,15 +523,15 @@ test "ack encode covers packet zero without overflow" {
     // Degenerate blocks are rejected, never panicking.
     var bad = std.ArrayList(u8).empty;
     defer bad.deinit(std.testing.allocator);
-    const empty_block = [_]AckBlock{.{ .highest = 5, .len = 0 }};
+    const emptyBlock = [_]AckBlock{.{ .highest = 5, .len = 0 }};
     try std.testing.expectError(
         error.InvalidFrame,
-        encodeAckFromBlocks(&bad, std.testing.allocator, 5, 0, &empty_block, null),
+        encodeAckFromBlocks(&bad, std.testing.allocator, 5, 0, &emptyBlock, null),
     );
-    const below_zero = [_]AckBlock{.{ .highest = 0, .len = 2 }};
+    const belowZero = [_]AckBlock{.{ .highest = 0, .len = 2 }};
     try std.testing.expectError(
         error.InvalidFrame,
-        encodeAckFromBlocks(&bad, std.testing.allocator, 0, 0, &below_zero, null),
+        encodeAckFromBlocks(&bad, std.testing.allocator, 0, 0, &belowZero, null),
     );
 }
 

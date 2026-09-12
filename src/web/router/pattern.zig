@@ -103,9 +103,9 @@ pub fn isUuid(value: []const u8) bool {
         false, true, true, true, true,  false, true, true, true,
         true,  true, true, true, true,  true,  true, true, true,
     };
-    for (hexes, 0..) |want_hex, i| {
+    for (hexes, 0..) |wantHex, i| {
         const c = value[i];
-        if (want_hex) {
+        if (wantHex) {
             if (!isHexByte(c)) return false;
         } else if (c != '-') {
             return false;
@@ -117,19 +117,19 @@ pub fn isUuid(value: []const u8) bool {
 pub fn isSlug(value: []const u8) bool {
     // [a-z0-9]+(-[a-z0-9]+)* — lowercase, no leading/trailing/doubled hyphen.
     if (value.len == 0) return false;
-    var expect_alnum = true;
+    var expectAlnum = true;
     for (value) |c| {
         const alnum = std.ascii.isLower(c) or std.ascii.isDigit(c);
-        if (expect_alnum) {
+        if (expectAlnum) {
             if (!alnum) return false;
-            expect_alnum = false;
+            expectAlnum = false;
         } else if (c == '-') {
-            expect_alnum = true;
+            expectAlnum = true;
         } else if (!alnum) {
             return false;
         }
     }
-    return !expect_alnum;
+    return !expectAlnum;
 }
 
 pub const Segment = struct {
@@ -213,9 +213,9 @@ pub fn parsePattern(path: []const u8) ParseError!Pattern {
             var converter: Converter = .str;
             if (std.mem.indexOfScalar(u8, inner, ':')) |ci| {
                 name = inner[0..ci];
-                const conv_name = inner[ci + 1 ..];
+                const convName = inner[ci + 1 ..];
                 if (name.len == 0) return ParseError.EmptyParameterName;
-                converter = Converter.fromName(conv_name) orelse return ParseError.UnknownConverter;
+                converter = Converter.fromName(convName) orelse return ParseError.UnknownConverter;
             }
             if (hasParam(&pattern, name)) return ParseError.DuplicateParameter;
             if (converter == .path) {

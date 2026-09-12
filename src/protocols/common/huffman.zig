@@ -14,7 +14,7 @@
 //! derived here from first principles.
 
 const std = @import("std");
-pub const table = @import("huffman_table.zig");
+pub const table = @import("huffmanTable.zig");
 
 pub const Error = error{
     InvalidHuffmanCode,
@@ -37,7 +37,7 @@ pub fn maxEncodedLen(len: usize) usize {
 /// Returns bytes written.
 pub fn encode(out: []u8, src: []const u8) Error!usize {
     var acc: u64 = 0;
-    var acc_bits: u6 = 0;
+    var accBits: u6 = 0;
     var pos: usize = 0;
 
     for (src) |b| {
@@ -45,18 +45,18 @@ pub fn encode(out: []u8, src: []const u8) Error!usize {
         const slen: u5 = @intCast(s.len);
         const top: u64 = s.code >> @as(u5, @intCast(32 - @as(usize, s.len)));
         acc = (acc << slen) | top;
-        acc_bits += @intCast(s.len);
-        while (acc_bits >= 8) {
+        accBits += @intCast(s.len);
+        while (accBits >= 8) {
             if (pos >= out.len) return Error.BufferTooSmall;
-            acc_bits -= 8;
-            out[pos] = @truncate(acc >> acc_bits);
+            accBits -= 8;
+            out[pos] = @truncate(acc >> accBits);
             pos += 1;
-            acc &= (@as(u64, 1) << acc_bits) - 1;
+            acc &= (@as(u64, 1) << accBits) - 1;
         }
     }
-    if (acc_bits > 0) {
+    if (accBits > 0) {
         if (pos >= out.len) return Error.BufferTooSmall;
-        const pad: u3 = @intCast(8 - acc_bits);
+        const pad: u3 = @intCast(8 - accBits);
         acc = (acc << pad) | ((@as(u64, 1) << pad) - 1);
         out[pos] = @truncate(acc);
         pos += 1;
@@ -89,7 +89,7 @@ fn buildAutomaton() [256][16]Entry {
 
     // Phase 0: plain binary code trie.
     var child: [MAXN][2]u32 = [_][2]u32{.{ NONE, NONE }} ** MAXN;
-    var sym_at: [MAXN]u16 = [_]u16{0xFFFF} ** MAXN;
+    var symAt: [MAXN]u16 = [_]u16{0xFFFF} ** MAXN;
     var n: usize = 1; // node 0 = root
 
     for (0..256) |si| {
@@ -104,16 +104,16 @@ fn buildAutomaton() [256][16]Entry {
             }
             t = child[t][b];
         }
-        sym_at[t] = @intCast(si);
+        symAt[t] = @intCast(si);
     }
 
     // Phase 1: evaluate every (node, nibble) pair deterministically.
-    var e_next: [MAXN][16]u32 = [_][16]u32{[_]u32{NONE} ** 16} ** MAXN;
-    var e_flags: [MAXN][16]u8 = [_][16]u8{[_]u8{0} ** 16} ** MAXN;
-    var e_sym: [MAXN][16]u8 = [_][16]u8{[_]u8{0} ** 16} ** MAXN;
+    var eNext: [MAXN][16]u32 = [_][16]u32{[_]u32{NONE} ** 16} ** MAXN;
+    var eFlags: [MAXN][16]u8 = [_][16]u8{[_]u8{0} ** 16} ** MAXN;
+    var eSym: [MAXN][16]u8 = [_][16]u8{[_]u8{0} ** 16} ** MAXN;
 
     // EOS-path chain nodes at depths 1..7 (legal pure-padding stops).
-    var eos_chain: [8]u32 = .{0} ** 8; // [d] = node after d ones from root
+    var eosChain: [8]u32 = .{0} ** 8; // [d] = node after d ones from root
     {
         var w: u32 = 0;
         var d: usize = 1;
@@ -123,7 +123,7 @@ fn buildAutomaton() [256][16]Entry {
                 n += 1;
             }
             w = child[w][1];
-            eos_chain[d] = w;
+            eosChain[d] = w;
         }
     }
 
@@ -145,8 +145,8 @@ fn buildAutomaton() [256][16]Entry {
                 }
                 w = c;
                 consumed = k + 1;
-                if (sym_at[w] != 0xFFFF) {
-                    emitted = sym_at[w];
+                if (symAt[w] != 0xFFFF) {
+                    emitted = symAt[w];
                     break;
                 }
             }
@@ -155,26 +155,26 @@ fn buildAutomaton() [256][16]Entry {
 
             if (emitted != 0xFFFF) {
                 const r: usize = 4 - consumed;
-                var all_ones = true;
+                var allOnes = true;
                 var w2: u32 = 0;
                 for (0..r) |k| {
                     // Remainder occupies the low r bits of the nibble,
                     // MSB first.
                     const sh: u3 = @intCast(r - 1 - k);
                     const b = (@as(usize, nibi) >> sh) & 1;
-                    if (b == 0) all_ones = false;
+                    if (b == 0) allOnes = false;
                     if (child[w2][b] == NONE) {
                         child[w2][b] = @intCast(n);
                         n += 1;
                     }
                     w2 = child[w2][b];
                 }
-                e_next[node][nibi] = w2;
-                e_flags[node][nibi] =
-                    FLAG_SYM | if (all_ones) FLAG_ACCEPTED else 0;
-                e_sym[node][nibi] = @intCast(emitted);
+                eNext[node][nibi] = w2;
+                eFlags[node][nibi] =
+                    FLAG_SYM | if (allOnes) FLAG_ACCEPTED else 0;
+                eSym[node][nibi] = @intCast(emitted);
             } else {
-                e_next[node][nibi] = w;
+                eNext[node][nibi] = w;
                 // Legal stop without an emission: the walked path is an
                 // all-ones run landing on the EOS chain at depth <= 7
                 // (padding may span nibble boundaries inside the final
@@ -183,8 +183,8 @@ fn buildAutomaton() [256][16]Entry {
                 if ((@as(usize, nibi) & 0xF) == 0xF) {
                     var d: usize = 1;
                     while (d <= 7) : (d += 1) {
-                        if (w == eos_chain[d]) {
-                            e_flags[node][nibi] |= FLAG_ACCEPTED;
+                        if (w == eosChain[d]) {
+                            eFlags[node][nibi] |= FLAG_ACCEPTED;
                             break;
                         }
                     }
@@ -194,37 +194,37 @@ fn buildAutomaton() [256][16]Entry {
     }
 
     // Phase 2: flatten via BFS over reachable states.
-    var final_ids: [MAXN]u16 = [_]u16{0xFFFF} ** MAXN;
+    var finalIds: [MAXN]u16 = [_]u16{0xFFFF} ** MAXN;
     var queue: [MAXN]u32 = undefined;
     var qh: usize = 0;
     var qt: usize = 0;
     var out: [256][16]Entry = [_][16]Entry{[_]Entry{.{}} ** 16} ** 256;
-    var n_out: usize = 1;
+    var nOut: usize = 1;
 
-    final_ids[0] = 0;
+    finalIds[0] = 0;
     queue[qt] = 0;
     qt += 1;
 
     while (qh < qt) {
         const t = queue[qh];
         qh += 1;
-        const fid = final_ids[t];
+        const fid = finalIds[t];
         for (0..16) |nibi| {
-            const target = e_next[t][nibi];
+            const target = eNext[t][nibi];
             if (target == NONE) continue;
-            if (final_ids[target] == 0xFFFF) {
-                if (n_out >= failState) {
+            if (finalIds[target] == 0xFFFF) {
+                if (nOut >= failState) {
                     @compileError("Huffman DFA exceeds 254 states");
                 }
-                final_ids[target] = @intCast(n_out);
+                finalIds[target] = @intCast(nOut);
                 queue[qt] = target;
                 qt += 1;
-                n_out += 1;
+                nOut += 1;
             }
             out[fid][nibi] = .{
-                .next = final_ids[target],
-                .flags = e_flags[t][nibi],
-                .sym = e_sym[t][nibi],
+                .next = finalIds[target],
+                .flags = eFlags[t][nibi],
+                .sym = eSym[t][nibi],
             };
         }
     }
@@ -232,7 +232,7 @@ fn buildAutomaton() [256][16]Entry {
     return out;
 }
 
-const decode_table = buildAutomaton();
+const decodeTable = buildAutomaton();
 
 /// Number of reachable DFA states (diagnostics).
 pub const dfaStateCount: usize = blk: {
@@ -248,7 +248,7 @@ pub const dfaStateCount: usize = blk: {
         if (seen[s]) continue;
         seen[s] = true;
         count += 1;
-        for (decode_table[s]) |e| {
+        for (decodeTable[s]) |e| {
             if (e.next != failState and !seen[e.next] and qt < queue.len) {
                 queue[qt] = e.next;
                 qt += 1;
@@ -275,7 +275,7 @@ pub const Decoder = struct {
         for (data) |byte| {
             inline for ([_]u3{ 4, 0 }) |shift| {
                 const nib: u4 = @truncate(byte >> shift);
-                const e = decode_table[self.state][nib];
+                const e = decodeTable[self.state][nib];
                 if (e.next == failState) return Error.InvalidHuffmanCode;
                 self.accepted = e.flags & FLAG_ACCEPTED != 0;
                 if (e.flags & FLAG_SYM != 0) {
@@ -310,9 +310,9 @@ test "table sanity" {
     try std.testing.expectEqual(@as(u8, 5), symTable['a'].len);
     try std.testing.expectEqual(@as(u32, 0b00011 << 27), symTable['a'].code);
     try std.testing.expectEqual(@as(u8, 5), symTable['0'].len);
-    var max_len: u8 = 0;
-    for (symTable) |s| max_len = @max(max_len, s.len);
-    try std.testing.expectEqual(@as(u8, 30), max_len);
+    var maxLen: u8 = 0;
+    for (symTable) |s| maxLen = @max(maxLen, s.len);
+    try std.testing.expectEqual(@as(u8, 30), maxLen);
 }
 
 test "dfa fits in u8 state space" {
@@ -339,12 +339,12 @@ test "roundtrip ascii corpus" {
         "The quick brown fox jumps over the lazy dog 0123456789 !@#$%^&*()",
     };
     var buf: [512]u8 = undefined;
-    var dec_buf: [512]u8 = undefined;
+    var decBuf: [512]u8 = undefined;
     for (samples) |s| {
         const n = try encode(&buf, s);
         try std.testing.expect(n <= maxEncodedLen(s.len));
-        const m = try decode(&dec_buf, buf[0..n]);
-        try std.testing.expectEqualStrings(s, dec_buf[0..m]);
+        const m = try decode(&decBuf, buf[0..n]);
+        try std.testing.expectEqualStrings(s, decBuf[0..m]);
     }
 }
 

@@ -177,17 +177,17 @@ test "mask apply/revert symmetric" {
 }
 
 test "control frames must be final and at most 125 bytes" {
-    var not_final = [_]u8{ 0x09, 0x00 };
-    try std.testing.expectError(Error.ProtocolViolation, parseFrameHeader(&not_final));
+    var notFinal = [_]u8{ 0x09, 0x00 };
+    try std.testing.expectError(Error.ProtocolViolation, parseFrameHeader(&notFinal));
 
-    var too_large = [_]u8{ 0x89, 126, 0, 126 };
-    try std.testing.expectError(Error.ProtocolViolation, parseFrameHeader(&too_large));
+    var tooLarge = [_]u8{ 0x89, 126, 0, 126 };
+    try std.testing.expectError(Error.ProtocolViolation, parseFrameHeader(&tooLarge));
 }
 
 test "extended payload lengths must use canonical WebSocket bounds" {
-    var noncanonical_16 = [_]u8{ 0x82, 126, 0, 5 };
-    try std.testing.expectError(Error.ProtocolViolation, parseFrameHeader(&noncanonical_16));
+    var noncanonical16 = [_]u8{ 0x82, 126, 0, 5 };
+    try std.testing.expectError(Error.ProtocolViolation, parseFrameHeader(&noncanonical16));
 
-    var high_bit_64 = [_]u8{ 0x82, 127, 0x80, 0, 0, 0, 0, 0, 0, 0 };
-    try std.testing.expectError(Error.ProtocolViolation, parseFrameHeader(&high_bit_64));
+    var highBit64 = [_]u8{ 0x82, 127, 0x80, 0, 0, 0, 0, 0, 0, 0 };
+    try std.testing.expectError(Error.ProtocolViolation, parseFrameHeader(&highBit64));
 }

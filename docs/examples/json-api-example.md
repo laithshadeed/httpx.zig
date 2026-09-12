@@ -2,7 +2,7 @@
 
 Typed JSON over the URL-first client: fetch with `client.fetch`, decode with
 `Response.json(T)` or `Response.jsonAlloc(T, allocator)`. See
-`examples/post_json.zig`.
+`examples/postJson.zig`.
 
 ```zig
 const Posted = struct { name: []const u8, role: []const u8 };

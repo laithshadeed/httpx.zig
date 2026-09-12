@@ -1,6 +1,6 @@
 # Example: Download Existing
 
-Demonstrates download_existing.zig using the canonical HTTPX API.
+Demonstrates downloadExisting.zig using the canonical HTTPX API.
 
 ## Complete Example
 

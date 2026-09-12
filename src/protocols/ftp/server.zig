@@ -7,7 +7,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const tcp = @import("../../sockets/tcp.zig");
-const address_mod = @import("../../net/address.zig");
+const addressMod = @import("../../net/address.zig");
 const tlsServerMod = @import("../tls/tcpTls.zig");
 
 pub const Error = error{ AcceptFailed, ReadFailed, WriteFailed, ProtocolError, OutOfMemory, TlsHandshakeFailed };
@@ -103,7 +103,7 @@ const Session = struct {
     userBuf: [256]u8 = undefined,
     userLen: usize = 0,
     passive: ?tcp.Listener = null,
-    active: ?address_mod.Address = null,
+    active: ?addressMod.Address = null,
     /// TLS-wrapped control channel after `AUTH TLS`. Both fields live in
     /// the `Session` value itself (never moved after `run` starts), so the
     /// connection's borrow of `tlsSock` stays valid for the session.
@@ -410,15 +410,15 @@ const Session = struct {
             try self.reply("501 Invalid EPRT");
             return true;
         };
-        const host_end = std.mem.indexOfScalarPos(u8, arg, familyEnd + 1, delimiter) orelse {
+        const hostEnd = std.mem.indexOfScalarPos(u8, arg, familyEnd + 1, delimiter) orelse {
             try self.reply("501 Invalid EPRT");
             return true;
         };
-        const port_end = std.mem.indexOfScalarPos(u8, arg, host_end + 1, delimiter) orelse {
+        const portEnd = std.mem.indexOfScalarPos(u8, arg, hostEnd + 1, delimiter) orelse {
             try self.reply("501 Invalid EPRT");
             return true;
         };
-        if (port_end + 1 != arg.len) {
+        if (portEnd + 1 != arg.len) {
             try self.reply("501 Invalid EPRT");
             return true;
         }
@@ -426,12 +426,12 @@ const Session = struct {
             try self.reply("522 Network protocol unsupported");
             return true;
         }
-        const port = std.fmt.parseInt(u16, arg[host_end + 1 .. port_end], 10) catch {
+        const port = std.fmt.parseInt(u16, arg[hostEnd + 1 .. portEnd], 10) catch {
             try self.reply("501 Invalid EPRT");
             return true;
         };
-        var base = address_mod.Address{ .family = .ip4, .port = 0 };
-        var addr = base.parseIp(arg[familyEnd + 1 .. host_end]) catch {
+        var base = addressMod.Address{ .family = .ip4, .port = 0 };
+        var addr = base.parseIp(arg[familyEnd + 1 .. hostEnd]) catch {
             try self.reply("501 Invalid EPRT");
             return true;
         };

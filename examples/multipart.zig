@@ -14,14 +14,14 @@ pub fn main() !void {
     var client = httpx.Client.init(allocator, io, .{});
     defer client.deinit();
 
-    const file_data = "hello, world!";
+    const fileData = "hello, world!";
 
     var response = try client.post("http://httpbun.com/post", .{
         .multipart = .{
             .name = "upload",
             .filename = "hello.txt",
             .contentType = "text/plain",
-            .data = file_data,
+            .data = fileData,
         },
     });
     defer response.deinit();

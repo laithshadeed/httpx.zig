@@ -58,24 +58,24 @@ fn take(data: []const u8, offset: *usize, length: u64) Error![]const u8 {
     return result;
 }
 
-fn readString(allocator: Allocator, data: []const u8, offset: *usize, max_len: usize) Error![]u8 {
+fn readString(allocator: Allocator, data: []const u8, offset: *usize, maxLen: usize) Error![]u8 {
     if (offset.* >= data.len) return Error.Truncated;
-    const huffman_encoded = data[offset.*] & 0x80 != 0;
+    const huffmanEncoded = data[offset.*] & 0x80 != 0;
     const length = try decodeInt(data, offset, 7);
-    if (length > max_len) return Error.InvalidInstruction;
+    if (length > maxLen) return Error.InvalidInstruction;
     const encoded = try take(data, offset, length);
-    return decodeStringBytes(allocator, encoded, huffman_encoded, max_len);
+    return decodeStringBytes(allocator, encoded, huffmanEncoded, maxLen);
 }
 
 /// Decodes already-framed string bytes (length known, header parsed).
-fn decodeStringBytes(allocator: Allocator, encoded: []const u8, huffman: bool, max_len: usize) Error![]u8 {
+fn decodeStringBytes(allocator: Allocator, encoded: []const u8, huffman: bool, maxLen: usize) Error![]u8 {
     if (!huffman) return allocator.dupe(u8, encoded) catch return Error.OutOfMemory;
     const doubled = std.math.mul(usize, encoded.len, 2) catch return Error.OutOfMemory;
     const capacity = std.math.add(usize, doubled, 1) catch return Error.OutOfMemory;
     const decoded = allocator.alloc(u8, capacity) catch return Error.OutOfMemory;
     errdefer allocator.free(decoded);
     const n = huff.decode(decoded, encoded) catch return Error.InvalidInstruction;
-    if (n > max_len) return Error.InvalidInstruction;
+    if (n > maxLen) return Error.InvalidInstruction;
     return allocator.realloc(decoded, n) catch return Error.OutOfMemory;
 }
 
@@ -194,15 +194,15 @@ pub const staticTable = [_]StaticEntry{
 
 pub fn encodeInt(buf: []u8, prefixBits: u4, value: u64) Error!usize {
     if (buf.len < 1) return Error.BufferTooSmall;
-    const max_prefix: u64 = (@as(u64, 1) << prefixBits) - 1;
+    const maxPrefix: u64 = (@as(u64, 1) << prefixBits) - 1;
     buf[0] = 0;
 
-    if (value < max_prefix) {
+    if (value < maxPrefix) {
         buf[0] |= @intCast(value);
         return 1;
     }
-    buf[0] |= @intCast(max_prefix);
-    var remaining = value - max_prefix;
+    buf[0] |= @intCast(maxPrefix);
+    var remaining = value - maxPrefix;
     var pos: usize = 1;
     while (remaining >= 128) {
         if (pos >= buf.len) return Error.BufferTooSmall;
@@ -217,10 +217,10 @@ pub fn encodeInt(buf: []u8, prefixBits: u4, value: u64) Error!usize {
 
 pub fn decodeInt(data: []const u8, offset: *usize, prefixBits: u4) Error!u64 {
     if (offset.* >= data.len) return Error.Truncated;
-    const max_prefix: u64 = (@as(u64, 1) << prefixBits) - 1;
-    var value: u64 = data[offset.*] & @as(u8, @intCast(max_prefix));
+    const maxPrefix: u64 = (@as(u64, 1) << prefixBits) - 1;
+    var value: u64 = data[offset.*] & @as(u8, @intCast(maxPrefix));
     offset.* += 1;
-    if (value < max_prefix) return value;
+    if (value < maxPrefix) return value;
 
     var shift: u6 = 0;
     var terminated = false;
@@ -282,10 +282,10 @@ pub const DynTable = struct {
 
     /// Inserts a new entry, evicting oldest entries to stay within maxSize.
     pub fn insert(self: *DynTable, allocator: Allocator, name: []const u8, value: []const u8) !u64 {
-        const owned_name = try allocator.dupe(u8, name);
-        errdefer allocator.free(owned_name);
-        const owned_value = try allocator.dupe(u8, value);
-        errdefer allocator.free(owned_value);
+        const ownedName = try allocator.dupe(u8, name);
+        errdefer allocator.free(ownedName);
+        const ownedValue = try allocator.dupe(u8, value);
+        errdefer allocator.free(ownedValue);
 
         const total = std.math.add(usize, std.math.add(usize, name.len, value.len) catch return Error.OutOfMemory, ENTRY_OVERHEAD) catch return Error.OutOfMemory;
         if (total > self.maxSize) return Error.TableCapacityExceeded;
@@ -301,8 +301,8 @@ pub const DynTable = struct {
         }
 
         try self.entries.append(allocator, .{
-            .name = owned_name,
-            .value = owned_value,
+            .name = ownedName,
+            .value = ownedValue,
             .totalSize = total,
         });
         self.currentSize += total;
@@ -312,8 +312,8 @@ pub const DynTable = struct {
 
     /// Lowers (or raises) the capacity, evicting oldest entries to fit.
     /// Used for encoder-stream Set Capacity instructions.
-    pub fn setMaxSize(self: *DynTable, allocator: Allocator, max_size: usize) void {
-        self.maxSize = max_size;
+    pub fn setMaxSize(self: *DynTable, allocator: Allocator, maxSize: usize) void {
+        self.maxSize = maxSize;
         while (self.currentSize > self.maxSize and self.entries.items.len > 0) {
             const old = self.entries.orderedRemove(0);
             self.currentSize -%= old.totalSize;
@@ -328,9 +328,9 @@ pub const DynTable = struct {
     /// representations route by their T bit before calling.
     pub fn resolve(self: *const DynTable, absoluteIndex: u64) ?struct { name: []const u8, value: []const u8 } {
         if (absoluteIndex < self.baseIndex) return null;
-        const dyn_idx = absoluteIndex - self.baseIndex;
-        if (dyn_idx >= self.entries.items.len) return null;
-        const e = self.entries.items[@intCast(dyn_idx)];
+        const dynIdx = absoluteIndex - self.baseIndex;
+        if (dynIdx >= self.entries.items.len) return null;
+        const e = self.entries.items[@intCast(dynIdx)];
         return .{ .name = e.name, .value = e.value };
     }
 };
@@ -395,8 +395,8 @@ pub const Encoder = struct {
         self.peerMaxBlocked = n;
     }
 
-    pub fn setEvictBarrier(self: *Encoder, abs_index: u64) void {
-        self.evictBarrier = abs_index;
+    pub fn setEvictBarrier(self: *Encoder, absIndex: u64) void {
+        self.evictBarrier = absIndex;
     }
 
     /// Next absolute dynamic index that will be assigned (= insert
@@ -521,14 +521,14 @@ pub const Encoder = struct {
         const buf = try self.allocator.alloc(u8, max);
         defer self.allocator.free(buf);
         const hlen = huff.encode(buf, name) catch null;
-        const use_huff = if (hlen) |hl| hl < name.len else false;
-        const nlen = if (use_huff) hlen.? else name.len;
+        const useHuff = if (hlen) |hl| hl < name.len else false;
+        const nlen = if (useHuff) hlen.? else name.len;
         var ib: [10]u8 = undefined;
         const n = try encodeInt(&ib, 3, nlen);
         ib[0] |= 0x20 | (neverIndexBit(name) << 4);
-        if (use_huff) ib[0] |= 0x08;
+        if (useHuff) ib[0] |= 0x08;
         try out.appendSlice(self.allocator, ib[0..n]);
-        if (use_huff) {
+        if (useHuff) {
             try out.appendSlice(self.allocator, buf[0..hlen.?]);
         } else {
             try out.appendSlice(self.allocator, name);
@@ -549,8 +549,8 @@ pub const Encoder = struct {
         ) catch return null;
         if (total > dt.maxSize) return null;
         while (dt.currentSize + total > dt.maxSize and dt.entries.items.len > 0) {
-            const oldest_abs = dt.baseIndex;
-            if (oldest_abs >= self.evictBarrier) return null;
+            const oldestAbs = dt.baseIndex;
+            if (oldestAbs >= self.evictBarrier) return null;
             const old = dt.entries.orderedRemove(0);
             dt.currentSize -%= old.totalSize;
             dt.baseIndex +%= 1;
@@ -564,14 +564,14 @@ pub const Encoder = struct {
         const buf = try self.allocator.alloc(u8, max);
         defer self.allocator.free(buf);
         const hlen = huff.encode(buf, name) catch null;
-        const use_huff = if (hlen) |hl| hl < name.len else false;
-        const nlen = if (use_huff) hlen.? else name.len;
+        const useHuff = if (hlen) |hl| hl < name.len else false;
+        const nlen = if (useHuff) hlen.? else name.len;
         var ib: [16]u8 = undefined;
         const n = try encodeInt(&ib, 5, nlen);
         ib[0] |= 0x40;
-        if (use_huff) ib[0] |= 0x20;
+        if (useHuff) ib[0] |= 0x20;
         try self.pending.appendSlice(self.allocator, ib[0..n]);
-        if (use_huff) {
+        if (useHuff) {
             try self.pending.appendSlice(self.allocator, buf[0..hlen.?]);
         } else {
             try self.pending.appendSlice(self.allocator, name);
@@ -586,14 +586,14 @@ pub const Encoder = struct {
     /// (we always set Base == RIC: no post-base references emitted).
     pub fn encodePrefix(self: *Encoder, out: *std.ArrayList(u8), ric: u64, base: u64) !void {
         std.debug.assert(base <= ric);
-        const max_entries = @max(1, self.peerMaxCapacity / ENTRY_OVERHEAD);
-        var enc_ric: u64 = 0;
+        const maxEntries = @max(1, self.peerMaxCapacity / ENTRY_OVERHEAD);
+        var encRic: u64 = 0;
         if (ric != 0) {
-            const full = std.math.mul(u64, max_entries, 2) catch std.math.maxInt(u64);
-            enc_ric = (ric % @max(1, full)) + 1;
+            const full = std.math.mul(u64, maxEntries, 2) catch std.math.maxInt(u64);
+            encRic = (ric % @max(1, full)) + 1;
         }
         var tmp: [16]u8 = undefined;
-        const n = try encodeInt(&tmp, 8, enc_ric);
+        const n = try encodeInt(&tmp, 8, encRic);
         try out.appendSlice(self.allocator, tmp[0..n]);
         const delta = ric - base;
         const m = try encodeInt(&tmp, 7, delta);
@@ -809,10 +809,10 @@ pub const Decoder = struct {
         if (first & 0x80 != 0) {
             // Insert With Name Reference: 1 | T | idx(6+).
             // T polarity is inverted vs field sections: T=1 static.
-            const is_static = first & 0x40 != 0;
+            const isStatic = first & 0x40 != 0;
             const idx = try decodeInt(buf, off, 6);
             var name: []const u8 = undefined;
-            if (is_static) {
+            if (isStatic) {
                 if (idx >= STATIC_TABLE_SIZE) return Error.InvalidInstruction;
                 name = staticTable[@intCast(idx)].name;
             } else {
@@ -830,11 +830,11 @@ pub const Decoder = struct {
         if (first & 0xC0 == 0x40) {
             // Insert With Literal Name: 01 | H | len(5+). Both 0x40
             // (raw) and 0x60 (Huffman) forms insert.
-            const huff_name = first & 0x20 != 0;
+            const huffName = first & 0x20 != 0;
             const nlen = try decodeInt(buf, off, 5);
             if (nlen > MAX_NAME_LEN) return Error.InvalidInstruction;
             const nbytes = try take(buf, off, nlen);
-            const name = try decodeStringBytes(self.allocator, nbytes, huff_name, MAX_NAME_LEN);
+            const name = try decodeStringBytes(self.allocator, nbytes, huffName, MAX_NAME_LEN);
             errdefer self.allocator.free(name);
             const value = try readString(self.allocator, buf, off, MAX_VALUE_LEN);
             errdefer self.allocator.free(value);
@@ -846,11 +846,11 @@ pub const Decoder = struct {
         if (first & 0xE0 == 0x20) {
             // Set Dynamic Table Capacity: 001 | cap(5+).
             const cap = try decodeInt(buf, off, 5);
-            const cap_usize = std.math.cast(usize, cap) orelse return Error.InvalidInstruction;
-            if (cap_usize > self.advertisedMax) return Error.InvalidInstruction;
+            const capUsize = std.math.cast(usize, cap) orelse return Error.InvalidInstruction;
+            if (capUsize > self.advertisedMax) return Error.InvalidInstruction;
             if (self.dyn) |*d| {
-                d.setMaxSize(self.allocator, cap_usize);
-            } else if (cap_usize != 0) {
+                d.setMaxSize(self.allocator, capUsize);
+            } else if (capUsize != 0) {
                 return Error.InvalidInstruction;
             }
             return;
@@ -911,15 +911,15 @@ pub const Decoder = struct {
         return abs;
     }
 
-    fn reconstructRic(self: *const Decoder, enc_ric: u64) Error!u64 {
-        if (enc_ric == 0) return 0;
+    fn reconstructRic(self: *const Decoder, encRic: u64) Error!u64 {
+        if (encRic == 0) return 0;
         if (self.advertisedMax == 0) return Error.InvalidInstruction;
-        const max_ents = @max(1, self.advertisedMax / ENTRY_OVERHEAD);
-        const full = std.math.mul(u64, max_ents, 2) catch return Error.InvalidInstruction;
-        if (enc_ric > full) return Error.InvalidInstruction;
-        const max = std.math.add(u64, self.insertCount(), max_ents) catch return Error.InvalidInstruction;
-        const max_wrapped = max / full * full;
-        var ric = std.math.add(u64, max_wrapped, enc_ric - 1) catch return Error.InvalidInstruction;
+        const maxEnts = @max(1, self.advertisedMax / ENTRY_OVERHEAD);
+        const full = std.math.mul(u64, maxEnts, 2) catch return Error.InvalidInstruction;
+        if (encRic > full) return Error.InvalidInstruction;
+        const max = std.math.add(u64, self.insertCount(), maxEnts) catch return Error.InvalidInstruction;
+        const maxWrapped = max / full * full;
+        var ric = std.math.add(u64, maxWrapped, encRic - 1) catch return Error.InvalidInstruction;
         if (ric > max) {
             if (ric <= full) return Error.InvalidInstruction;
             ric -= full;
@@ -938,8 +938,8 @@ pub const Decoder = struct {
     }
 
     /// Decodes a complete QPACK encoded field section, including its
-    /// prefix, emitting a Section Acknowledgment for `stream_id` into
-    /// `ack_out` (when non-null) if dynamic entries were referenced.
+    /// prefix, emitting a Section Acknowledgment for `streamId` into
+    /// `ackOut` (when non-null) if dynamic entries were referenced.
     /// Returns `error.Blocked` when Required Insert Count runs ahead of
     /// our encoder-stream state: keep the section bytes and retry after
     /// feeding more encoder data. Never buffers internally.
@@ -953,8 +953,8 @@ pub const Decoder = struct {
             return Error.InvalidInstruction;
         }
         var offset: usize = 0;
-        const enc_ric = try decodeInt(data, &offset, 8);
-        const ric = try self.reconstructRic(enc_ric);
+        const encRic = try decodeInt(data, &offset, 8);
+        const ric = try self.reconstructRic(encRic);
         if (offset >= data.len) return Error.InvalidInstruction;
         const sign = data[offset] & 0x80 != 0;
         const delta = try decodeInt(data, &offset, 7);
@@ -980,12 +980,6 @@ pub const Decoder = struct {
         return fields;
     }
 
-    /// Legacy entry point: prefix-less sections decode against the
-    /// current table. Kept for tests and static-only callers.
-    pub fn decodeSectionWithPrefix(self: *Decoder, data: []const u8) Error![]FieldLine {
-        return self.decodeSectionCounted(data, 0, null);
-    }
-
     fn decodeSectionInner(self: *Decoder, data: []const u8, base: u64, ric: u64) Error![]FieldLine {
         var results = std.ArrayList(FieldLine).empty;
         errdefer results.deinit(self.allocator);
@@ -997,17 +991,17 @@ pub const Decoder = struct {
             if (first & 0x80 != 0) {
                 // Indexed: 1 | T | idx(6+). T=1 names the static table
                 // absolutely; T=0 is a dynamic Base-relative index.
-                const dyn_ref = first & 0x40 == 0;
+                const dynRef = first & 0x40 == 0;
                 const rel = try decodeInt(data, &offset, 6);
-                const abs = if (dyn_ref) try self.baseRelative(base, ric, rel) else rel;
-                const res = if (dyn_ref) try self.lookupDynamic(abs) else try lookupStatic(abs);
+                const abs = if (dynRef) try self.baseRelative(base, ric, rel) else rel;
+                const res = if (dynRef) try self.lookupDynamic(abs) else try lookupStatic(abs);
                 try results.append(self.allocator, .{ .name = res.name, .value = res.value, .allocated = false });
             } else if (first & 0xC0 == 0x40) {
                 // Literal with name reference: 01 | N | T | idx(4+).
-                const dyn_ref = first & 0x10 == 0;
+                const dynRef = first & 0x10 == 0;
                 const rel = try decodeInt(data, &offset, 4);
-                const abs = if (dyn_ref) try self.baseRelative(base, ric, rel) else rel;
-                const res = if (dyn_ref) try self.lookupDynamic(abs) else try lookupStatic(abs);
+                const abs = if (dynRef) try self.baseRelative(base, ric, rel) else rel;
+                const res = if (dynRef) try self.lookupDynamic(abs) else try lookupStatic(abs);
                 const name = try self.allocator.dupe(u8, res.name);
                 const value = readString(self.allocator, data, &offset, MAX_VALUE_LEN) catch |e| {
                     self.allocator.free(name);
@@ -1022,11 +1016,11 @@ pub const Decoder = struct {
                 // Literal without name reference: 001 | N | H | len(3+).
                 // (A dynamic-table size update can only appear on the
                 // encoder stream; here these bytes are always a literal.)
-                const huff_name = first & 0x08 != 0;
+                const huffName = first & 0x08 != 0;
                 const nlen = try decodeInt(data, &offset, 3);
                 if (nlen > MAX_NAME_LEN) return Error.InvalidInstruction;
                 const nbytes = try take(data, &offset, nlen);
-                const name = try decodeStringBytes(self.allocator, nbytes, huff_name, MAX_NAME_LEN);
+                const name = try decodeStringBytes(self.allocator, nbytes, huffName, MAX_NAME_LEN);
                 const value = readString(self.allocator, data, &offset, MAX_VALUE_LEN) catch |e| {
                     self.allocator.free(name);
                     return e;
@@ -1149,12 +1143,12 @@ test "qpack static name reference decodes without consuming a name" {
     var block = std.ArrayList(u8).empty;
     defer block.deinit(a);
 
-    var len_buf: [10]u8 = undefined;
-    const indexBytes = try encodeInt(&len_buf, 4, 17);
-    len_buf[0] |= 0x50; // 01, N=0, S=1
-    try block.appendSlice(a, len_buf[0..indexBytes]);
-    const n = try encodeInt(&len_buf, 7, 4);
-    try block.appendSlice(a, len_buf[0..n]);
+    var lenBuf: [10]u8 = undefined;
+    const indexBytes = try encodeInt(&lenBuf, 4, 17);
+    lenBuf[0] |= 0x50; // 01, N=0, S=1
+    try block.appendSlice(a, lenBuf[0..indexBytes]);
+    const n = try encodeInt(&lenBuf, 7, 4);
+    try block.appendSlice(a, lenBuf[0..n]);
     try block.appendSlice(a, "POST");
 
     var dec = Decoder.init(a);
@@ -1175,7 +1169,7 @@ test "qpack complete field section consumes zero dynamic prefix" {
     try enc.encodeIndexedStatic(&block, 17);
 
     var dec = Decoder.init(a);
-    const fields = try dec.decodeSectionWithPrefix(block.items);
+    const fields = try dec.decodeSectionCounted(block.items, 0, null);
     defer dec.freeFields(fields);
     try std.testing.expectEqual(@as(usize, 1), fields.len);
     try std.testing.expectEqualStrings(":method", fields[0].name);
@@ -1219,16 +1213,16 @@ test "qpack huffman literal decodes through shared codec" {
     // Literal without name reference: 001 | N | H | len(3+).
     var encoded: [64]u8 = undefined;
     const nameLen = try huff.encode(encoded[0..], ":path");
-    var len_buf: [10]u8 = undefined;
-    var n = try encodeInt(&len_buf, 3, nameLen);
-    len_buf[0] |= 0x20 | 0x08; // literal, raw name, Huffman-encoded
-    try block.appendSlice(a, len_buf[0..n]);
+    var lenBuf: [10]u8 = undefined;
+    var n = try encodeInt(&lenBuf, 3, nameLen);
+    lenBuf[0] |= 0x20 | 0x08; // literal, raw name, Huffman-encoded
+    try block.appendSlice(a, lenBuf[0..n]);
     try block.appendSlice(a, encoded[0..nameLen]);
 
     const valueLen = try huff.encode(encoded[0..], "/");
-    n = try encodeInt(&len_buf, 7, valueLen);
-    len_buf[0] |= 0x80;
-    try block.appendSlice(a, len_buf[0..n]);
+    n = try encodeInt(&lenBuf, 7, valueLen);
+    lenBuf[0] |= 0x80;
+    try block.appendSlice(a, lenBuf[0..n]);
     try block.appendSlice(a, encoded[0..valueLen]);
 
     var dec = Decoder.init(a);
@@ -1258,14 +1252,14 @@ test "qpack dynamic roundtrip through encoder and decoder streams" {
     try section.appendSlice(a, field.items);
 
     // Flush encoder-stream instructions (Set Capacity + Insert).
-    const enc_bytes = try enc.takeEncoderBytes();
-    defer a.free(enc_bytes);
-    try std.testing.expect(enc_bytes.len > 0);
+    const encBytes = try enc.takeEncoderBytes();
+    defer a.free(encBytes);
+    try std.testing.expect(encBytes.len > 0);
 
     var dec = Decoder.init(a);
     defer dec.deinit();
     dec.setMaxTableCapacity(4096);
-    try dec.readEncoderStream(enc_bytes, true);
+    try dec.readEncoderStream(encBytes, true);
 
     var ack = std.ArrayList(u8).empty;
     defer ack.deinit(a);
@@ -1300,8 +1294,8 @@ test "qpack blocked section retries after encoder data arrives" {
     defer section.deinit(a);
     try enc.encodePrefix(&section, ric, ric);
     try section.appendSlice(a, field.items);
-    const enc_bytes = try enc.takeEncoderBytes();
-    defer a.free(enc_bytes);
+    const encBytes = try enc.takeEncoderBytes();
+    defer a.free(encBytes);
 
     // Fresh decoder knows nothing: same section must Block, not fail.
     var dec = Decoder.init(a);
@@ -1310,7 +1304,7 @@ test "qpack blocked section retries after encoder data arrives" {
     try std.testing.expectError(Error.Blocked, dec.decodeSectionCounted(section.items, 4, null));
 
     // Feed the encoder stream, then the identical bytes decode.
-    try dec.readEncoderStream(enc_bytes, true);
+    try dec.readEncoderStream(encBytes, true);
     const fields = try dec.decodeSectionCounted(section.items, 4, null);
     defer dec.freeFields(fields);
     try std.testing.expectEqualStrings("x-blocked", fields[0].name);
@@ -1325,13 +1319,13 @@ test "qpack post-base references resolve" {
     // Two inserts: abs 0 (x-a) and abs 1 (x-b); insertCount 2.
     _ = try enc.insertDynamic("x-a", "1");
     _ = try enc.insertDynamic("x-b", "2");
-    const enc_bytes = try enc.takeEncoderBytes();
-    defer a.free(enc_bytes);
+    const encBytes = try enc.takeEncoderBytes();
+    defer a.free(encBytes);
 
     var dec = Decoder.init(a);
     defer dec.deinit();
     dec.setMaxTableCapacity(4096);
-    try dec.readEncoderStream(enc_bytes, true);
+    try dec.readEncoderStream(encBytes, true);
 
     // Section with Base=0 (< RIC=2): post-base rel 0 -> abs 0.
     // RIC 2 with maxEntries 128 encodes as 2 % 256 + 1 = 3.
@@ -1364,15 +1358,15 @@ test "qpack encoder stream split delivery buffers" {
     defer enc.deinit();
     enc.setMaxTableCapacity(4096);
     _ = try enc.insertDynamic("x-split", "s");
-    const enc_bytes = try enc.takeEncoderBytes();
-    defer a.free(enc_bytes);
-    try std.testing.expect(enc_bytes.len > 2);
+    const encBytes = try enc.takeEncoderBytes();
+    defer a.free(encBytes);
+    try std.testing.expect(encBytes.len > 2);
 
     var dec = Decoder.init(a);
     defer dec.deinit();
     dec.setMaxTableCapacity(4096);
     // Feed one byte at a time: partial instructions buffer, never fail.
-    for (enc_bytes) |b| {
+    for (encBytes) |b| {
         try dec.readEncoderStream(&.{b}, false);
     }
     try std.testing.expectEqual(@as(u64, 1), dec.insertCount());
@@ -1403,11 +1397,11 @@ test "qpack duplicate instruction copies entries" {
     // Duplicate relative 0 -> copies abs 0 to abs 1.
     var dup: [16]u8 = undefined;
     const n = try encodeInt(&dup, 5, 0);
-    const enc_bytes = try enc.takeEncoderBytes();
-    defer a.free(enc_bytes);
+    const encBytes = try enc.takeEncoderBytes();
+    defer a.free(encBytes);
     var combined = std.ArrayList(u8).empty;
     defer combined.deinit(a);
-    try combined.appendSlice(a, enc_bytes);
+    try combined.appendSlice(a, encBytes);
     try combined.appendSlice(a, dup[0..n]);
 
     var dec = Decoder.init(a);
@@ -1515,9 +1509,9 @@ test "qpack encoder prefix encodes nonzero insert counts" {
     dec.setMaxTableCapacity(4096);
     // Prefix alone (no section body) decodes to zero fields after
     // feeding the encoder bytes the insert produced.
-    const enc_bytes = try enc.takeEncoderBytes();
-    defer a.free(enc_bytes);
-    try dec.readEncoderStream(enc_bytes, true);
+    const encBytes = try enc.takeEncoderBytes();
+    defer a.free(encBytes);
+    try dec.readEncoderStream(encBytes, true);
     var body = std.ArrayList(u8).empty;
     defer body.deinit(a);
     try body.appendSlice(a, prefix.items);
@@ -1534,7 +1528,7 @@ test "qpack rfc9204 B.1 literal static name reference vector" {
     const section = "\x00\x00\x51\x0b/index.html";
     var dec = Decoder.init(a);
     defer dec.deinit();
-    const fields = try dec.decodeSectionWithPrefix(section);
+    const fields = try dec.decodeSectionCounted(section, 0, null);
     defer dec.freeFields(fields);
     try std.testing.expectEqual(@as(usize, 1), fields.len);
     try std.testing.expectEqualStrings(":path", fields[0].name);
@@ -1546,14 +1540,14 @@ test "qpack rfc9204 B.2 dynamic table and post-base vector" {
     // name references, then a section with RIC=2/Base=0 using indexed
     // post-base references, acknowledged for stream 4.
     const a = std.testing.allocator;
-    const encoder_stream =
+    const encoderStream =
         "\x3f\xbd\x01" ++ // Set Dynamic Table Capacity = 220
         "\xc0\x0fwww.example.com" ++ // Insert, static name 0 (:authority)
         "\xc1\x0c/sample/path"; // Insert, static name 1 (:path)
     var dec = Decoder.init(a);
     defer dec.deinit();
     dec.setMaxTableCapacity(4096);
-    try dec.readEncoderStream(encoder_stream, true);
+    try dec.readEncoderStream(encoderStream, true);
     try std.testing.expectEqual(@as(u64, 2), dec.insertCount());
 
     const section = "\x03\x81\x10\x11"; // RIC=2, Base=0, post-base 0 and 1

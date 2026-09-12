@@ -202,35 +202,35 @@ pub const NodeHandle = struct {
 
     pub fn setAttr(self: NodeHandle, name: []const u8, value: []const u8) !void {
         if (self.arena) |a| {
-            const tree_mut = @constCast(self.tree);
-            try tree_mut.setAttribute(a.allocator(), self.nodeIdx, name, value);
+            const treeMut = @constCast(self.tree);
+            try treeMut.setAttribute(a.allocator(), self.nodeIdx, name, value);
         }
     }
 
     pub fn removeAttr(self: NodeHandle, name: []const u8) !void {
         if (self.arena) |a| {
-            const tree_mut = @constCast(self.tree);
-            try tree_mut.removeAttribute(a.allocator(), self.nodeIdx, name);
+            const treeMut = @constCast(self.tree);
+            try treeMut.removeAttribute(a.allocator(), self.nodeIdx, name);
         }
     }
 
     pub fn replaceText(self: NodeHandle, newText: []const u8) !void {
         if (self.arena) |a| {
             const al = a.allocator();
-            const tree_mut = @constCast(self.tree);
+            const treeMut = @constCast(self.tree);
             const duped = try al.dupe(u8, newText);
-            const node = tree_mut.getMut(self.nodeIdx);
+            const node = treeMut.getMut(self.nodeIdx);
             if (node.kind == .text) {
                 node.data = duped;
             } else {
                 // Clear existing children and append a new text child
                 node.firstChild = NO_NODE;
                 node.lastChild = NO_NODE;
-                const txt_idx = try tree_mut.append(al, .{
+                const txtIdx = try treeMut.append(al, .{
                     .kind = .text,
                     .data = duped,
                 });
-                tree_mut.appendChild(self.nodeIdx, txt_idx);
+                treeMut.appendChild(self.nodeIdx, txtIdx);
             }
         }
     }
@@ -312,9 +312,9 @@ pub const Document = struct {
     }
 
     pub fn getElementById(self: *const Document, id: []const u8) !?NodeHandle {
-        var sel_buf: [128]u8 = undefined;
-        const sel_str = std.fmt.bufPrint(&sel_buf, "#{s}", .{id}) catch return null;
-        return self.selectFirst(sel_str);
+        var selBuf: [128]u8 = undefined;
+        const selStr = std.fmt.bufPrint(&selBuf, "#{s}", .{id}) catch return null;
+        return self.selectFirst(selStr);
     }
 
     /// Serializes the document (or document fragment) back to canonical HTML.
@@ -426,14 +426,14 @@ pub const Parser = struct {
         var buf: std.ArrayList(u8) = .empty;
         errdefer buf.deinit(al);
 
-        var chunk_buf: [4096]u8 = undefined;
+        var chunkBuf: [4096]u8 = undefined;
         var totalRead: usize = 0;
         while (true) {
-            const n = reader.readSliceShort(&chunk_buf) catch break;
+            const n = reader.readSliceShort(&chunkBuf) catch break;
             if (n == 0) break;
             totalRead += n;
             if (totalRead > maxSize) return error.InputTooLarge;
-            try buf.appendSlice(al, chunk_buf[0..n]);
+            try buf.appendSlice(al, chunkBuf[0..n]);
         }
 
         const source = try buf.toOwnedSlice(al);
@@ -465,17 +465,17 @@ pub const Parser = struct {
 };
 
 test "edit vocabulary tracks points across replacement" {
-    const old_s = "hello\nworld";
-    const new_s = "hello\nbeautiful world";
-    const edit = computeEditFor(old_s, 6, 0, 10, new_s);
+    const oldS = "hello\nworld";
+    const newS = "hello\nbeautiful world";
+    const edit = computeEditFor(oldS, 6, 0, 10, newS);
     try std.testing.expectEqual(@as(u32, 6), edit.startByte);
     try std.testing.expectEqual(@as(u32, 6), edit.oldEndByte);
     try std.testing.expectEqual(@as(u32, 16), edit.newEndByte);
     try std.testing.expectEqual(@as(u32, 1), edit.startPoint.row);
     try std.testing.expectEqual(@as(u32, 0), edit.startPoint.column);
-    const input_edit = toInputEdit(edit);
-    try std.testing.expectEqual(@as(u32, 6), input_edit.start_byte);
-    try std.testing.expectEqual(@as(u32, 16), input_edit.new_end_byte);
+    const inputEdit = toInputEdit(edit);
+    try std.testing.expectEqual(@as(u32, 6), inputEdit.start_byte);
+    try std.testing.expectEqual(@as(u32, 16), inputEdit.new_end_byte);
 }
 
 test "incremental update reparses and reports changed ranges" {

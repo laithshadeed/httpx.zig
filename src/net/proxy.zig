@@ -52,7 +52,7 @@ pub const DialStrategy = struct {
     /// SOCKS5H flag: delegate destination resolution to the proxy.
     remoteDns: bool = false,
 
-    /// True when the CALLER must not resolve dest_host locally
+    /// True when the CALLER must not resolve destHost locally
     /// (SOCKS5H / SOCKS4a semantics).
     pub fn needsLocalDns(self: *const DialStrategy) bool {
         return switch (self.kind) {

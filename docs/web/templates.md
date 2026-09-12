@@ -26,7 +26,7 @@ parentheses, ternary (`x if cond else y`), and calls.
 ### Conditionals
 
 ```html
-{% if show_admin %}
+{% if showAdmin %}
   <p>Admin panel</p>
 {% elif is_member %}
   <p>Member view</p>

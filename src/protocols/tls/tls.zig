@@ -50,8 +50,8 @@ pub const TicketKeys = session.TicketKeys;
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const lifecycle = @import("../../server/lifecycle.zig");
-const router_mod = @import("../../web/router/router.zig");
-const method_mod = @import("../../common/method.zig");
+const routerMod = @import("../../web/router/router.zig");
+const methodMod = @import("../../common/method.zig");
 
 pub const Identity = struct {
     certChainPem: []const u8 = "",
@@ -134,14 +134,14 @@ pub const Listener = struct {
         // including query strings (stripped by the router for matching).
         // The bare "/" is registered too: like static mounts, "/*path"
         // needs at least one segment, so it never matches the root.
-        inline for ([_]method_mod.Method{ .GET, .POST, .PUT, .PATCH, .DELETE, .HEAD, .OPTIONS }) |m| {
+        inline for ([_]methodMod.Method{ .GET, .POST, .PUT, .PATCH, .DELETE, .HEAD, .OPTIONS }) |m| {
             try self.server.router.add(m, "/", adapter, .{ .userData = self });
             try self.server.router.add(m, "/*path", adapter, .{ .userData = self });
         }
         self.server.run();
     }
 
-    fn adapter(ctx: *router_mod.Context) anyerror!router_mod.Response {
+    fn adapter(ctx: *routerMod.Context) anyerror!routerMod.Response {
         const self: *Listener = @ptrCast(@alignCast(ctx.userData orelse return error.NoHandler));
         const h = self.handler orelse return error.NoHandler;
         const res = try h(.{
@@ -176,7 +176,7 @@ test {
 }
 
 test "Listener.run wires handler for all requests" {
-    const client_mod = @import("../../client/client.zig");
+    const clientMod = @import("../../client/client.zig");
     const a = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
@@ -203,18 +203,18 @@ test "Listener.run wires handler for all requests" {
     defer r.join();
     defer listener.stop();
 
-    var client = client_mod.Client.init(a, io, .{});
+    var client = clientMod.Client.init(a, io, .{});
     defer client.deinit();
 
-    var url_buf: [96]u8 = undefined;
-    const get_url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/anything?x=1", .{port});
-    var res = try client.get(get_url, .{ .timeoutMs = 10_000 });
+    var urlBuf: [96]u8 = undefined;
+    const getUrl = try std.fmt.bufPrint(&urlBuf, "http://127.0.0.1:{d}/anything?x=1", .{port});
+    var res = try client.get(getUrl, .{ .timeoutMs = 10_000 });
     defer res.deinit();
     try std.testing.expectEqual(@as(u16, 200), res.status);
     try std.testing.expectEqualStrings("Hello over TLS!", res.body);
 
-    const post_url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/echo", .{port});
-    var res2 = try client.post(post_url, .{ .body = "ping", .timeoutMs = 10_000 });
+    const postUrl = try std.fmt.bufPrint(&urlBuf, "http://127.0.0.1:{d}/echo", .{port});
+    var res2 = try client.post(postUrl, .{ .body = "ping", .timeoutMs = 10_000 });
     defer res2.deinit();
     try std.testing.expectEqual(@as(u16, 201), res2.status);
     try std.testing.expectEqualStrings("ping", res2.body);
@@ -226,7 +226,7 @@ test "local TLS handshake serves HTTPS end to end" {
     // both sides, then encrypted application data). Uses the committed
     // P-256 test identity; RSA keys are rejected loudly (no RSA private
     // operations in std).
-    const client_mod = @import("../../client/client.zig");
+    const clientMod = @import("../../client/client.zig");
     const a = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
@@ -240,8 +240,8 @@ test "local TLS handshake serves HTTPS end to end" {
     var listener = try Listener.init(a, io, .{
         .port = 0,
         .defaultIdentity = .{
-            .certChainPem = @embedFile("testdata/localhost_cert.pem"),
-            .privateKeyPem = @embedFile("testdata/localhost_key.pem"),
+            .certChainPem = @embedFile("testdata/localhostCert.pem"),
+            .privateKeyPem = @embedFile("testdata/localhostKey.pem"),
         },
     });
     defer listener.deinit();
@@ -256,11 +256,11 @@ test "local TLS handshake serves HTTPS end to end" {
     defer r.join();
     defer listener.stop();
 
-    var client = client_mod.Client.init(a, io, .{});
+    var client = clientMod.Client.init(a, io, .{});
     defer client.deinit();
 
-    var url_buf: [64]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buf, "https://127.0.0.1:{d}/", .{port});
+    var urlBuf: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&urlBuf, "https://127.0.0.1:{d}/", .{port});
     var res = try client.get(url, .{ .tls = .{ .verify = .none, .allowTruncation = true }, .timeoutMs = 15_000 });
     defer res.deinit();
     try std.testing.expectEqual(@as(u16, 200), res.status);

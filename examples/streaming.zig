@@ -4,7 +4,7 @@
 //!
 //! Demonstrates the zero-copy fixed-body reader. For chunked or large
 //! streaming bodies, the client always buffers the full response up to
-//! `max_response_size`; for long-running streams use the lower-level
+//! `maxResponseSize`; for long-running streams use the lower-level
 //! HTTP/1 transport instead.
 
 const std = @import("std");

@@ -11,9 +11,9 @@
 //! of being downgraded.
 
 const std = @import("std");
-const tcp_mod = @import("../sockets/tcp.zig");
-const address_mod = @import("address.zig");
-const resolve_mod = @import("resolve.zig");
+const tcpMod = @import("../sockets/tcp.zig");
+const addressMod = @import("address.zig");
+const resolveMod = @import("resolve.zig");
 
 pub const Error = error{
     ProxyConnectFailed,
@@ -26,7 +26,7 @@ pub const Error = error{
 };
 
 /// SOCKS4a marker IP: 0.0.0.0 is invalid, 0.0.0.1 signals the extension.
-const ext_marker: u32 = 0x00000001;
+const extMarker: u32 = 0x00000001;
 
 /// Performs SOCKS4/4a handshake + CONNECT through `proxyHost:proxyPort`.
 /// IPv4 literals use plain SOCKS4; anything else uses the 4a hostname
@@ -39,7 +39,7 @@ pub fn connect(
     destHost: []const u8,
     destPort: u16,
     userId: ?[]const u8,
-) !tcp_mod.Socket {
+) !tcpMod.Socket {
     return connectInternal(io, proxyHost, proxyPort, destHost, destPort, userId, false);
 }
 
@@ -51,7 +51,7 @@ pub fn connectStream(
     destHost: []const u8,
     destPort: u16,
     userId: ?[]const u8,
-) !tcp_mod.Socket {
+) !tcpMod.Socket {
     return connectInternal(io, proxyHost, proxyPort, destHost, destPort, userId, true);
 }
 
@@ -63,26 +63,26 @@ fn connectInternal(
     destPort: u16,
     userId: ?[]const u8,
     isStream: bool,
-) !tcp_mod.Socket {
-    var probe = address_mod.Address{ .family = .ip4, .port = 0 };
+) !tcpMod.Socket {
+    var probe = addressMod.Address{ .family = .ip4, .port = 0 };
     var sock = if (probe.parseIp(proxyHost)) |parsed| blk: {
         var addr = parsed;
         addr.port = proxyPort;
         if (isStream) {
-            break :blk tcp_mod.connectAddressStream(io, &addr) catch return Error.ProxyConnectFailed;
+            break :blk tcpMod.connectAddressStream(io, &addr) catch return Error.ProxyConnectFailed;
         } else {
-            break :blk tcp_mod.connectAddress(io, &addr) catch return Error.ProxyConnectFailed;
+            break :blk tcpMod.connectAddress(io, &addr) catch return Error.ProxyConnectFailed;
         }
     } else |_| blk: {
         const a = std.heap.page_allocator;
-        const addrs = (resolve_mod.Resolver.init(a, io)).lookup(proxyHost, .{ .port = proxyPort }) catch return Error.ProxyConnectFailed;
+        const addrs = (resolveMod.Resolver.init(a, io)).lookup(proxyHost, .{ .port = proxyPort }) catch return Error.ProxyConnectFailed;
         defer a.free(addrs);
         if (addrs.len == 0) return Error.ProxyConnectFailed;
         for (addrs) |*raddr| {
             if (isStream) {
-                if (tcp_mod.connectAddressStream(io, raddr)) |s| break :blk s else |_| {}
+                if (tcpMod.connectAddressStream(io, raddr)) |s| break :blk s else |_| {}
             } else {
-                if (tcp_mod.connectAddress(io, raddr)) |s| break :blk s else |_| {}
+                if (tcpMod.connectAddress(io, raddr)) |s| break :blk s else |_| {}
             }
         }
         return Error.ProxyConnectFailed;
@@ -109,15 +109,15 @@ fn connectInternal(
         if (looksLikeIpv6(destHost)) return Error.AddressTypeUnsupported;
         if (destHost.len == 0 or destHost.len > 255) return Error.AddressTypeUnsupported;
         if (std.mem.indexOfScalar(u8, destHost, 0) != null) return Error.AddressTypeUnsupported;
-        std.mem.writeInt(u32, req[pos..][0..4], ext_marker, .big);
+        std.mem.writeInt(u32, req[pos..][0..4], extMarker, .big);
         pos += 4;
     }
     @memcpy(req[pos..][0..id.len], id);
     pos += id.len;
     req[pos] = 0;
     pos += 1;
-    const use_ext = parseIp4(destHost) == null;
-    if (use_ext) {
+    const useExt = parseIp4(destHost) == null;
+    if (useExt) {
         @memcpy(req[pos..][0..destHost.len], destHost);
         pos += destHost.len;
         req[pos] = 0;
@@ -138,7 +138,7 @@ fn connectInternal(
     }
 }
 
-fn readExact(sock: *tcp_mod.Socket, buf: []u8) !usize {
+fn readExact(sock: *tcpMod.Socket, buf: []u8) !usize {
     var total: usize = 0;
     while (total < buf.len) {
         const n = sock.read(buf[total..]) catch |e| switch (e) {
@@ -174,7 +174,7 @@ fn parseIp4(text: []const u8) ?u32 {
 // In-process mock SOCKS4/4a server for deterministic offline testing
 
 pub const MockSocks4Server = struct {
-    listener: tcp_mod.Listener,
+    listener: tcpMod.Listener,
     port: u16,
     replyCode: u8 = 0x5A,
     recordedIp: u32 = 0,
@@ -192,7 +192,7 @@ pub const MockSocks4Server = struct {
         const server = try a.create(MockSocks4Server);
         errdefer a.destroy(server);
 
-        const listener = try tcp_mod.Listener.bind(io, 0);
+        const listener = try tcpMod.Listener.bind(io, 0);
         server.* = .{
             .listener = listener,
             .port = listener.localPort(),
@@ -209,7 +209,7 @@ pub const MockSocks4Server = struct {
         // Wake a blocked accept with a dummy connection first (Windows AFD
         // reports INVALID_HANDLE when closing a listening socket out from
         // under a pending accept); the woken server sees EOF and exits.
-        if (tcp_mod.connect(self.io, "127.0.0.1", self.port)) |s| {
+        if (tcpMod.connect(self.io, "127.0.0.1", self.port)) |s| {
             var dummy = s;
             dummy.close();
         } else |_| {}
@@ -218,7 +218,7 @@ pub const MockSocks4Server = struct {
         std.testing.allocator.destroy(self);
     }
 
-    fn readByte(conn: *tcp_mod.Socket) ?u8 {
+    fn readByte(conn: *tcpMod.Socket) ?u8 {
         var b: [1]u8 = undefined;
         _ = readExact(conn, &b) catch return null;
         return b[0];
@@ -246,7 +246,7 @@ pub const MockSocks4Server = struct {
         self.recordedUserIdLen = ulen;
 
         // 4a extension: marker IP + HOST NUL
-        if (self.recordedIp == ext_marker) {
+        if (self.recordedIp == extMarker) {
             self.sawExtension = true;
             var hlen: usize = 0;
             while (hlen < self.recordedHost.len) {
@@ -262,17 +262,17 @@ pub const MockSocks4Server = struct {
         conn.writeAll(&reply) catch return;
 
         if (self.replyCode == 0x5A) {
-            var echo_buf: [128]u8 = undefined;
-            const n = conn.read(&echo_buf) catch 0;
+            var echoBuf: [128]u8 = undefined;
+            const n = conn.read(&echoBuf) catch 0;
             if (n > 0) {
-                conn.writeAll(echo_buf[0..n]) catch {};
+                conn.writeAll(echoBuf[0..n]) catch {};
             }
         }
     }
 };
 
 test "socks4 ipv4 connect sends ip and userid" {
-    const IoContext = tcp_mod.IoContext;
+    const IoContext = tcpMod.IoContext;
     var ctx = try IoContext.init(std.testing.allocator);
     defer ctx.deinit();
 
@@ -293,7 +293,7 @@ test "socks4 ipv4 connect sends ip and userid" {
 }
 
 test "socks4a hostname forwarded unresolved" {
-    const IoContext = tcp_mod.IoContext;
+    const IoContext = tcpMod.IoContext;
     var ctx = try IoContext.init(std.testing.allocator);
     defer ctx.deinit();
 
@@ -309,7 +309,7 @@ test "socks4a hostname forwarded unresolved" {
 }
 
 test "socks4 reject maps to ProxyRequestRejected" {
-    const IoContext = tcp_mod.IoContext;
+    const IoContext = tcpMod.IoContext;
     var ctx = try IoContext.init(std.testing.allocator);
     defer ctx.deinit();
 
@@ -321,7 +321,7 @@ test "socks4 reject maps to ProxyRequestRejected" {
 }
 
 test "socks4 ipv6 destination is rejected loudly" {
-    const IoContext = tcp_mod.IoContext;
+    const IoContext = tcpMod.IoContext;
     var ctx = try IoContext.init(std.testing.allocator);
     defer ctx.deinit();
 

@@ -95,16 +95,16 @@ pub const FrameHeader = struct {
 
     pub fn parse(buf: *const [FRAME_HEADER_SIZE]u8) FrameHeader {
         const length: u24 = (@as(u24, buf[0]) << 16) | (@as(u24, buf[1]) << 8) | buf[2];
-        const ft_raw = buf[3];
-        const ft: FrameType = @enumFromInt(ft_raw);
-        const raw_sid = std.mem.readInt(u32, buf[5..9], .big);
+        const ftRaw = buf[3];
+        const ft: FrameType = @enumFromInt(ftRaw);
+        const rawSid = std.mem.readInt(u32, buf[5..9], .big);
         var flags = buf[4];
         if (ft.isKnown()) flags &= validFlags(ft);
         return .{
             .length = length,
             .frameType = ft,
             .flags = flags,
-            .streamId = @intCast(raw_sid & 0x7FFFFFFF),
+            .streamId = @intCast(rawSid & 0x7FFFFFFF),
         };
     }
 
@@ -252,10 +252,10 @@ pub const Frame = union(enum) {
             .data => {
                 if (hdr.flags & PADDED_FLAG != 0) {
                     if (payload.len < 1) return Error.InvalidPayload;
-                    const pad_len = payload[0];
-                    if (@as(usize, pad_len) + 1 > payload.len) return Error.ProtocolError; // pad+field > len
+                    const padLen = payload[0];
+                    if (@as(usize, padLen) + 1 > payload.len) return Error.ProtocolError; // pad+field > len
                     return .{ .data = .{
-                        .data = payload[1 .. payload.len - pad_len],
+                        .data = payload[1 .. payload.len - padLen],
                         .endStream = hdr.flags & END_FLAG != 0,
                     } };
                 }
@@ -271,9 +271,9 @@ pub const Frame = union(enum) {
                 var weight: u8 = 255;
                 if (hdr.flags & PADDED_FLAG != 0) {
                     if (rest.len < 1) return Error.InvalidPayload;
-                    const pad_len = rest[0];
-                    if (@as(usize, pad_len) + 1 > rest.len) return Error.ProtocolError;
-                    rest = rest[1 .. rest.len - pad_len];
+                    const padLen = rest[0];
+                    if (@as(usize, padLen) + 1 > rest.len) return Error.ProtocolError;
+                    rest = rest[1 .. rest.len - padLen];
                 }
                 if (hdr.flags & PRIORITY_F != 0) {
                     if (rest.len < 5) return Error.InvalidPayload;
@@ -328,9 +328,9 @@ pub const Frame = union(enum) {
                 var rest = payload;
                 if (hdr.flags & PADDED_FLAG != 0) {
                     if (rest.len < 1) return Error.InvalidPayload;
-                    const pad_len = rest[0];
-                    if (@as(usize, pad_len) + 1 > rest.len) return Error.ProtocolError;
-                    rest = rest[1 .. rest.len - pad_len];
+                    const padLen = rest[0];
+                    if (@as(usize, padLen) + 1 > rest.len) return Error.ProtocolError;
+                    rest = rest[1 .. rest.len - padLen];
                 }
                 if (rest.len < 4) return Error.InvalidPayload;
                 const promised = std.mem.readInt(u32, rest[0..4], .big) & 0x7FFFFFFF;
@@ -426,10 +426,10 @@ pub fn writeWindowUpdate(out: *std.ArrayList(u8), gpa: Allocator, sid: u31, incr
     try out.appendSlice(gpa, &b);
 }
 
-pub fn writeGoaway(out: *std.ArrayList(u8), gpa: Allocator, last_sid: u31, code: u32, debugData: []const u8) !void {
+pub fn writeGoaway(out: *std.ArrayList(u8), gpa: Allocator, lastSid: u31, code: u32, debugData: []const u8) !void {
     try writeHeader(out, gpa, 8 + debugData.len, .goaway, 0, 0);
     var b: [8]u8 = undefined;
-    std.mem.writeInt(u32, b[0..4], last_sid, .big);
+    std.mem.writeInt(u32, b[0..4], lastSid, .big);
     std.mem.writeInt(u32, b[4..8], code, .big);
     try out.appendSlice(gpa, &b);
     try out.appendSlice(gpa, debugData);

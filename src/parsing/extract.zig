@@ -116,7 +116,7 @@ pub fn extractLinks(tree: *const Tree, allocator: Allocator) ![]Link {
         if (node.hasTag("a") or node.hasTag("area")) {
             const href = node.attr("href") orelse continue;
             if (href.len == 0) continue;
-            const link_text = blk: {
+            const linkText = blk: {
                 var txt: std.ArrayList(u8) = .empty;
                 defer txt.deinit(allocator);
                 var child = node.firstChild;
@@ -127,10 +127,10 @@ pub fn extractLinks(tree: *const Tree, allocator: Allocator) ![]Link {
                 }
                 break :blk try txt.toOwnedSlice(allocator);
             };
-            defer allocator.free(link_text);
+            defer allocator.free(linkText);
             try links.append(allocator, .{
                 .href = href,
-                .text = try allocator.dupe(u8, std.mem.trim(u8, link_text, " \t\r\n")),
+                .text = try allocator.dupe(u8, std.mem.trim(u8, linkText, " \t\r\n")),
                 .rel = node.attr("rel") orelse "",
                 .title = node.attr("title") orelse "",
                 .source = if (node.hasTag("a")) "a" else "area",
@@ -214,7 +214,7 @@ fn extractFormFields(
             const kind = node.attr("type") orelse (if (node.hasTag("textarea")) "textarea" else if (node.hasTag("select")) "select" else "text");
             var opts: []const []const u8 = &.{};
             if (node.hasTag("select")) {
-                var opt_list: std.ArrayList([]const u8) = .empty;
+                var optList: std.ArrayList([]const u8) = .empty;
                 var ow = try tree.walk(allocator, fidx);
                 defer ow.deinit();
                 _ = ow.next();
@@ -222,10 +222,10 @@ fn extractFormFields(
                     const on = tree.get(oidx);
                     if (on.kind == .element and on.hasTag("option")) {
                         const v = on.attr("value") orelse "";
-                        try opt_list.append(allocator, v);
+                        try optList.append(allocator, v);
                     }
                 }
-                opts = try opt_list.toOwnedSlice(allocator);
+                opts = try optList.toOwnedSlice(allocator);
             }
             try fields.append(allocator, .{
                 .name = name,

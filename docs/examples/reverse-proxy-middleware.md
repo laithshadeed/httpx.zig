@@ -14,4 +14,4 @@ fn proxyHandler(ctx: *httpx.Context) anyerror!httpx.Response {
 ```
 
 For client-side forward proxies (including SOCKS5h), see
-[Proxy Example](/examples/proxy-example) and `examples/proxy_demo.zig`.
+[Proxy Example](/examples/proxy-example) and `examples/proxyDemo.zig`.

@@ -1,6 +1,6 @@
 # Example: Health Check
 
-Demonstrates health_check.zig using the canonical HTTPX API.
+Demonstrates healthCheck.zig using the canonical HTTPX API.
 
 ## Complete Example
 

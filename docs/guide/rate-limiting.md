@@ -39,7 +39,7 @@ dimension (`RateLimitDimension`: `.global`, `.clientIp`, `.userId`,
 `.apiKey`, `.route`, `.userAndRoute`, `.ipAndRoute`, `.custom`).
 
 Configure windows with `RateLimitPolicy` (`.limit`, `.windowMs`, `.burst`,
-`.ttlMs`) via `initWithOptions`.
+`.ttlMs`) via `init(allocator, .{ .policy, .maxEntries })`.
 
 ## Rate Limiting Headers
 

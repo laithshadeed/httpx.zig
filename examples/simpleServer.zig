@@ -1,0 +1,81 @@
+//! Minimal HTTP/1.1 server with two routes.
+//!
+//! Run with: `zig build run-simple-server`
+//!
+//! Demonstrates router registration, the explicit `httpx.Server` lifecycle,
+//! and graceful shutdown. The server runs on a background thread; the
+//! main thread sends a few requests and then signals shutdown.
+
+const std = @import("std");
+const httpx = @import("httpx");
+
+fn indexHandler(_: *httpx.Context) anyerror!httpx.Response {
+    return .{
+        .status = 200,
+        .body = "hello, world!",
+        .contentType = "text/plain; charset=utf-8",
+    };
+}
+
+fn jsonHandler(_: *httpx.Context) anyerror!httpx.Response {
+    return .{
+        .status = 200,
+        .body = "{\"ok\":true}",
+        .contentType = "application/json",
+    };
+}
+
+fn notFoundHandler(_: *httpx.Context) anyerror!httpx.Response {
+    return .{ .status = 404, .body = "not found" };
+}
+
+pub fn main() !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var server = try httpx.Server.init(allocator, io, .{
+        .host = "127.0.0.1",
+        .port = 0,
+        .enableDocs = false,
+        .maxConnections = 2,
+    });
+    defer server.deinit();
+
+    try server.router.add(.GET, "/", indexHandler, .{});
+    try server.router.add(.GET, "/json", jsonHandler, .{});
+    try server.router.add(.GET, "/*rest", notFoundHandler, .{});
+
+    const port = server.localPort();
+    std.debug.print("listening on 127.0.0.1:{d}\n", .{port});
+
+    const ServerThread = struct {
+        fn run(s: *httpx.Server) void {
+            s.run();
+        }
+    };
+    const t = try std.Thread.spawn(.{}, ServerThread.run, .{&server});
+
+    // Give the worker thread a moment to enter the accept loop. `Thread.yield`
+    // is a portable busy-wait primitive; for a real application use a robust
+    // readiness signal (semaphore, channel, etc.) rather than a fixed pause.
+    var spin: usize = 0;
+    while (spin < 1000) : (spin += 1) std.Thread.yield() catch {};
+
+    var client = httpx.Client.init(allocator, io, .{});
+    defer client.deinit();
+    const url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/", .{port});
+    defer allocator.free(url);
+    var response = try client.get(url, .{});
+    defer response.deinit();
+    std.debug.print("GET / -> {d} {s}\n", .{ response.status, response.body });
+
+    const jsonUrl = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/json", .{port});
+    defer allocator.free(jsonUrl);
+    var jsonResponse = try client.get(jsonUrl, .{});
+    defer jsonResponse.deinit();
+    std.debug.print("GET /json -> {d} {s}\n", .{ jsonResponse.status, jsonResponse.body });
+
+    t.join();
+}

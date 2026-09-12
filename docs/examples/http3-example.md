@@ -1,7 +1,7 @@
 # HTTP/3 Example
 
 HTTP/3 and QUIC protocol helpers (QPACK and frame primitives). See
-`examples/http3_client.zig` and `examples/http3_quic.zig`.
+`examples/http3Client.zig` and `examples/http3Quic.zig`.
 
 ```zig
 var buf: [8]u8 = undefined;

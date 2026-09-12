@@ -157,9 +157,9 @@ pub const Coalescer = struct {
         }
         self.lastMs = nowMs;
         self.lastKind = kind;
-        const copy_len = @min(path.len, self.lastPath.len);
-        @memcpy(self.lastPath[0..copy_len], path[0..copy_len]);
-        self.lastPathLen = copy_len;
+        const copyLen = @min(path.len, self.lastPath.len);
+        @memcpy(self.lastPath[0..copyLen], path[0..copyLen]);
+        self.lastPathLen = copyLen;
         return true;
     }
 };
