@@ -196,6 +196,11 @@ pub const Engine = struct {
     // ALPN result
     negotiatedAlpn: ?[]const u8 = null,
 
+    /// Peer's QUIC transport parameters block (ext 57), owned. Set from
+    /// ClientHello (server) or EncryptedExtensions (client); absent on
+    /// TCP paths. The QUIC layer parses and applies it.
+    peerQuicTransportParams: ?[]u8 = null,
+
     // SNI hostname from ClientHello
     sniHostname: ?[]const u8 = null,
 
@@ -249,6 +254,10 @@ pub const Engine = struct {
             self.allocator.free(alpn);
             self.negotiatedAlpn = null;
         }
+        if (self.peerQuicTransportParams) |tp| {
+            self.allocator.free(tp);
+            self.peerQuicTransportParams = null;
+        }
     }
 
     /// True for cipher suites our SHA-256-only schedule can resume with.
@@ -284,7 +293,7 @@ pub const Engine = struct {
         alpnProtocols: []const []const u8,
         signatureAlgorithms: []const handshake_mod.SignatureScheme,
     ) ![]u8 {
-        return self.produceClientHelloWithSni(alpnProtocols, signatureAlgorithms, null);
+        return self.produceClientHelloWithSni(alpnProtocols, signatureAlgorithms, null, null);
     }
 
     pub fn produceClientHelloWithSni(
@@ -292,6 +301,7 @@ pub const Engine = struct {
         alpnProtocols: []const []const u8,
         signatureAlgorithms: []const handshake_mod.SignatureScheme,
         serverName: ?[]const u8,
+        quicTransportParams: ?[]const u8,
     ) ![]u8 {
         // Generate ephemeral X25519 keypair
         var seed: [32]u8 = undefined;
@@ -317,6 +327,7 @@ pub const Engine = struct {
             },
             .alpnProtocols = alpnProtocols,
             .serverName = serverName,
+            .quicTransportParams = quicTransportParams,
         };
 
         const encoded = try ch.encode(self.allocator);
@@ -491,6 +502,8 @@ pub const Engine = struct {
         // buffers whose bytes shift as later messages arrive.
         if (self.negotiatedAlpn) |old| self.allocator.free(old);
         self.negotiatedAlpn = if (ee.alpnProtocol) |wire| try self.allocator.dupe(u8, wire) else null;
+        if (self.peerQuicTransportParams) |old| self.allocator.free(old);
+        self.peerQuicTransportParams = if (ee.quicTransportParams) |tp| try self.allocator.dupe(u8, tp) else null;
         self.state = .encrypted_extensions_received;
     }
 
@@ -999,6 +1012,40 @@ pub const Engine = struct {
         self.transcript.feed(msg);
     }
 
+    /// Verifies a server CertificateVerify (full message with header)
+    /// against the leaf certificate DER: P-256 ECDSA over the server CV
+    /// context. Mirrors the client-CV path with the server label. Feeds
+    /// the transcript on success. Without this, a client authenticates
+    /// the server by chain/hostname and Finished MAC only, never binding
+    /// the transcript to the leaf key.
+    pub fn processServerCertificateVerify(self: *Engine, msg: []const u8, leafDer: []const u8) !void {
+        if (msg.len < 4) return error.ProtocolViolation;
+        if (msg[0] != @intFromEnum(handshake_mod.HandshakeType.certificate_verify)) return error.ProtocolViolation;
+        const cv = handshake_mod.CertificateVerify.decode(msg[4..]) catch return error.ProtocolViolation;
+        if (cv.algorithm != .ecdsa_secp256r1_sha256) return error.UnsupportedSignatureScheme;
+
+        const leaf = certMod.X509Certificate.parseDer(leafDer) catch return error.CertificateSignatureInvalid;
+        const curve = switch (leaf.parsed.pub_key_algo) {
+            .X9_62_id_ecPublicKey => |c| c,
+            else => return error.CertificateSignatureInvalid,
+        };
+        if (curve != .X9_62_prime256v1) return error.CertificateSignatureInvalid;
+        const pubkey = EcdsaP256.PublicKey.fromSec1(leaf.parsed.pubKey()) catch return error.CertificateSignatureInvalid;
+        const sig = EcdsaP256.Signature.fromDer(cv.signature) catch return error.CertificateSignatureInvalid;
+
+        const label = "TLS 1.3, server CertificateVerify";
+        var cv_content: [64 + 33 + 1 + HashLen]u8 = undefined;
+        @memset(cv_content[0..64], 0x20);
+        @memcpy(cv_content[64..][0..33], label);
+        cv_content[64 + 33] = 0x00;
+        var hs_copy = self.transcript.state;
+        const hs_hash = hs_copy.finalResult();
+        @memcpy(cv_content[64 + 33 + 1 ..], &hs_hash);
+        sig.verify(&cv_content, pubkey) catch return error.CertificateSignatureInvalid;
+        self.transcript.feed(msg);
+        self.state = .certificate_verify_received;
+    }
+
     /// Minimal DER reader: tag + short/long-form length.
     fn derTlv(data: []const u8, pos: usize) !struct { tag: u8, len: usize, hdr: usize } {
         if (pos + 2 > data.len) return error.ProtocolViolation;
@@ -1139,6 +1186,10 @@ pub const Engine = struct {
                                     }
                                 }
                             }
+                            if (ext_type == handshake_mod.QUIC_TRANSPORT_PARAMETERS_ID) {
+                                if (self.peerQuicTransportParams) |old| self.allocator.free(old);
+                                self.peerQuicTransportParams = self.allocator.dupe(u8, body[pos..][0..ext_data_len]) catch null;
+                            }
                             pos += ext_data_len;
                         }
                     }
@@ -1162,6 +1213,7 @@ pub const Engine = struct {
         privateKeyDer: []const u8,
         alpnPreference: []const alpn_mod.Protocol,
         clientAlpnWire: []const []const u8,
+        quicTransportParams: ?[]const u8,
     ) !ServerFlight {
         if (self.sharedSecret == null) {
             var seed: [32]u8 = undefined;
@@ -1267,6 +1319,9 @@ pub const Engine = struct {
 
         self.transcript.feed(sh_msg.items);
 
+        // Snapshot for QUIC: handshake traffic secrets hash CH..SH.
+        const hs_transcript_hash = self.transcript.finish();
+
         // Handshake traffic secrets hash CH..SH (RFC 8446 Section 7.1), so
         // they can only be derived once ServerHello is in the transcript.
         if (self.serverHsTrafficSecret == null) {
@@ -1304,6 +1359,14 @@ pub const Engine = struct {
                 try ee_exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(alpn_ext_body.items.len))));
                 try ee_exts.appendSlice(self.allocator, alpn_ext_body.items);
             }
+        }
+
+        // QUIC transport parameters (RFC 9001 Section 7.4, ext 57):
+        // opaque block, QUIC paths only (null on TCP).
+        if (quicTransportParams) |tp| {
+            try ee_exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, handshake_mod.QUIC_TRANSPORT_PARAMETERS_ID)));
+            try ee_exts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(tp.len))));
+            try ee_exts.appendSlice(self.allocator, tp);
         }
 
         try ee_body.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(ee_exts.items.len))));
@@ -1469,6 +1532,9 @@ pub const Engine = struct {
 
         self.transcript.feed(fin_msg.items);
 
+        // Snapshot for QUIC: application traffic secrets hash CH..Fin.
+        const sf_transcript_hash = self.transcript.finish();
+
         // Compute application traffic secrets for server side
         self.deriveApplicationKeys();
         self.state = .server_finished_sent;
@@ -1481,6 +1547,8 @@ pub const Engine = struct {
             .certificate = try cert_msg.toOwnedSlice(self.allocator),
             .certificateVerify = try cv_msg.toOwnedSlice(self.allocator),
             .finished = try fin_msg.toOwnedSlice(self.allocator),
+            .hsHash = hs_transcript_hash,
+            .sfHash = sf_transcript_hash,
         };
     }
 
@@ -1666,6 +1734,12 @@ pub const ServerFlight = struct {
     certificate: []u8,
     certificateVerify: []u8,
     finished: []u8,
+    /// Transcript hash through ServerHello (CH..SH): binds QUIC
+    /// handshake traffic secrets without ad-hoc concatenation.
+    hsHash: [32]u8,
+    /// Transcript hash through server Finished (CH..Fin): binds QUIC
+    /// application traffic secrets.
+    sfHash: [32]u8,
 
     pub fn deinit(self: *ServerFlight, allocator: Allocator) void {
         allocator.free(self.serverHello);
@@ -1721,7 +1795,7 @@ test "handshake engine client-server key exchange" {
 
     // Server produces flight: negotiates suite/share from the real
     // ClientHello, derives keys, and signs CertificateVerify.
-    var flight = try server.produceServerFlight(ch[4..], "", sec1[0..], &.{}, &.{});
+    var flight = try server.produceServerFlight(ch[4..], "", sec1[0..], &.{}, &.{}, null);
     defer flight.deinit(a);
 
     try std.testing.expectEqual(tls.CipherSuite.AES_128_GCM_SHA256, server.selectedSuite);
@@ -1787,7 +1861,7 @@ test "mutual TLS client certificate round trip" {
     sec1[6] = 0x20;
     @memcpy(sec1[7..], &ec_sec);
 
-    var flight = try server.produceServerFlight(ch[4..], "", sec1[0..], &.{}, &.{});
+    var flight = try server.produceServerFlight(ch[4..], "", sec1[0..], &.{}, &.{}, null);
     defer flight.deinit(a);
     try std.testing.expect(flight.certificateRequest != null);
 
@@ -1897,7 +1971,7 @@ test "mutual TLS rejects forged client CertificateVerify" {
     sec1[6] = 0x20;
     @memcpy(sec1[7..], &ec_sec);
 
-    var flight = try server.produceServerFlight(ch[4..], "", sec1[0..], &.{}, &.{});
+    var flight = try server.produceServerFlight(ch[4..], "", sec1[0..], &.{}, &.{}, null);
     defer flight.deinit(a);
     try client.processServerHello(flight.serverHello);
     try client.processEncryptedExtensions(flight.encryptedExtensions);
@@ -1976,6 +2050,7 @@ test "server flight carries negotiated alpn selection" {
         sec1[0..],
         &.{ .h2, .@"http/1.1" },
         &.{ "h2", "http/1.1" },
+        null,
     );
     defer flight.deinit(a);
     try std.testing.expectEqualStrings("h2", server.negotiatedAlpn.?);
@@ -2007,7 +2082,7 @@ test "psk abbreviated handshake resynchronizes application keys" {
     sec1[0..7].* = .{ 0x30, 0x25, 0x02, 0x01, 0x01, 0x04, 0x20 };
     @memcpy(sec1[7..], &ec_sec);
 
-    var flight = try server.produceServerFlight(ch[4..], "", sec1[0..], &.{}, &.{});
+    var flight = try server.produceServerFlight(ch[4..], "", sec1[0..], &.{}, &.{}, null);
     defer flight.deinit(a);
     try std.testing.expect(flight.certificate.len > 0);
     try client.processServerHello(flight.serverHello);
@@ -2043,7 +2118,7 @@ test "psk abbreviated handshake resynchronizes application keys" {
     defer a.free(ch2);
     try server2.processClientHello(ch2);
     try std.testing.expect(server2.selectPsk(ch2, now + 2000));
-    var flight2 = try server2.produceServerFlight(ch2[4..], "", sec1[0..], &.{}, &.{});
+    var flight2 = try server2.produceServerFlight(ch2[4..], "", sec1[0..], &.{}, &.{}, null);
     defer flight2.deinit(a);
     // Abbreviated: no Certificate / CertificateVerify on the wire.
     try std.testing.expectEqual(@as(usize, 0), flight2.certificate.len);
@@ -2125,7 +2200,7 @@ test "hello retry request completes a full handshake after retry" {
     var sec1: [39]u8 = undefined;
     sec1[0..7].* = .{ 0x30, 0x25, 0x02, 0x01, 0x01, 0x04, 0x20 };
     @memcpy(sec1[7..], &ec_sec);
-    var flight = try server.produceServerFlight(ch2[4..], "", sec1[0..], &.{}, &.{});
+    var flight = try server.produceServerFlight(ch2[4..], "", sec1[0..], &.{}, &.{}, null);
     defer flight.deinit(a);
     try client.processServerHello(flight.serverHello);
     try client.processEncryptedExtensions(flight.encryptedExtensions);
@@ -2136,4 +2211,91 @@ test "hello retry request completes a full handshake after retry" {
     defer a.free(client_fin);
     try server.verifyClientFinished(client_fin);
     try std.testing.expectEqualSlices(u8, client.apKeys.?.clientKeySlice(), server.apKeys.?.clientKeySlice());
+}
+test "quic transport parameters roundtrip through hello and ee" {
+    const a = std.testing.allocator;
+    var client = Engine.initClient(a, .{});
+    defer client.deinit();
+    var server = Engine.initServer(a, .{});
+    defer server.deinit();
+
+    // Hand-rolled TP block: initial_max_data = 2MiB, max_idle_timeout = 30s.
+    var tp = std.ArrayList(u8).empty;
+    defer tp.deinit(a);
+    try tp.appendSlice(a, &.{ 0x04, 0x08 });
+    var v: [8]u8 = undefined;
+    std.mem.writeInt(u64, &v, 2 << 20, .big);
+    try tp.appendSlice(a, &v);
+    try tp.appendSlice(a, &.{ 0x01, 0x08 });
+    std.mem.writeInt(u64, &v, 30_000, .big);
+    try tp.appendSlice(a, &v);
+
+    const ch = try client.produceClientHelloWithSni(&.{"h3"}, &.{}, "example.com", tp.items);
+    defer a.free(ch);
+    try server.processClientHello(ch);
+    try std.testing.expect(server.peerQuicTransportParams != null);
+    try std.testing.expectEqualSlices(u8, tp.items, server.peerQuicTransportParams.?);
+
+    // Deterministic P-256 server identity (same shape as the mTLS test).
+    const ec_kp = try EcdsaP256.KeyPair.generateDeterministic([_]u8{0x42} ** 32);
+    const ec_sec = ec_kp.secret_key.toBytes();
+    var sec1: [39]u8 = undefined;
+    sec1[0] = 0x30;
+    sec1[1] = 0x25;
+    sec1[2] = 0x02;
+    sec1[3] = 0x01;
+    sec1[4] = 0x01;
+    sec1[5] = 0x04;
+    sec1[6] = 0x20;
+    @memcpy(sec1[7..], &ec_sec);
+
+    var flight = try server.produceServerFlight(ch[4..], "", sec1[0..], &.{}, &.{}, tp.items);
+    defer flight.deinit(a);
+    try client.processServerHello(flight.serverHello);
+    try client.processEncryptedExtensions(flight.encryptedExtensions);
+    try std.testing.expect(client.peerQuicTransportParams != null);
+    try std.testing.expectEqualSlices(u8, tp.items, client.peerQuicTransportParams.?);
+}
+
+test "server certificate verify binds transcript and rejects tampering" {
+    const a = std.testing.allocator;
+
+    const server_cert_pem = @embedFile("testdata/localhost_cert.pem");
+    const server_key_pem = @embedFile("testdata/localhost_key.pem");
+
+    var client = Engine.initClient(a, .{});
+    defer client.deinit();
+    var server = Engine.initServer(a, .{});
+    defer server.deinit();
+
+    const ch = try client.produceClientHelloWithSni(&.{"h3"}, &.{}, "example.com", null);
+    defer a.free(ch);
+    try server.processClientHello(ch);
+
+    // Server flight signed with the committed localhost identity.
+    var flight = try server.produceServerFlight(ch[4..], server_cert_pem, server_key_pem, &.{}, &.{}, null);
+    defer flight.deinit(a);
+
+    try client.processServerHello(flight.serverHello);
+    try client.processEncryptedExtensions(flight.encryptedExtensions);
+    try client.processCertificate(flight.certificate);
+
+    var chain = try certMod.parseCertificateChainPem(a, server_cert_pem);
+    defer chain.deinit();
+    const leaf_der = chain.leaf().?.rawDer();
+
+    // Valid CertificateVerify checks out against the leaf public key.
+    try client.processServerCertificateVerify(flight.certificateVerify, leaf_der);
+
+    // A flipped signature byte is rejected and the failed check must not
+    // feed the handshake transcript (digest identical before/after).
+    var tampered = try a.dupe(u8, flight.certificateVerify);
+    defer a.free(tampered);
+    tampered[tampered.len - 1] ^= 0x01;
+    const before = client.transcript.finish();
+    try std.testing.expectError(
+        error.CertificateSignatureInvalid,
+        client.processServerCertificateVerify(tampered, leaf_der),
+    );
+    try std.testing.expectEqual(before, client.transcript.finish());
 }

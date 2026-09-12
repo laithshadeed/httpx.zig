@@ -14,10 +14,11 @@
 //!   * No HelloRetryRequest handling: our client always offers an x25519
 //!     share, so a conforming server never needs to retry. A foreign HRR
 //!     surfaces as a handshake timeout, never silent corruption.
-//!   * No transport-parameter negotiation yet: both endpoints run the
-//!     compiled-in flow-control defaults (`Connection.Config`), which
-//!     match between our endpoints. Interop with foreign endpoints that
-//!     require carrying `quic_transport_parameters` is future work.
+//!   * Transport parameters (`quic_transport_parameters`, ext 57) are
+//!     exchanged in ClientHello/EncryptedExtensions and applied to
+//!     flow-control windows, stream limits, and connection IDs; absent
+//!     values keep compiled-in defaults. Retry/token and version
+//!     negotiation stay future work.
 //!   * No Retry/token round trip: first flight validates routability on
 //!     loopback; deployments facing the open internet must add Retry.
 //!   * No loss recovery / congestion control: reliable paths only
@@ -39,6 +40,8 @@ const verify_mod = @import("../tls/verify.zig");
 const transport_tls = @import("../tls/transport.zig");
 const packet_mod = @import("packet.zig");
 const frames = @import("frames.zig");
+const params_mod = @import("params.zig");
+const quic_varint = @import("varint.zig");
 const clock_mod = @import("../../common/clock.zig");
 const address_mod = @import("../../net/address.zig");
 
@@ -125,12 +128,82 @@ pub const Driver = struct {
         self.cert_ders.deinit(self.allocator);
     }
 
-    fn hashConcat(parts: []const []const u8) [32]u8 {
-        var h = std.crypto.hash.sha2.Sha256.init(.{});
-        for (parts) |p| h.update(p);
-        var out: [32]u8 = undefined;
-        h.final(&out);
-        return out;
+    /// Builds our transport-parameters block: numeric limits from the
+    /// connection config plus our connection IDs. Stateless-reset and
+    /// retry tokens are omitted (unsupported); peers must not expect
+    /// them from us.
+    fn buildLocalTransportParams(a: Allocator, conn: *Connection) ![]u8 {
+        const cfg = conn.cfg;
+        const p = params_mod.Params{
+            .maxIdleTimeoutMs = cfg.maxIdleTimeoutMs,
+            .maxUdpPayloadSize = @intCast(cfg.maxUdpPayload),
+            .initialMaxData = cfg.initialMaxData,
+            .initialMaxStreamDataBidiLocal = 65536,
+            .initialMaxStreamDataBidiRemote = 65536,
+            .initialMaxStreamDataUni = 65536,
+            .initialMaxStreamsBidi = conn.maxStreamsBidiLocal,
+            .initialMaxStreamsUni = conn.maxStreamsUniLocal,
+        };
+        var out = std.ArrayList(u8).empty;
+        errdefer out.deinit(a);
+        try params_mod.encode(&out, a, p);
+        // initial_source_connection_id: our SCID so the peer can bind it.
+        {
+            var vb: [8]u8 = undefined;
+            var n = try quic_varint.encode(&vb, 0x0F);
+            try out.appendSlice(a, vb[0..n]);
+            n = try quic_varint.encode(&vb, conn.scidLen);
+            try out.appendSlice(a, vb[0..n]);
+            try out.appendSlice(a, conn.scid[0..conn.scidLen]);
+        }
+        // original_destination_connection_id: servers echo the DCID the
+        // client first used (already installed by acceptInitial).
+        if (conn.role == .server) {
+            var vb: [8]u8 = undefined;
+            var n = try quic_varint.encode(&vb, 0x00);
+            try out.appendSlice(a, vb[0..n]);
+            n = try quic_varint.encode(&vb, conn.dcidLen);
+            try out.appendSlice(a, vb[0..n]);
+            try out.appendSlice(a, conn.dcid[0..conn.dcidLen]);
+        }
+        return out.toOwnedSlice(a);
+    }
+
+    /// Applies decoded peer transport parameters to the connection.
+    /// Nonzero values override the compiled defaults; absent values
+    /// keep them (so unit paths without a TLS exchange keep working).
+    /// Fails closed on Retry tokens (we never send Retry) and on an
+    /// original-DCID mismatch (server side).
+    fn applyPeerTransportParams(conn: *Connection, tp: []const u8, is_server: bool) conn_mod.Error!void {
+        const p = params_mod.decode(tp) catch return conn_mod.Error.TransportParameterError;
+        const cids = params_mod.parseCidParams(tp) catch return conn_mod.Error.TransportParameterError;
+        if (cids.retrySourceConnectionId != null) return conn_mod.Error.TransportParameterError;
+        if (is_server) {
+            // Servers never receive original_destination_connection_id
+            // (they send it); requiring it here would fail every client.
+            if (cids.originalDestinationConnectionId != null) return conn_mod.Error.TransportParameterError;
+        } else if (cids.originalDestinationConnectionId) |odcid| {
+            // The server echoes the DCID from our Initial; a mismatch
+            // means we are talking to a confused or hostile peer.
+            if (odcid.len != conn.origDcidLen or !std.mem.eql(u8, odcid, conn.origDcid[0..conn.origDcidLen])) {
+                return conn_mod.Error.TransportParameterError;
+            }
+        }
+        if (p.initialMaxData != 0) conn.maxDataRemote = p.initialMaxData;
+        // Our sends: streams we initiate use the peer's "remote" limit,
+        // peer-initiated streams use their "local" limit; take the
+        // tighter nonzero bound so either direction stays legal.
+        var bidi: ?u64 = null;
+        if (p.initialMaxStreamDataBidiLocal != 0) bidi = p.initialMaxStreamDataBidiLocal;
+        if (p.initialMaxStreamDataBidiRemote != 0) {
+            bidi = if (bidi) |b| @min(b, p.initialMaxStreamDataBidiRemote) else p.initialMaxStreamDataBidiRemote;
+        }
+        if (bidi) |b| conn.sendWindowBidi = b;
+        if (p.initialMaxStreamDataUni != 0) conn.sendWindowUni = p.initialMaxStreamDataUni;
+        if (p.initialMaxStreamsBidi != 0) conn.maxStreamsBidiRemote = p.initialMaxStreamsBidi;
+        if (p.initialMaxStreamsUni != 0) conn.maxStreamsUniRemote = p.initialMaxStreamsUni;
+        if (p.maxAckDelayMs != 0) conn.recovery.cfg.maxAckDelayMs = p.maxAckDelayMs;
+        conn.peerParams = p;
     }
 
     /// Drains queued CRYPTO bytes into packet(s) on the given space.
@@ -172,7 +245,10 @@ pub const Driver = struct {
 
     pub fn clientStart(ctx: ?*anyopaque, conn: *Connection, nowMs: u64) conn_mod.Error!void {
         const d: *Driver = @ptrCast(@alignCast(ctx.?));
-        const ch = d.engine.produceClientHelloWithSni(&.{"h3"}, &.{}, sniFor(d.host)) catch
+        const tp = buildLocalTransportParams(conn.allocator, conn) catch
+            return conn_mod.Error.OutOfMemory;
+        defer conn.allocator.free(tp);
+        const ch = d.engine.produceClientHelloWithSni(&.{"h3"}, &.{}, sniFor(d.host), tp) catch
             return conn_mod.Error.TlsDriverFailed;
         defer conn.allocator.free(ch);
         d.flight.appendSlice(conn.allocator, ch) catch return conn_mod.Error.OutOfMemory;
@@ -204,7 +280,7 @@ pub const Driver = struct {
                 @intFromEnum(ths.HandshakeType.server_hello) => {
                     d.engine.processServerHello(rec.msg) catch return conn_mod.Error.TlsDriverFailed;
                     const shared = d.engine.sharedSecret orelse return conn_mod.Error.TlsDriverFailed;
-                    const ch_sh = hashConcat(&.{ d.flight.items, rec.msg });
+                    const ch_sh = d.engine.transcript.finish();
                     const hs = qtls.handshakeKeys(shared, ch_sh);
                     d.hs_secret = hs.hsSecret;
                     try conn.installKeys(.handshake, hs.keys.txSecret, hs.keys.rxSecret);
@@ -220,6 +296,14 @@ pub const Driver = struct {
                         d.detail = .alpn_mismatch;
                         return conn_mod.Error.TlsDriverFailed;
                     }
+                    // Apply the peer's transport parameters before any
+                    // 1-RTT traffic flows.
+                    if (d.engine.peerQuicTransportParams) |tp| {
+                        applyPeerTransportParams(conn, tp, false) catch {
+                            d.detail = .handshake_failed;
+                            return conn_mod.Error.TlsDriverFailed;
+                        };
+                    }
                 },
                 @intFromEnum(ths.HandshakeType.certificate) => {
                     var presented = d.engine.processClientCertificate(rec.msg) catch
@@ -234,7 +318,18 @@ pub const Driver = struct {
                     }
                 },
                 @intFromEnum(ths.HandshakeType.certificate_verify) => {
-                    d.engine.processCertificateVerify(rec.msg) catch return conn_mod.Error.TlsDriverFailed;
+                    // Full verification (decode + signature + feed) in one
+                    // step: calling the decode-only processCertificateVerify
+                    // first would feed twice and verify against the wrong
+                    // transcript (including CV itself).
+                    if (d.cert_ders.items.len == 0) {
+                        d.detail = .cert_failed;
+                        return conn_mod.Error.TlsDriverFailed;
+                    }
+                    d.engine.processServerCertificateVerify(rec.msg, d.cert_ders.items[0]) catch {
+                        d.detail = .cert_failed;
+                        return conn_mod.Error.TlsDriverFailed;
+                    };
                 },
                 @intFromEnum(ths.HandshakeType.finished) => {
                     d.engine.processFinished(rec.msg) catch return conn_mod.Error.TlsDriverFailed;
@@ -245,7 +340,7 @@ pub const Driver = struct {
                         return conn_mod.Error.TlsDriverFailed;
                     };
                     const hs_secret = d.hs_secret orelse return conn_mod.Error.TlsDriverFailed;
-                    const ch_sf = hashConcat(&.{ d.flight.items, d.peer_flight.items });
+                    const ch_sf = d.engine.transcript.finish();
                     const ap = qtls.applicationKeys(hs_secret, ch_sf);
                     try conn.installKeys(.application, ap.keys.txSecret, ap.keys.rxSecret);
                     // Our Finished completes the client flight.
@@ -294,7 +389,43 @@ pub const Driver = struct {
             for (client_alpn) |s| a.free(s);
             a.free(client_alpn);
         }
-        var flight = d.engine.produceServerFlight(ch_msg[4..], d.cert_chain_pem, d.private_key_pem, &.{.h3}, client_alpn) catch
+        // RFC 9001 Section 7.4: no overlap means no_application_protocol
+        // (120, application close 0x178), not a silent stall. The client
+        // maps the close to its alpn_mismatch detail.
+        var offers_h3 = false;
+        for (client_alpn) |proto| {
+            if (std.mem.eql(u8, proto, "h3")) {
+                offers_h3 = true;
+                break;
+            }
+        }
+        if (!offers_h3) {
+            d.detail = .alpn_mismatch;
+            // Transport close (0x1C) on the Initial space: Initial keys
+            // are installed (acceptInitial ran) while application keys
+            // never exist at this point, and a 0x1D application close is
+            // forbidden before 1-RTT. Best effort: the driver error
+            // below is the backstop.
+            conn.queueControlFrame(.{ .connectionClose = .{
+                .errorCode = 0x178,
+                .triggeringFrameType = 0,
+                .reason = "no application protocol",
+                .application = false,
+            } }) catch {};
+            conn.flushControl(.initial, nowMs) catch {};
+            return conn_mod.Error.TlsDriverFailed;
+        }
+        // Apply the client's transport parameters before sending ours.
+        if (d.engine.peerQuicTransportParams) |tp| {
+            applyPeerTransportParams(conn, tp, true) catch {
+                d.detail = .handshake_failed;
+                return conn_mod.Error.TlsDriverFailed;
+            };
+        }
+        const local_tp = buildLocalTransportParams(a, conn) catch
+            return conn_mod.Error.OutOfMemory;
+        defer a.free(local_tp);
+        var flight = d.engine.produceServerFlight(ch_msg[4..], d.cert_chain_pem, d.private_key_pem, &.{.h3}, client_alpn, local_tp) catch
             return conn_mod.Error.TlsDriverFailed;
         defer flight.deinit(a);
 
@@ -305,8 +436,7 @@ pub const Driver = struct {
         d.flight.appendSlice(a, flight.finished) catch return conn_mod.Error.OutOfMemory;
 
         const shared = d.engine.sharedSecret orelse return conn_mod.Error.TlsDriverFailed;
-        const ch_sh = hashConcat(&.{ ch_msg, flight.serverHello });
-        const hs = qtls.handshakeKeys(shared, ch_sh);
+        const hs = qtls.handshakeKeys(shared, flight.hsHash);
         // LevelKeys are client-oriented (tx = client); mirror them.
         try conn.installKeys(.handshake, hs.keys.rxSecret, hs.keys.txSecret);
 
@@ -320,7 +450,7 @@ pub const Driver = struct {
         _ = conn.queueCrypto(.handshake, flight.finished) catch return conn_mod.Error.TlsDriverFailed;
         try sendQueued(conn, .handshake, nowMs);
 
-        const ch_sf = hashConcat(&.{ ch_msg, d.flight.items });
+        const ch_sf = flight.sfHash;
         const ap = qtls.applicationKeys(hs.hsSecret, ch_sf);
         try conn.installKeys(.application, ap.keys.rxSecret, ap.keys.txSecret);
 
@@ -564,4 +694,112 @@ pub fn performHandshake(
             }
         }
     }
+}
+test "peer transport parameters apply to connection windows" {
+    const a = std.testing.allocator;
+    var conn = try conn_mod.Connection.init(a, .client, .{}, 0x7771);
+    defer conn.deinit();
+
+    const putCid = struct {
+        fn f(out: *std.ArrayList(u8), gpa: Allocator, id: u64, v: []const u8) !void {
+            var vb: [8]u8 = undefined;
+            var n = try quic_varint.encode(&vb, id);
+            try out.appendSlice(gpa, vb[0..n]);
+            n = try quic_varint.encode(&vb, v.len);
+            try out.appendSlice(gpa, vb[0..n]);
+            try out.appendSlice(gpa, v);
+        }
+    }.f;
+
+    var p = params_mod.Params{};
+    p.initialMaxData = 2 << 20;
+    p.initialMaxStreamDataBidiLocal = 1 << 20;
+    p.initialMaxStreamDataBidiRemote = 512 << 10;
+    p.initialMaxStreamDataUni = 256 << 10;
+    p.initialMaxStreamsBidi = 64;
+    p.initialMaxStreamsUni = 8;
+    p.maxAckDelayMs = 42;
+
+    const fake_iscid = [_]u8{ 0xAA, 0xBB, 0xCC, 0xDD, 0x01, 0x02, 0x03, 0x04 };
+    const wrong_cid = [_]u8{0x11} ** 8;
+
+    // Server first flight: odcid echoes our original DCID.
+    var block = std.ArrayList(u8).empty;
+    defer block.deinit(a);
+    try params_mod.encode(&block, a, p);
+    try putCid(&block, a, 0x00, conn.origDcid[0..conn.origDcidLen]);
+    try putCid(&block, a, 0x0F, &fake_iscid);
+
+    try Driver.applyPeerTransportParams(conn, block.items, false);
+    try std.testing.expectEqual(@as(u64, 2 << 20), conn.maxDataRemote);
+    // Bidi send window is the tighter of the peer local/remote limits.
+    try std.testing.expectEqual(@as(u64, 512 << 10), conn.sendWindowBidi);
+    try std.testing.expectEqual(@as(u64, 256 << 10), conn.sendWindowUni);
+    try std.testing.expectEqual(@as(u64, 64), conn.maxStreamsBidiRemote);
+    try std.testing.expectEqual(@as(u64, 8), conn.maxStreamsUniRemote);
+    try std.testing.expectEqual(@as(u64, 42), conn.recovery.cfg.maxAckDelayMs);
+    try std.testing.expect(conn.peerParams != null);
+
+    // The server path takes a block WITHOUT odcid (servers send it,
+    // they never receive it) and rejects one that carries it.
+    var srv_block = std.ArrayList(u8).empty;
+    defer srv_block.deinit(a);
+    try params_mod.encode(&srv_block, a, p);
+    try putCid(&srv_block, a, 0x0F, &fake_iscid);
+    try Driver.applyPeerTransportParams(conn, srv_block.items, true);
+    try std.testing.expectError(
+        conn_mod.Error.TransportParameterError,
+        Driver.applyPeerTransportParams(conn, block.items, true),
+    );
+
+    // A forged original_destination_connection_id is rejected.
+    var bad = std.ArrayList(u8).empty;
+    defer bad.deinit(a);
+    try params_mod.encode(&bad, a, p);
+    try putCid(&bad, a, 0x00, &wrong_cid);
+    try putCid(&bad, a, 0x0F, &fake_iscid);
+    try std.testing.expectError(
+        conn_mod.Error.TransportParameterError,
+        Driver.applyPeerTransportParams(conn, bad.items, false),
+    );
+
+    // A retry_source_connection_id without a Retry is rejected.
+    var rsc = std.ArrayList(u8).empty;
+    defer rsc.deinit(a);
+    try params_mod.encode(&rsc, a, p);
+    try putCid(&rsc, a, 0x00, conn.origDcid[0..conn.origDcidLen]);
+    try putCid(&rsc, a, 0x0F, &fake_iscid);
+    try putCid(&rsc, a, 0x10, &wrong_cid);
+    try std.testing.expectError(
+        conn_mod.Error.TransportParameterError,
+        Driver.applyPeerTransportParams(conn, rsc.items, false),
+    );
+}
+
+test "server closes unknown alpn with no_application_protocol" {
+    const a = std.testing.allocator;
+    var srv_conn = try conn_mod.Connection.init(a, .server, .{}, 0x7772);
+    defer srv_conn.deinit();
+    // Initial keys + validated address so the close packet can fly.
+    try srv_conn.installInitialKeys();
+    srv_conn.addressValidated = true;
+    var srv_drv = Driver.initServer(a, .{ .certChainPem = hs_test_cert_pem, .privateKeyPem = hs_test_key_pem });
+    defer srv_drv.deinit();
+    srv_conn.tls = .{ .ctx = &srv_drv, .start = Driver.clientStart, .onData = Driver.onData };
+
+    // A ClientHello offering only HTTP/1.1, no h3.
+    var tmp = tls_engine.Engine.initClient(a, .{});
+    defer tmp.deinit();
+    const ch = try tmp.produceClientHelloWithSni(&.{"http/1.1"}, &.{}, "localhost", null);
+    defer a.free(ch);
+
+    const r = Driver.onData(&srv_drv, srv_conn, ch, 1000);
+    try std.testing.expectError(conn_mod.Error.TlsDriverFailed, r);
+    try std.testing.expect(srv_drv.failed);
+    try std.testing.expectEqual(Detail.alpn_mismatch, srv_drv.detail);
+    // RFC 9001 Section 7.4: a transport close 0x178 went out on the
+    // Initial space (outbuf holds the datagram) and no TLS flight was
+    // built for the rejected client.
+    try std.testing.expect(srv_conn.outbuf.items.len > 0);
+    try std.testing.expectEqual(@as(usize, 0), srv_drv.flight.items.len);
 }

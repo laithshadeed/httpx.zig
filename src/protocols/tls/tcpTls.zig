@@ -335,6 +335,7 @@ pub const TlsServer = struct {
             identity.privateKeyPem,
             self.config.alpnProtocols,
             parsed_ch.alpnProtocols.items,
+            null, // TCP never carries QUIC transport parameters
         );
         defer flight.deinit(a);
 
@@ -876,7 +877,7 @@ test "ClientHello SNI parsing" {
     const a = std.testing.allocator;
 
     var client = engine_mod.Engine.initClient(a, .{});
-    const ch = try client.produceClientHelloWithSni(&.{"h2"}, &.{}, "example.com");
+    const ch = try client.produceClientHelloWithSni(&.{"h2"}, &.{}, "example.com", null);
     defer a.free(ch);
 
     // Parse the ClientHello body for extensions
@@ -897,7 +898,7 @@ test "clienthello single-entry alpn offer parses back" {
     const a = std.testing.allocator;
     var eng = engine_mod.Engine.initClient(a, .{});
     defer eng.deinit();
-    const ch = try eng.produceClientHelloWithSni(&.{"h2"}, &.{}, null);
+    const ch = try eng.produceClientHelloWithSni(&.{"h2"}, &.{}, null, null);
     defer a.free(ch);
     var parsed = try parseClientHelloExtensions(a, ch[4..]);
     defer parsed.alpnProtocols.deinit(a);

@@ -179,6 +179,59 @@ pub fn decode(data: []const u8) Error!Params {
     return p;
 }
 
+/// Byte-carrying transport parameters (connection IDs and tokens),
+/// borrowed from the block. Absent entries are null.
+pub const CidParams = struct {
+    originalDestinationConnectionId: ?[]const u8 = null,
+    initialSourceConnectionId: ?[]const u8 = null,
+    retrySourceConnectionId: ?[]const u8 = null,
+    statelessResetToken: ?[]const u8 = null,
+};
+
+/// Extracts the byte-carrying parameters, validating lengths and
+/// duplicates. Unknown IDs are skipped; numeric validation stays in
+/// `decode` (call both on the same block).
+pub fn parseCidParams(data: []const u8) Error!CidParams {
+    var out: CidParams = .{};
+    var seen_odcid = false;
+    var seen_iscid = false;
+    var seen_rscid = false;
+    var seen_srt = false;
+    var pos: usize = 0;
+    while (pos < data.len) {
+        const id = try dv(data, &pos);
+        const len_raw = try dv(data, &pos);
+        const len = std.math.cast(usize, len_raw) orelse return Error.InvalidParameter;
+        if (pos > data.len or len > data.len - pos) return Error.Truncated;
+        const value = data[pos..][0..len];
+        pos += len;
+        switch (id) {
+            0x00 => {
+                if (seen_odcid or len > 20) return Error.InvalidParameter;
+                seen_odcid = true;
+                out.originalDestinationConnectionId = value;
+            },
+            0x0F => {
+                if (seen_iscid or len > 20) return Error.InvalidParameter;
+                seen_iscid = true;
+                out.initialSourceConnectionId = value;
+            },
+            0x10 => {
+                if (seen_rscid or len > 20) return Error.InvalidParameter;
+                seen_rscid = true;
+                out.retrySourceConnectionId = value;
+            },
+            0x02 => {
+                if (seen_srt or len != 16) return Error.InvalidParameter;
+                seen_srt = true;
+                out.statelessResetToken = value;
+            },
+            else => {},
+        }
+    }
+    return out;
+}
+
 // Tests
 
 test "encode/decode roundtrip preserves values" {

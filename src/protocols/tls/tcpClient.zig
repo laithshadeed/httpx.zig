@@ -305,7 +305,7 @@ pub const TlsClient = struct {
         if (session) |s| {
             return engine.produceClientHelloResumption(self.config.alpnProtocols, &.{}, sni, s, nowMs);
         }
-        return engine.produceClientHelloWithSni(self.config.alpnProtocols, &.{}, sni);
+        return engine.produceClientHelloWithSni(self.config.alpnProtocols, &.{}, sni, null);
     }
 
     /// Performs the TLS 1.3 client handshake against `host` over an
@@ -397,7 +397,11 @@ pub const TlsClient = struct {
                         try cert_ders.append(a, try a.dupe(u8, d));
                     }
                 } else if (t == cv) {
-                    try engine.processCertificateVerify(msg);
+                    // Full verification (decode + leaf signature + feed):
+                    // the decode-only path would leave the transcript
+                    // unbound to the server key.
+                    if (cert_ders.items.len == 0) return error.TlsHandshakeFailed;
+                    try engine.processServerCertificateVerify(msg, cert_ders.items[0]);
                 } else if (t == fin) {
                     try engine.processFinished(msg);
                     saw_fin = true;
@@ -774,7 +778,7 @@ test "tls client retries after hello retry request over loopback" {
                 out.* = e;
                 return;
             };
-            var flight = eng.produceServerFlight(ch2[4..], test_cert_pem, test_key_pem, &.{}, &.{}) catch |e| {
+            var flight = eng.produceServerFlight(ch2[4..], test_cert_pem, test_key_pem, &.{}, &.{}, null) catch |e| {
                 out.* = e;
                 return;
             };

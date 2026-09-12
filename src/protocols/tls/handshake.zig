@@ -86,6 +86,9 @@ pub const ClientHello = struct {
     supportedVersions: []const u16 = &.{0x0304},
     /// PSK key exchange modes.
     pskModes: []const u8 = &.{0x01}, // psk_dhe_ke
+    /// Raw QUIC transport parameters block for extension 57
+    /// (RFC 9001 Section 7.4). Borrowed; emitted only over QUIC.
+    quicTransportParams: ?[]const u8 = null,
 
     pub const CipherSuite = tls.CipherSuite;
     pub const KeyShareEntry = struct {
@@ -186,6 +189,14 @@ pub const ClientHello = struct {
             try exts.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(alpn_body.items.len + 2))));
             try exts.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(alpn_body.items.len))));
             try exts.appendSlice(allocator, alpn_body.items);
+        }
+
+        // QUIC transport parameters (RFC 9001 Section 7.4, ext 57):
+        // length-prefixed opaque block, QUIC paths only.
+        if (self.quicTransportParams) |tp| {
+            try exts.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, QUIC_TRANSPORT_PARAMETERS_ID)));
+            try exts.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(tp.len))));
+            try exts.appendSlice(allocator, tp);
         }
 
         // supportedVersions (RFC 8446 Section 4.2.1: u8 length + u16 versions)
@@ -538,6 +549,8 @@ pub const NewSessionTicket = struct {
 
 pub const EncryptedExtensions = struct {
     alpnProtocol: ?[]const u8 = null,
+    /// Raw QUIC transport parameters block (ext 57), borrowed.
+    quicTransportParams: ?[]const u8 = null,
 
     pub fn decode(body: []const u8) !EncryptedExtensions {
         var result: EncryptedExtensions = .{};
@@ -564,6 +577,8 @@ pub const EncryptedExtensions = struct {
                         }
                     }
                 }
+            } else if (ext_type == QUIC_TRANSPORT_PARAMETERS_ID) {
+                result.quicTransportParams = body[pos..][0..ext_data_len];
             }
             pos += ext_data_len;
         }
@@ -612,6 +627,10 @@ pub const Finished = struct {
 // Extension types (subset we use)
 
 pub const ExtensionType = tls.ExtensionType;
+
+/// QUIC transport parameters extension ID (RFC 9001 Section 7.4).
+/// Kept as a raw ID: the std TLS ExtensionType enum predates QUIC use.
+pub const QUIC_TRANSPORT_PARAMETERS_ID: u16 = 57;
 
 // TLS alert (RFC 8446 Section 6.2)
 

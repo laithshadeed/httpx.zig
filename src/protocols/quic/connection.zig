@@ -39,6 +39,9 @@ pub const Error = error{
     ProtocolViolation,
     AuthenticationFailed,
     FlowControlViolation,
+    /// Peer transport parameters were missing, malformed, or
+    /// inconsistent (RFC 9000 Section 7.4 / RFC 9001 Section 7.4).
+    TransportParameterError,
     /// Send window exhausted (connection or stream). Retry after the
     /// peer raises MAX_DATA / MAX_STREAM_DATA.
     SendBlocked,
@@ -176,12 +179,21 @@ pub const Connection = struct {
     dataSent: u64 = 0,
     dataReceived: u64 = 0,
     maxDataRemote: u64 = 1 << 20,
+    /// Fallback per-stream send windows (peer's MAX_STREAM_DATA
+    /// entries, once known, take precedence per stream). Seeded from
+    /// transport parameters when exchanged, else compiled defaults.
+    sendWindowBidi: u64 = 65536,
+    sendWindowUni: u64 = 65536,
 
     // Connection IDs (RFC 9000 allows CIDs up to 20 bytes).
     dcid: [20]u8 = undefined, // our source cid / peer's destination
     dcidLen: u8 = 8,
     scid: [20]u8 = undefined, // what we advertise
     scidLen: u8 = 8,
+    /// The DCID this endpoint first used (client: chosen at init).
+    /// Validates the server's original_destination_connection_id.
+    origDcid: [20]u8 = undefined,
+    origDcidLen: u8 = 0,
 
     // Peer CID table (NEW_CONNECTION_ID entries).
     peerCids: std.ArrayList(CidEntry) = .empty,
@@ -276,6 +288,8 @@ pub const Connection = struct {
         if (role == .client) {
             self.dcidLen = 8;
             self.rng.random().bytes(self.dcid[0..self.dcidLen]); // chosen DCID for Initial
+            @memcpy(self.origDcid[0..self.dcidLen], self.dcid[0..self.dcidLen]);
+            self.origDcidLen = self.dcidLen;
         }
         return self;
     }
@@ -486,7 +500,9 @@ pub const Connection = struct {
         fin: bool,
         nowMs: u64,
     ) Error!void {
-        const stream_lim = self.maxStreamData.get(sid) orelse 65536;
+        const bidi = (sid & 0x02) == 0;
+        const stream_lim = self.maxStreamData.get(sid) orelse
+            (if (bidi) self.sendWindowBidi else self.sendWindowUni);
         const end = std.math.add(u64, offset, data.len) catch return Error.BufferTooSmall;
         if (end > stream_lim) return Error.SendBlocked;
         if (self.dataSent +| data.len > self.maxDataRemote) return Error.SendBlocked;
@@ -1574,7 +1590,7 @@ const TlsHandshakeDriver = struct {
         if (rec.kind != @intFromEnum(ths.HandshakeType.client_hello)) return Error.ProtocolViolation;
         const ch_msg = rec.msg;
         d.engine.processClientHello(ch_msg) catch return Error.TlsDriverFailed;
-        var flight = d.engine.produceServerFlight(ch_msg[4..], "", &d.sec1, &.{}, &.{}) catch return Error.TlsDriverFailed;
+        var flight = d.engine.produceServerFlight(ch_msg[4..], "", &d.sec1, &.{}, &.{}, null) catch return Error.TlsDriverFailed;
         defer flight.deinit(conn.allocator);
 
         d.flight.appendSlice(conn.allocator, flight.serverHello) catch return Error.OutOfMemory;
