@@ -1,10 +1,10 @@
 # HTML Templates & View Rendering
 
-HTTPX ships a Flask/Jinja-style template engine (`httpx.templates.Engine`,
-also available as `httpx.Templates`) with HTML autoescaping to prevent
-Cross-Site Scripting (XSS). Templates are tokenized with a Tree-sitter
-grammar (expressions, statements, comments) and compiled to an AST;
-rendering is a separate cached pass over that AST.
+HTTPX ships a Jinja-compatible template engine (`httpx.templates.Engine`)
+with HTML autoescaping to prevent Cross-Site Scripting (XSS). Templates are
+tokenized with a Tree-sitter grammar (expressions, statements, comments),
+compiled to an AST, and rendered in a separate cached pass over that AST.
+Tree-sitter stays internal: user code only ever imports `httpx`.
 
 ## Template Syntax
 
@@ -18,10 +18,17 @@ rendering is a separate cached pass over that AST.
 ```
 
 Expressions support literals (strings, numbers, booleans, `null`/`none`,
-lists, dicts), property access (`user.name`), index access (`items[0]`,
-`user["name"]`), arithmetic (`+ - * / // %`), comparisons
-(`== != > >= < <=`), membership (`in`), logic (`and or not`),
-parentheses, ternary (`x if cond else y`), and calls.
+lists, tuples `(1, 2)`, dicts), property access (`user.name`), index
+access (`items[0]`, `user["name"]`), chained access, calls with positional
+and keyword arguments, filters (with positional and `key=value` args),
+tests, arithmetic (`+ - * / // % **`), comparisons
+(`== != > >= < <=`), membership (`in`, `not in`), identity tests (`is`,
+`is not`), logic (`and or not`), concatenation (`~`), parentheses,
+ternary (`x if cond else y`), and calls.
+
+Operator precedence follows Jinja/Python: `or` < `and` < `not` <
+comparisons/`in`/`is` < `~` < `+ -` < `* / // %` < `**` (right-associative,
+tighter than unary minus, so `-2**2 == -4` and `2**3**2 == 512`).
 
 ### Conditionals
 
@@ -47,24 +54,70 @@ parentheses, ternary (`x if cond else y`), and calls.
 ```
 
 Inside a loop, `loop.index` (1-based), `loop.index0`, `loop.first`,
-`loop.last`, and `loop.length` are available. `{% break %}` and
+`loop.last`, `loop.length`, `loop.revindex`, `loop.revindex0`,
+`loop.depth`, and `loop.depth0` are available. `{% break %}` and
 `{% continue %}` control loop flow. `{% for i in range(3) %}` iterates a
-generated sequence.
+generated sequence. An `{% else %}` branch renders when the loop is empty:
+
+```html
+{% for user in users %}
+  <p>{{ user.name }}</p>
+{% else %}
+  <p>No users.</p>
+{% endfor %}
+```
+
+Loops filter inline (`{% for x in items if x.active %}`), destructure
+(`{% for key, value in pairs %}`, `{% for a, b, c in rows %}`,
+`{% for (k, v) in pairs %}`), iterate maps by key and strings by
+character, and recurse:
+
+```html
+{% for node in tree recursive %}
+  {{ node.name }}
+  {% if node.kids %}<ul>{{ loop(node.kids) }}</ul>{% endif %}
+{% endfor %}
+```
+
+Map helpers compose with loops: `{% for k, v in user.items() %}`.
 
 ### Variables and assignment
 
 ```html
 {% set greeting = "Hello, " ~ user.name %}
 <p>{{ greeting }}</p>
+{% set a, b = 1, 2 %}
 ```
 
-### Inheritance and Partials
+`{% set a, b = pair %}` unpacks tuples/lists pairwise.
+
+### Inheritance and partials
 
 ```html
 {% extends "base.html" %}
 {% block content %}<p>Page body</p>{% endblock %}
 {% include "partials/nav.html" %}
 ```
+
+`super()` chains through every inheritance level. Includes support
+`ignore missing`, `with`/`without context`, and computed paths:
+
+```html
+{% include "sidebar.html" ignore missing %}
+{% include "ads.html" without context %}
+{% include layout_name %}
+```
+
+### Imports
+
+```html
+{% import "forms.html" as forms %}
+{% from "forms.html" import input as textInput %}
+{{ forms.input("name") }}
+```
+
+Imported macros are isolated from template data by default; add
+`with context` to share it (`{% import "m.html" as m with context %}`).
 
 ### Macros
 
@@ -78,7 +131,27 @@ generated sequence.
 ```
 
 Macro output is escaped like any other expression; mark trusted markup
-with `|safe`.
+with `|safe`. Macros accept positional, defaulted, and keyword
+arguments, plus `*args`/`**kwargs` collectors (with `varargs`/`kwargs`
+visible inside). Same-template macros cannot see template variables
+(Jinja isolation); `caller()` powers call blocks, including declared
+caller parameters:
+
+```html
+{% macro wrap(cls) %}<section class="{{ cls }}">{{ caller() }}</section>{% endmacro %}
+{% call(item) wrap("wide") %}<p>{{ item }}</p>{% endcall %}
+```
+
+### Filter, with, and autoescape blocks
+
+```html
+{% filter upper %}shout this{% endfilter %}
+{% with total = price * qty %}{{ total }}{% endwith %}
+{% autoescape false %}{{ trusted_html }}{% endautoescape %}
+```
+
+`{% apply %}` is accepted as an alias of `{% filter %}`. `{% with %}`
+creates a scoped block; assignments vanish afterwards.
 
 ### Filters
 
@@ -88,15 +161,29 @@ with `|safe`.
 {{ tags|join(", ") }} ({{ tags|length }})
 {{ bio|striptags|truncate(80) }}
 {{ description|replace("old", "new") }}
+{{ users|map(attribute="name")|join(", ") }}
+{{ users|selectattr("age", ">", 18)|length }}
+{{ data|tojson }}
 ```
 
-Builtins: `upper lower trim capitalize title escape safe default length
-join first last replace truncate striptags int float string abs round`
-(plus `e d len count` aliases). Register custom filters once on the
-engine:
+Builtins: `abs attr batch capitalize center default dictsort escape
+filesizeformat first float forceescape format groupby indent int join
+last length list lower map max min pprint random reject rejectattr
+replace reverse round safe select selectattr slice sort string striptags
+sum title tojson trim truncate unique upper urlencode wordcount wordwrap
+xmlattr` (plus `e d len count` aliases). Filter arguments may be
+positional or keyword (`truncate(30, killwords=true)`). Register custom
+filters once on the engine:
 
 ```zig
-try engine.registerFilter("shout", myFilterFn);
+fn shout(alloc: std.mem.Allocator, v: httpx.templates.Value, args: []const httpx.templates.Value, kwargs: []const httpx.templates.FilterKwarg) anyerror!httpx.templates.Value {
+    _ = args;
+    _ = kwargs;
+    const s = try alloc.dupe(u8, v.string);
+    for (s) |*c| c.* = std.ascii.toUpper(c.*);
+    return .{ .string = s };
+}
+try engine.registerFilter("shout", shout);
 ```
 
 ### Whitespace control
@@ -110,7 +197,9 @@ try engine.registerFilter("shout", myFilterFn);
 ```
 
 A `-` adjacent to a delimiter strips surrounding whitespace
-(`{%- ... -%}`, <code v-pre>{{- ... -}}</code>, `{#- ... -#}`).
+(`{%- ... -%}`, <code v-pre>{{- ... -}}</code>, `{#- ... -#}`). A dash
+separated by space is not control: <code v-pre>{{ -x }}</code> keeps its
+unary minus.
 
 ### Tests
 
@@ -119,10 +208,15 @@ A `-` adjacent to a delimiter strips surrounding whitespace
 {% if value is none %}...{% endif %}
 {% if name is string and age is number %}...{% endif %}
 {% if items is sequence and user is mapping %}...{% endif %}
+{% if n is divisibleby(3) %}...{% endif %}
+{% if id is in(allowed) %}...{% endif %}
 ```
 
-Available tests: `defined undefined none string number boolean sequence
-mapping callable`, plus `is not` negation (`{% if x is not none %}`).
+Available tests: `defined undefined none true false boolean integer
+float number string lower upper sequence mapping iterable callable
+escaped odd even divisibleby eq equalto ne lt le gt ge sameas in`, plus
+`is not` negation (`{% if x is not none %}`). Tests taking arguments use
+call syntax as shown above.
 
 ### Undefined values
 
@@ -135,11 +229,11 @@ Missing variables render empty and are falsy:
 ```
 
 Enable strict mode to fail loudly instead (`.strictUndefined = true` in
-the engine config): rendering an undefined value returns
-`error.UnknownVariable`. `|default(...)` still rescues missing values
-because the filter runs before the strict check.
+the engine config): missing output, conditions, iterations, and
+arithmetic operands return `error.UnknownVariable`. `|default(...)` and
+`is defined` keep working because they resolve before the strict check.
 
-### Trusted Raw HTML
+### Trusted raw HTML
 
 Values are escaped by default. Bypass escaping only for trusted markup with
 `templates.raw(...)`:
@@ -154,6 +248,9 @@ or the `|safe` filter for values already known safe:
 {{ trusted_html|safe }}
 ```
 
+`escape` leaves already-safe markup untouched (Jinja `Markup`
+semantics); `forceescape` escapes even safe values.
+
 ### Raw blocks
 
 ```html
@@ -162,7 +259,7 @@ or the `|safe` filter for values already known safe:
 {% endraw %}
 ```
 
-## Server View Handler
+## Server view handler
 
 ```zig
 const std = @import("std");
@@ -204,11 +301,14 @@ pub fn main() !void {
 }
 ```
 
-## Security: HTML Escaping
+## Security: HTML escaping
 
 Template variables are HTML-escaped by default (`&` → `&amp;`, `<` → `&lt;`,
 `>` → `&gt;`, `"` → `&quot;`, `'` → `&#39;`). Bypass escaping only for
-trusted markup with `templates.raw(...)` (see above).
+trusted markup with `templates.raw(...)` (see above). Rendered output is
+capped (`.maxOutputBytes`, default 64 MiB), macro nesting is bounded
+(`.maxMacroDepth`), and `range()` sequences are capped
+(`.maxRangeItems`).
 
 ### Set blocks, call blocks, and super
 
@@ -225,27 +325,29 @@ trusted markup with `templates.raw(...)` (see above).
 
 `{% set name %}...{% endset %}` captures rendered markup (safe HTML).
 `{% call %}` renders its body and exposes it as `caller()` inside the
-macro. <code v-pre>{{ super() }}</code> renders the overridden parent block.
+macro. <code v-pre>{{ super() }}</code> renders the overridden parent block,
+chaining through every inheritance level.
 
 ### Custom filters and globals
 
 ```zig
-fn shout(_: ?*const anyopaque, alloc: std.mem.Allocator, v: httpx.templates.Value, args: []const httpx.templates.Value) anyerror!httpx.templates.Value {
+fn shout(alloc: std.mem.Allocator, v: httpx.templates.Value, args: []const httpx.templates.Value, kwargs: []const httpx.templates.FilterKwarg) anyerror!httpx.templates.Value {
     _ = args;
+    _ = kwargs;
     const s = try alloc.dupe(u8, v.string);
     for (s) |*c| c.* = std.ascii.toUpper(c.*);
     return .{ .string = s };
 }
 try engine.registerFilter("shout", shout);
 
-fn urlFor(router_ptr: ?*const anyopaque, alloc: std.mem.Allocator, args: []const httpx.templates.Value, kwargs: []const httpx.templates.GlobalKwarg) anyerror!httpx.templates.Value {
-    const router: *httpx.Router = @ptrCast(@alignCast(@constCast(router_ptr.?)));
-    const route_name = args[0].string;
-    const url = try router.url(route_name, .{ .id = 42 });
-    defer router.allocator.free(url);
-    return .{ .string = try alloc.dupe(u8, url) };
+fn urlFor(_: ?*const anyopaque, alloc: std.mem.Allocator, args: []const httpx.templates.Value, kwargs: []const httpx.templates.GlobalKwarg) anyerror!httpx.templates.Value {
+    _ = alloc;
+    // args[0] is the route name; kwargs carry route params (id=42, ...).
+    var out = std.ArrayList(u8).empty;
+    // ... resolve against your router ...
+    return .{ .string = try out.toOwnedSlice(alloc) };
 }
-try engine.addGlobal("url_for", urlFor, router_ptr);
+try engine.addGlobal("url_for", urlFor, null);
 ```
 
 ```jinja
@@ -260,14 +362,16 @@ before globals.
 
 Cyclic `{% extends %}` chains fail with `error.CircularInheritance`.
 Syntax errors carry `template:line:column` locations, e.g.
-`templates/index.html:14:5: unexpected endif`.
+`templates/index.html:14:5: unexpected endif`. Runtime failures are
+recorded on `engine.lastError` with the failing node's location.
 
-## Engine Configuration and Caching
+## Engine configuration and caching
 
 ```zig
 var engine = try httpx.templates.Engine.init(allocator, io, .{
     .directory = "templates",
     .enableCache = true,
+    .strictUndefined = true,
 });
 defer engine.deinit();
 
@@ -281,10 +385,28 @@ try engine.render("index.html", .{ .title = "Hello" }, &lw);
 try engine.renderString("<h1>{{ title }}</h1>", .{ .title = "Hello" }, &lw);
 ```
 
-Compiled templates are cached in memory (`enableCache`). Template loading
-resolves safe relative paths only, blocking directory traversal outside the
-template directory. Pair with the file watcher and `engine.invalidate(path)`
-for hot reload during development.
+Compiled templates are cached in memory (`enableCache`). Cached renders
+are safe under concurrent load, and invalidating a template evicts its
+dependents without freeing ASTs under in-flight renders. Template
+loading resolves safe relative paths only, blocking directory traversal
+outside the template directory. Pair with the file watcher and
+`engine.invalidate(path)` for hot reload during development.
+
+## Compatibility notes
+
+The language tracks Jinja (3.x) semantics: expression precedence,
+filters, tests, loop metadata, macro scoping (macros are isolated from
+template data unless imported `with context`), `super()` chains,
+whitespace control, and autoescaping. Deliberate boundaries:
+
+* `{% extends %}` paths must be string literals (no dynamic parents).
+* `{% include %}` accepts a literal path or a context expression.
+* Zig values convert structurally (structs, slices, arrays, optionals);
+  Zig functions are not callable from templates — expose behavior
+  through `addGlobal` instead.
+* `{% do %}` and `{% trans %}` are not implemented.
+* `format` supports `%s %d %i %u %f %c %x %X %o %%` with width,
+  precision, and flags; `%e/%g` reject explicit precision.
 
 ## Related
 

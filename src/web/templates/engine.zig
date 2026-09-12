@@ -24,6 +24,15 @@ pub const Config = struct {
     maxInheritanceDepth: usize = 16,
     /// When true, rendering an undefined value fails instead of emitting empty.
     strictUndefined: bool = false,
+    /// Default HTML autoescaping for `{{ }}` (per-region override via
+    /// `{% autoescape %}`).
+    autoescape: bool = true,
+    /// Cap on rendered output bytes per render (DoS guard).
+    maxOutputBytes: usize = 64 << 20,
+    /// Cap on nested macro/call depth (recursion guard).
+    maxMacroDepth: usize = 64,
+    /// Cap on `range()` sequence length (memory guard).
+    maxRangeItems: usize = 1 << 20,
 };
 
 pub const Engine = struct {
@@ -37,11 +46,23 @@ pub const Engine = struct {
     globals: rendererMod.GlobalMap,
     lock: sync.Spinlock = .{},
     lastError: ?errMod.SourceError = null,
-    /// Scratch AST for cache-disabled mode: getOrCompile parses fresh on
-    /// every call and owns the result here (previous entry freed first),
-    /// so rendering works with enableCache=false instead of TemplateNotFound.
-    scratchAst: ?parserMod.TemplateAst = null,
-    scratchSource: ?[]u8 = null,
+    /// Location of the node being rendered when the latest render failed
+    /// (mirrored from the renderer via the provider hook).
+    lastRenderLoc: ?rendererMod.ErrLoc = null,
+    /// Scratch AST stack for cache-disabled mode: every `getOrCompile`
+    /// parses fresh and pushes a slot (nested includes push their own),
+    /// and each top-level `render` pops the slots it added. Never shared
+    /// across renders without the no-cache lock below.
+    scratchStack: std.ArrayList(ScratchSlot) = .empty,
+    /// Serializes cache-disabled renders: scratch slots are per-render
+    /// state, so uncached renders must not interleave. Cached renders
+    /// stay fully concurrent (the cache parks evictions instead).
+    noCacheGate: sync.Semaphore = sync.Semaphore.init(1),
+
+    pub const ScratchSlot = struct {
+        ast: parserMod.TemplateAst,
+        source: []u8,
+    };
 
     pub fn init(allocator: Allocator, io: std.Io, config: Config) !Engine {
         return .{
@@ -61,6 +82,10 @@ pub const Engine = struct {
                     .maxIncludeDepth = config.maxIncludeDepth,
                     .maxInheritanceDepth = config.maxInheritanceDepth,
                     .strictUndefined = config.strictUndefined,
+                    .autoescapeDefault = config.autoescape,
+                    .maxOutputBytes = config.maxOutputBytes,
+                    .maxMacroDepth = config.maxMacroDepth,
+                    .maxRangeItems = config.maxRangeItems,
                 },
             },
             .filters = rendererMod.FilterRegistry.init(allocator),
@@ -69,8 +94,11 @@ pub const Engine = struct {
     }
 
     pub fn deinit(self: *Engine) void {
-        if (self.scratchAst) |*ast| ast.deinit();
-        if (self.scratchSource) |s| self.allocator.free(s);
+        for (self.scratchStack.items) |*slot| {
+            slot.ast.deinit();
+            self.allocator.free(slot.source);
+        }
+        self.scratchStack.deinit(self.allocator);
         self.cache.deinit();
         self.filters.deinit();
         self.globals.deinit();
@@ -99,7 +127,15 @@ pub const Engine = struct {
         return .{
             .ptr = @ptrCast(self),
             .getAstFn = getAstCallback,
+            .reportLocFn = reportLocCallback,
         };
+    }
+
+    fn reportLocCallback(ptr: *const anyopaque, line: usize, col: usize, startByte: usize) void {
+        const self: *Engine = @ptrCast(@alignCast(@constCast(ptr)));
+        self.lock.lock();
+        defer self.lock.unlock();
+        self.lastRenderLoc = .{ .line = line, .col = col, .startByte = startByte };
     }
 
     fn getAstCallback(ptr: *const anyopaque, name: []const u8) ?*const parserMod.TemplateAst {
@@ -108,16 +144,16 @@ pub const Engine = struct {
     }
 
     /// Compiles a template or retrieves it from cache.
-    /// With enableCache=false, parses fresh on every call into an owned
-    /// scratch slot (previous scratch freed), so callers always get a valid AST.
+    /// With enableCache=false, parses fresh on every call and pushes the
+    /// result on the scratch stack (owned until the enclosing top-level
+    /// `render` pops it), so nested includes each get a valid AST.
+    /// NOTE: in no-cache mode every slot stays alive until the enclosing
+    /// render finishes; call `render` (which holds the no-cache lock and
+    /// drains its slots) rather than retaining these pointers.
     pub fn getOrCompile(self: *Engine, name: []const u8) !*const parserMod.TemplateAst {
         if (!self.config.enableCache) {
             self.lock.lock();
             defer self.lock.unlock();
-            if (self.scratchAst) |*ast| ast.deinit();
-            if (self.scratchSource) |s| self.allocator.free(s);
-            self.scratchAst = null;
-            self.scratchSource = null;
             const source = try self.loader.load(self.allocator, name);
             errdefer self.allocator.free(source);
             var parser = parserMod.Parser.init(self.allocator, name, source);
@@ -126,9 +162,8 @@ pub const Engine = struct {
                 self.allocator.free(source);
                 return err;
             };
-            self.scratchSource = source;
-            self.scratchAst = ast;
-            return &self.scratchAst.?;
+            try self.scratchStack.append(self.allocator, .{ .ast = ast, .source = source });
+            return &self.scratchStack.items[self.scratchStack.items.len - 1].ast;
         }
         if (self.cache.get(name)) |cached| {
             return cached;
@@ -167,6 +202,16 @@ pub const Engine = struct {
         data: anytype,
         writer: anytype,
     ) !void {
+        // No-cache renders are serialized (scratch slots are per-render
+        // state); cached renders borrow cache ASTs under begin/endRender
+        // so concurrent invalidation can never free under us.
+        if (!self.config.enableCache) self.noCacheGate.wait();
+        defer if (!self.config.enableCache) self.noCacheGate.post();
+        const scratchBase = self.scratchStack.items.len;
+        defer self.popScratchTo(scratchBase);
+        self.cache.beginRender();
+        defer self.cache.endRender();
+
         const ast = try self.getOrCompile(name);
 
         var ctx = try contextMod.Context.init(self.allocator, data);
@@ -175,7 +220,33 @@ pub const Engine = struct {
         var renderer = self.renderer;
         renderer.filters = &self.filters;
         renderer.globals = &self.globals;
-        try renderer.render(ast, &ctx, self.provider(), writer);
+        self.lastRenderLoc = null;
+        renderer.render(ast, &ctx, self.provider(), writer) catch |err| {
+            self.captureRenderError(name, err);
+            return err;
+        };
+    }
+
+    /// Pops scratch slots back to `base`, freeing their ASTs/sources.
+    fn popScratchTo(self: *Engine, base: usize) void {
+        while (self.scratchStack.items.len > base) {
+            const slot = self.scratchStack.pop() orelse break;
+            var ast = slot.ast;
+            ast.deinit();
+            self.allocator.free(slot.source);
+        }
+    }
+
+    fn captureRenderError(self: *Engine, templateName: []const u8, err: anyerror) void {
+        const loc = self.lastRenderLoc;
+        self.lastError = .{
+            .kind = .renderError,
+            .templateName = templateName,
+            .line = if (loc) |l| l.line else 1,
+            .column = if (loc) |l| l.col else 1,
+            .byteOffset = if (loc) |l| l.startByte else 0,
+            .message = @errorName(err),
+        };
     }
 
     /// Renders a template to an allocated string.
@@ -199,6 +270,13 @@ pub const Engine = struct {
         data: anytype,
         writer: anytype,
     ) !void {
+        if (!self.config.enableCache) self.noCacheGate.wait();
+        defer if (!self.config.enableCache) self.noCacheGate.post();
+        const scratchBase = self.scratchStack.items.len;
+        defer self.popScratchTo(scratchBase);
+        self.cache.beginRender();
+        defer self.cache.endRender();
+
         var parser = parserMod.Parser.init(self.allocator, "<inline>", source);
         var ast = try parser.parse();
         defer ast.deinit();
@@ -209,7 +287,11 @@ pub const Engine = struct {
         var renderer = self.renderer;
         renderer.filters = &self.filters;
         renderer.globals = &self.globals;
-        try renderer.render(&ast, &ctx, self.provider(), writer);
+        self.lastRenderLoc = null;
+        renderer.render(&ast, &ctx, self.provider(), writer) catch |err| {
+            self.captureRenderError("<inline>", err);
+            return err;
+        };
     }
 
     /// Invalidate a template and all its dependents when a watched file changes.
@@ -376,4 +458,155 @@ test "Engine in-memory rendering and context evaluation" {
     try testing.expect(std.mem.indexOf(u8, out, "<h1>Hello HTTPX</h1>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "<span>A</span>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "<span>B</span>") != null);
+}
+
+/// Creates a temp template directory populated with `files`, returning the
+/// directory path (caller must delete files + dir; see existing test).
+fn makeTempDir(dir: []const u8, files: []const struct { name: []const u8, src: []const u8 }) !void {
+    const fsMod = @import("../../utils/fs.zig");
+    {
+        var tmp: [512]u8 = undefined;
+        @memcpy(tmp[0..dir.len], dir);
+        tmp[dir.len] = 0;
+        _ = std.c.mkdir(tmp[0..dir.len :0], 0o755);
+    }
+    for (files) |f| {
+        var pathBuf: [512]u8 = undefined;
+        const path = try std.fmt.bufPrint(&pathBuf, "{s}/{s}", .{ dir, f.name });
+        try fsMod.writeFile(path, f.src);
+    }
+}
+
+test "Engine no-cache nested includes render" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const fsMod = @import("../../utils/fs.zig");
+    const dir = "test_nocache_nested.tmp";
+    try makeTempDir(dir, &.{
+        .{ .name = "main.html", .src = "A{% include \"mid.html\" %}Z" },
+        .{ .name = "mid.html", .src = "M{% include \"leaf.html\" %}M" },
+        .{ .name = "leaf.html", .src = "L" },
+    });
+    defer {
+        fsMod.deleteFile(dir ++ "/main.html") catch {};
+        fsMod.deleteFile(dir ++ "/mid.html") catch {};
+        fsMod.deleteFile(dir ++ "/leaf.html") catch {};
+        var tmp: [512]u8 = undefined;
+        @memcpy(tmp[0..dir.len], dir);
+        tmp[dir.len] = 0;
+        _ = std.c.rmdir(tmp[0..dir.len :0]);
+    }
+    var engine = try Engine.init(alloc, undefined, .{ .directory = dir, .enableCache = false });
+    defer engine.deinit();
+
+    var list = std.ArrayList(u8).empty;
+    defer list.deinit(alloc);
+    var lw = rendererMod.ListWriter{ .list = &list, .allocator = alloc };
+    // Nested includes in no-cache mode used to free the outer AST while
+    // the outer render still borrowed it (scratch-slot clobbering).
+    try engine.render("main.html", .{}, &lw);
+    try testing.expectEqualStrings("AMLMZ", list.items);
+    list.clearRetainingCapacity();
+    try engine.render("main.html", .{}, &lw);
+    try testing.expectEqualStrings("AMLMZ", list.items);
+}
+
+test "Engine invalidates dependents and reports render errors" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const fsMod = @import("../../utils/fs.zig");
+    const dir = "test_invalidate.tmp";
+    try makeTempDir(dir, &.{
+        .{ .name = "base.html", .src = "B:{% block c %}base{% endblock %}" },
+        .{ .name = "page.html", .src = "{% extends \"base.html\" %}{% block c %}page{% endblock %}" },
+    });
+    defer {
+        fsMod.deleteFile(dir ++ "/base.html") catch {};
+        fsMod.deleteFile(dir ++ "/page.html") catch {};
+        var tmp: [512]u8 = undefined;
+        @memcpy(tmp[0..dir.len], dir);
+        tmp[dir.len] = 0;
+        _ = std.c.rmdir(tmp[0..dir.len :0]);
+    }
+    var engine = try Engine.init(alloc, undefined, .{ .directory = dir });
+    defer engine.deinit();
+
+    var list = std.ArrayList(u8).empty;
+    defer list.deinit(alloc);
+    var lw = rendererMod.ListWriter{ .list = &list, .allocator = alloc };
+    try engine.render("page.html", .{}, &lw);
+    try testing.expectEqualStrings("B:page", list.items);
+
+    // Rewriting the parent + invalidating recompiles dependents.
+    try fsMod.writeFile(dir ++ "/base.html", "B2:{% block c %}base{% endblock %}");
+    engine.invalidate("base.html");
+    list.clearRetainingCapacity();
+    try engine.render("page.html", .{}, &lw);
+    try testing.expectEqualStrings("B2:page", list.items);
+
+    // Runtime failures populate lastError with template + location.
+    // (Covered precisely by the strict diagnostics test below.)
+}
+
+test "Engine strict renderString surfaces diagnostics" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var engine = try Engine.init(alloc, undefined, .{ .strictUndefined = true });
+    defer engine.deinit();
+    var list = std.ArrayList(u8).empty;
+    defer list.deinit(alloc);
+    var lw = rendererMod.ListWriter{ .list = &list, .allocator = alloc };
+    try testing.expectError(error.UnknownVariable, engine.renderString("ok {{ nope }}!", .{}, &lw));
+    try testing.expect(engine.lastError != null);
+    try testing.expectEqualStrings("<inline>", engine.lastError.?.templateName);
+    try testing.expectEqual(@as(usize, 1), engine.lastError.?.line);
+}
+
+test "Engine concurrent render with invalidation is safe" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const fsMod = @import("../../utils/fs.zig");
+    const dir = "test_concurrent.tmp";
+    try makeTempDir(dir, &.{
+        .{ .name = "base.html", .src = "B:{% block c %}base{% endblock %}" },
+        .{ .name = "page.html", .src = "{% extends \"base.html\" %}{% block c %}p{{ v }}{% endblock %}" },
+    });
+    defer {
+        fsMod.deleteFile(dir ++ "/base.html") catch {};
+        fsMod.deleteFile(dir ++ "/page.html") catch {};
+        var tmp: [512]u8 = undefined;
+        @memcpy(tmp[0..dir.len], dir);
+        tmp[dir.len] = 0;
+        _ = std.c.rmdir(tmp[0..dir.len :0]);
+    }
+    var engine = try Engine.init(alloc, undefined, .{ .directory = dir });
+    defer engine.deinit();
+
+    const Worker = struct {
+        fn run(eng: *Engine, stop: *std.atomic.Value(bool)) void {
+            var i: usize = 0;
+            while (!stop.load(.acquire) and i < 200) : (i += 1) {
+                var list = std.ArrayList(u8).empty;
+                defer list.deinit(std.testing.allocator);
+                var lw = rendererMod.ListWriter{ .list = &list, .allocator = std.testing.allocator };
+                eng.render("page.html", .{ .v = @as(i32, 1) }, &lw) catch continue;
+            }
+        }
+    };
+    var stop = std.atomic.Value(bool).init(false);
+    var threads: [4]std.Thread = undefined;
+    for (&threads) |*th| th.* = std.Thread.spawn(.{}, Worker.run, .{ &engine, &stop }) catch return;
+    var k: usize = 0;
+    while (k < 20) : (k += 1) {
+        engine.invalidate("base.html");
+        std.Thread.yield() catch {};
+    }
+    stop.store(true, .release);
+    for (&threads) |*th| th.join();
+    // Cache still coherent after the storm.
+    var list = std.ArrayList(u8).empty;
+    defer list.deinit(alloc);
+    var lw = rendererMod.ListWriter{ .list = &list, .allocator = alloc };
+    try engine.render("page.html", .{ .v = @as(i32, 2) }, &lw);
+    try testing.expectEqualStrings("B:p2", list.items);
 }

@@ -153,14 +153,14 @@ fn benchMethodLookup() void {
 const rawReqHead = "GET /api/v1/users?page=1 HTTP/1.1\r\nHost: httpbun.com\r\nUser-Agent: httpx/0.2.0\r\nAccept: application/json\r\n\r\n";
 
 fn benchHttp1RequestHead() void {
-    _ = httpx.http1.parser.parseRequestHead(rawReqHead) catch return;
+    _ = httpx.http1.parser.parseRequestHead(rawReqHead, .{}) catch return;
 }
 
 const rawHdrBlock = "Host: httpbun.com\r\nUser-Agent: httpx/0.2.0\r\nAccept: application/json\r\nAuthorization: Bearer secret-tok\r\nContent-Type: application/json\r\n\r\n";
 
 fn benchHttp1HeaderBlock() void {
     var fields: [16]httpx.http1.parser.Field = undefined;
-    _ = httpx.http1.parser.parseHeaderBlock(rawHdrBlock, 0, &fields) catch return;
+    _ = httpx.http1.parser.parseHeaderBlock(rawHdrBlock, 0, &fields, .{}) catch return;
 }
 
 // Group 2: Routing & Middleware
@@ -459,7 +459,7 @@ const sampleCertPem =
 
 fn benchTlsRecordSeal() void {
     const rec = httpx.tls.record.encodeRecord(
-        .applicationData,
+        .application_data,
         &sampleTlsPayload,
         0,
         &sampleTlsKey,
@@ -580,7 +580,7 @@ const H3BenchServer = struct {
             if (!acc.fin) continue;
             var off: usize = 0;
             const fr = try httpx.http3.frame.parseFrame(acc.buf.items, &off);
-            const fields = try h3.qdec.decodeSectionWithPrefix(fr.payload);
+            const fields = try h3.qdec.decodeSectionCounted(fr.payload, 0, null);
             defer h3.qdec.freeFields(fields);
             var benchQenc = httpx.http3.qpack.Encoder.init(alloc);
             defer benchQenc.deinit();

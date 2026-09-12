@@ -258,6 +258,14 @@ pub const ElifBranch = struct {
 pub const MacroParam = struct {
     name: []const u8,
     default: ?[]const u8 = null,
+    /// `*args` collects surplus positionals, `**kwargs` surplus keywords.
+    star: bool = false,
+    starStar: bool = false,
+};
+
+pub const ImportName = struct {
+    name: []const u8,
+    alias: ?[]const u8 = null,
 };
 
 pub const CallArg = struct {
@@ -325,32 +333,9 @@ pub fn parseCallSig(a: Allocator, s: []const u8) !struct { name: []const u8, arg
         defer a.free(parts);
         for (parts) |part| {
             if (part.len == 0) continue;
-            var depth: usize = 0;
-            var q: u8 = 0;
-            var eq: ?usize = null;
-            for (part, 0..) |c, idx| {
-                if (q != 0) {
-                    if (c == q) q = 0;
-                    continue;
-                }
-                switch (c) {
-                    '"', '\'' => q = c,
-                    '(', '[', '{' => depth += 1,
-                    ')', ']', '}' => depth -|= 1,
-                    '=' => {
-                        if (depth == 0 and (idx + 1 >= part.len or part[idx + 1] != '=')) {
-                            eq = idx;
-                        }
-                    },
-                    else => {},
-                }
-                if (eq != null) break;
-            }
-            if (eq) |e| {
-                try args.append(a, .{
-                    .name = std.mem.trim(u8, part[0..e], " \t\r\n"),
-                    .value = std.mem.trim(u8, part[e + 1 ..], " \t\r\n"),
-                });
+            if (splitNameValue(part)) |nv| {
+                if (nv.name.len == 0 or nv.value.len == 0) return error.InvalidSignature;
+                try args.append(a, .{ .name = nv.name, .value = nv.value });
             } else {
                 try args.append(a, .{ .value = part });
             }
@@ -363,6 +348,9 @@ pub const MacroDef = struct {
     name: []const u8,
     params: []const MacroParam,
     bodyNodes: []const TemplateNode,
+    /// True when imported `with context`: the macro body may see template
+    /// data. Plain definitions render isolated (Jinja default).
+    withContext: bool = false,
     startByte: usize,
     line: usize,
     col: usize,
@@ -385,16 +373,7 @@ pub const TemplateNode = union(enum) {
         line: usize,
         col: usize,
     },
-    forLoop: struct {
-        itemVar: []const u8,
-        itemVar2: ?[]const u8 = null,
-        collectionExpr: []const u8,
-        bodyNodes: []const TemplateNode,
-        elseNodes: []const TemplateNode = &.{},
-        startByte: usize,
-        line: usize,
-        col: usize,
-    },
+    forLoop: ForLoopInfo,
     setBlock: struct {
         name: []const u8,
         bodyNodes: []const TemplateNode,
@@ -405,6 +384,8 @@ pub const TemplateNode = union(enum) {
     call: struct {
         name: []const u8,
         args: []const CallArg,
+        /// `{% call(item) macro() %}` caller parameter declarations.
+        callerParams: []const []const u8 = &.{},
         bodyNodes: []const TemplateNode,
         startByte: usize,
         line: usize,
@@ -443,10 +424,71 @@ pub const TemplateNode = union(enum) {
     },
     include: struct {
         templatePath: []const u8,
+        /// True when the path is an expression evaluated at render time.
+        pathIsExpr: bool = false,
+        /// `{% include "x" ignore missing %}` renders nothing when absent.
+        ignoreMissing: bool = false,
+        /// `with`/`without context`; null means Jinja default (with).
+        withContext: ?bool = null,
         startByte: usize,
         line: usize,
         col: usize,
     },
+    importAs: struct {
+        templatePath: []const u8,
+        alias: []const u8,
+        withContext: bool = true,
+        startByte: usize,
+        line: usize,
+        col: usize,
+    },
+    fromImport: struct {
+        templatePath: []const u8,
+        names: []const ImportName,
+        withContext: bool = true,
+        startByte: usize,
+        line: usize,
+        col: usize,
+    },
+    filterBlock: struct {
+        /// Filter expression applied to the rendered body (`upper`,
+        /// `truncate(30)`, chains allowed).
+        filterExpr: []const u8,
+        bodyNodes: []const TemplateNode,
+        startByte: usize,
+        line: usize,
+        col: usize,
+    },
+    withBlock: struct {
+        assigns: []const CallArg,
+        bodyNodes: []const TemplateNode,
+        startByte: usize,
+        line: usize,
+        col: usize,
+    },
+    autoescapeBlock: struct {
+        enabled: bool,
+        bodyNodes: []const TemplateNode,
+        startByte: usize,
+        line: usize,
+        col: usize,
+    },
+};
+
+/// Named payload for `{% for %}` loops (a named type so the renderer
+/// can hold recursion frames across the loop body).
+pub const ForLoopInfo = struct {
+    itemVars: []const []const u8,
+    collectionExpr: []const u8,
+    /// Optional `if` filter from `{% for x in y if cond %}`.
+    filterExpr: ?[]const u8 = null,
+    /// `{% for x in y recursive %}` enables `loop(...)` calls.
+    recursive: bool = false,
+    bodyNodes: []const TemplateNode,
+    elseNodes: []const TemplateNode = &.{},
+    startByte: usize,
+    line: usize,
+    col: usize,
 };
 
 pub const BlockInfo = struct {
@@ -476,17 +518,21 @@ pub const DashStrip = struct {
 };
 
 pub fn stripDashControl(raw: []const u8) DashStrip {
-    var content = std.mem.trim(u8, raw, " \t\r\n");
+    // A dash counts as whitespace control ONLY when directly adjacent to
+    // the delimiter (`{{- x -}}`); `{{ -x }}` keeps its unary minus
+    // (Jinja lexer rule: `-?` immediately follows the opening braces).
+    var content = raw;
     var left = false;
     var right = false;
     if (content.len > 0 and content[0] == '-') {
         left = true;
-        content = std.mem.trimStart(u8, content[1..], " \t\r\n");
+        content = content[1..];
     }
     if (content.len > 0 and content[content.len - 1] == '-') {
         right = true;
-        content = std.mem.trimEnd(u8, content[0 .. content.len - 1], " \t\r\n");
+        content = content[0 .. content.len - 1];
     }
+    content = std.mem.trim(u8, content, " \t\r\n");
     return .{ .content = content, .left = left, .right = right };
 }
 
@@ -517,7 +563,243 @@ fn trimSliceTail(nodes: []const TemplateNode) void {
     }
 }
 
-/// Parses a macro signature `name(arg1, arg2="default")` into name + params.
+/// Splits `name = value` at the top level, respecting quotes and nesting.
+/// Returns null when there is no top-level `=` (or it is `==`).
+pub fn splitNameValue(part: []const u8) ?struct { name: []const u8, value: []const u8 } {
+    var depth: usize = 0;
+    var q: u8 = 0;
+    var i: usize = 0;
+    while (i < part.len) {
+        const c = part[i];
+        if (q != 0) {
+            if (c == '\\' and i + 1 < part.len) {
+                i += 2;
+                continue;
+            }
+            if (c == q) q = 0;
+            i += 1;
+            continue;
+        }
+        switch (c) {
+            '"', '\'' => q = c,
+            '(', '[', '{' => depth += 1,
+            ')', ']', '}' => depth -|= 1,
+            '=' => {
+                if (depth == 0 and (i + 1 >= part.len or part[i + 1] != '=') and (i == 0 or part[i - 1] != '=')) {
+                    return .{
+                        .name = std.mem.trim(u8, part[0..i], " \t\r\n"),
+                        .value = std.mem.trim(u8, part[i + 1 ..], " \t\r\n"),
+                    };
+                }
+            },
+            else => {},
+        }
+        i += 1;
+    }
+    return null;
+}
+
+/// Finds a standalone word at the top level (outside strings and nesting).
+/// Returns its byte offset, or null.
+pub fn findTopLevelWord(haystack: []const u8, word: []const u8) ?usize {
+    if (word.len == 0 or word.len > haystack.len) return null;
+    var depth: usize = 0;
+    var q: u8 = 0;
+    var i: usize = 0;
+    while (i < haystack.len) {
+        const c = haystack[i];
+        if (q != 0) {
+            if (c == '\\' and i + 1 < haystack.len) {
+                i += 2;
+                continue;
+            }
+            if (c == q) q = 0;
+            i += 1;
+            continue;
+        }
+        switch (c) {
+            '"', '\'' => {
+                q = c;
+                i += 1;
+                continue;
+            },
+            '(', '[', '{' => depth += 1,
+            ')', ']', '}' => depth -|= 1,
+            else => {},
+        }
+        if (depth == 0 and std.ascii.isAlphabetic(word[0]) and (std.ascii.isAlphabetic(c) or c == '_')) {
+            if (i + word.len <= haystack.len and std.mem.eql(u8, haystack[i .. i + word.len], word)) {
+                const after = i + word.len;
+                const beforeOk = i == 0 or (!std.ascii.isAlphanumeric(haystack[i - 1]) and haystack[i - 1] != '_');
+                const afterOk = after >= haystack.len or (!std.ascii.isAlphanumeric(haystack[after]) and haystack[after] != '_');
+                if (beforeOk and afterOk) return i;
+            }
+        }
+        i += 1;
+    }
+    return null;
+}
+
+/// Removes one surrounding paren pair: `(a, b)` -> `a, b`. Leaves other
+/// strings untouched.
+pub fn stripParens(s: []const u8) []const u8 {
+    const t = std.mem.trim(u8, s, " \t\r\n");
+    if (t.len >= 2 and t[0] == '(' and t[t.len - 1] == ')') {
+        var depth: usize = 0;
+        var q: u8 = 0;
+        var i: usize = 0;
+        var balanced = true;
+        while (i < t.len) : (i += 1) {
+            const c = t[i];
+            if (q != 0) {
+                if (c == q) q = 0;
+                continue;
+            }
+            switch (c) {
+                '"', '\'' => q = c,
+                '(' => depth += 1,
+                ')' => {
+                    if (depth == 0) {
+                        balanced = false;
+                        break;
+                    }
+                    depth -= 1;
+                    if (depth == 0 and i != t.len - 1) {
+                        balanced = false;
+                        break;
+                    }
+                },
+                else => {},
+            }
+            if (!balanced) break;
+        }
+        if (balanced and depth == 0) return std.mem.trim(u8, t[1 .. t.len - 1], " \t\r\n");
+    }
+    return t;
+}
+
+/// Splits a trailing `with context` / `without context` suffix.
+/// Returns the remainder plus the flag (null when absent).
+pub fn splitContextSuffix(s: []const u8) struct { rest: []const u8, withContext: ?bool } {
+    var rest = std.mem.trimEnd(u8, s, " \t\r\n");
+    if (std.mem.endsWith(u8, rest, "without context")) {
+        const cut = rest[0 .. rest.len - "without context".len];
+        if (cut.len == 0 or cut[cut.len - 1] == ' ' or cut[cut.len - 1] == '\t' or cut[cut.len - 1] == '\r' or cut[cut.len - 1] == '\n') {
+            return .{ .rest = std.mem.trimEnd(u8, cut, " \t\r\n"), .withContext = false };
+        }
+    }
+    if (std.mem.endsWith(u8, rest, "with context")) {
+        // Careful: "without context" also ends with "with context"; checked above.
+        const cut = rest[0 .. rest.len - "with context".len];
+        if (cut.len == 0 or cut[cut.len - 1] == ' ' or cut[cut.len - 1] == '\t' or cut[cut.len - 1] == '\r' or cut[cut.len - 1] == '\n') {
+            return .{ .rest = std.mem.trimEnd(u8, cut, " \t\r\n"), .withContext = true };
+        }
+    }
+    return .{ .rest = s, .withContext = null };
+}
+
+/// Parses an autoescape flag: true/false (any case), 1/0.
+pub fn parseAutoescapeFlag(s: []const u8) ?bool {
+    if (std.ascii.eqlIgnoreCase(s, "true") or std.mem.eql(u8, s, "1")) return true;
+    if (std.ascii.eqlIgnoreCase(s, "false") or std.mem.eql(u8, s, "0")) return false;
+    return null;
+}
+
+/// Parses an include/import path which is either a quoted literal or an
+/// expression, plus trailing `ignore missing` / `with|without context`.
+pub fn parseIncludeSpec(a: Allocator, s: []const u8) !struct {
+    path: []const u8,
+    pathIsExpr: bool,
+    ignoreMissing: bool,
+    withContext: ?bool,
+} {
+    _ = a;
+    var rest = std.mem.trim(u8, s, " \t\r\n");
+    var ignoreMissing = false;
+    // Trailing `ignore missing` (checked before context suffix).
+    if (std.mem.endsWith(u8, rest, "ignore missing")) {
+        const cut = rest[0 .. rest.len - "ignore missing".len];
+        if (cut.len > 0 and (cut[cut.len - 1] == ' ' or cut[cut.len - 1] == '\t')) {
+            ignoreMissing = true;
+            rest = std.mem.trimEnd(u8, cut, " \t\r\n");
+        }
+    }
+    const ctxSplit = splitContextSuffix(rest);
+    rest = ctxSplit.rest;
+    if (rest.len == 0) return error.InvalidSignature;
+    if (parseQuotedString(rest)) |lit| {
+        return .{ .path = lit, .pathIsExpr = false, .ignoreMissing = ignoreMissing, .withContext = ctxSplit.withContext };
+    }
+    // Unquoted remainder is an expression evaluated at render time.
+    // A trailing modifier word can only follow a literal path.
+    if (ignoreMissing or ctxSplit.withContext != null) return error.InvalidSignature;
+    return .{ .path = rest, .pathIsExpr = true, .ignoreMissing = false, .withContext = null };
+}
+
+/// Parses `{% import %}` remainder: `"path" as alias [with|without context]`.
+pub fn parseImportSpec(s: []const u8) !struct {
+    path: []const u8,
+    alias: []const u8,
+    withContext: bool,
+} {
+    const ctxSplit = splitContextSuffix(std.mem.trim(u8, s, " \t\r\n"));
+    const rest = ctxSplit.rest;
+    const asPos = findTopLevelWord(rest, "as") orelse return error.InvalidSignature;
+    const rawPath = std.mem.trim(u8, rest[0..asPos], " \t\r\n");
+    const alias = std.mem.trim(u8, rest[asPos + 2 ..], " \t\r\n");
+    const path = parseQuotedString(rawPath) orelse return error.InvalidSignature;
+    if (alias.len == 0) return error.InvalidSignature;
+    return .{ .path = path, .alias = alias, .withContext = ctxSplit.withContext orelse false };
+}
+
+/// Parses `{% from %}` remainder: `"path" import a, b as c [with|without context]`.
+pub fn parseFromSpec(a: Allocator, s: []const u8) !struct {
+    path: []const u8,
+    names: []ImportName,
+    withContext: bool,
+} {
+    const ctxSplit = splitContextSuffix(std.mem.trim(u8, s, " \t\r\n"));
+    const rest = ctxSplit.rest;
+    const importPos = findTopLevelWord(rest, "import") orelse return error.InvalidSignature;
+    const rawPath = std.mem.trim(u8, rest[0..importPos], " \t\r\n");
+    const path = parseQuotedString(rawPath) orelse return error.InvalidSignature;
+    const names = try parseFromNames(a, std.mem.trim(u8, rest[importPos + 6 ..], " \t\r\n"));
+    return .{ .path = path, .names = names, .withContext = ctxSplit.withContext orelse false };
+}
+
+/// Parses `{% for %}` target/collection/filter/recursive parts.
+/// `remainder` is the text after `for`: `a, b in coll if cond recursive`.
+pub fn parseForHead(remainder: []const u8) ?struct {
+    vars: []const u8,
+    collection: []const u8,
+    filter: ?[]const u8,
+    recursive: bool,
+} {
+    const inPos = findTopLevelWord(remainder, "in") orelse return null;
+    const vars = std.mem.trim(u8, remainder[0..inPos], " \t\r\n");
+    if (vars.len == 0) return null;
+    var rest = std.mem.trim(u8, remainder[inPos + 2 ..], " \t\r\n");
+    if (rest.len == 0) return null;
+    var recursive = false;
+    if (std.mem.endsWith(u8, rest, "recursive")) {
+        const cut = rest[0 .. rest.len - "recursive".len];
+        if (cut.len > 0 and (cut[cut.len - 1] == ' ' or cut[cut.len - 1] == '\t')) {
+            recursive = true;
+            rest = std.mem.trimEnd(u8, cut, " \t\r\n");
+        }
+    }
+    var filter: ?[]const u8 = null;
+    var collection = rest;
+    if (findTopLevelWord(rest, "if")) |ifPos| {
+        collection = std.mem.trim(u8, rest[0..ifPos], " \t\r\n");
+        filter = std.mem.trim(u8, rest[ifPos + 2 ..], " \t\r\n");
+        if (collection.len == 0 or filter.?.len == 0) return null;
+    }
+    if (collection.len == 0) return null;
+    return .{ .vars = vars, .collection = collection, .filter = filter, .recursive = recursive };
+}
+
+/// Parses a macro signature `name(arg1, arg2="default", *args, **kwargs)`.
 pub fn parseMacroSignature(a: Allocator, s: []const u8) !struct { name: []const u8, params: []MacroParam } {
     const open = std.mem.indexOfScalar(u8, s, '(') orelse return error.InvalidSignature;
     const close = std.mem.lastIndexOfScalar(u8, s, ')') orelse return error.InvalidSignature;
@@ -528,20 +810,66 @@ pub fn parseMacroSignature(a: Allocator, s: []const u8) !struct { name: []const 
     var params = std.ArrayList(MacroParam).empty;
     errdefer params.deinit(a);
     if (argsStr.len > 0) {
-        var it = std.mem.splitScalar(u8, argsStr, ',');
-        while (it.next()) |part| {
-            const p = std.mem.trim(u8, part, " \t\r\n");
-            if (p.len == 0) continue;
-            if (std.mem.indexOfScalar(u8, p, '=')) |eq| {
-                const pname = std.mem.trim(u8, p[0..eq], " \t\r\n");
-                const dflt = std.mem.trim(u8, p[eq + 1 ..], " \t\r\n");
-                try params.append(a, .{ .name = pname, .default = dflt });
+        const parts = try splitTopLevel(a, argsStr);
+        defer a.free(parts);
+        for (parts) |part| {
+            if (part.len == 0) continue;
+            if (std.mem.startsWith(u8, part, "**")) {
+                const pname = std.mem.trim(u8, part[2..], " \t\r\n");
+                if (pname.len == 0) return error.InvalidSignature;
+                try params.append(a, .{ .name = pname, .starStar = true });
+            } else if (std.mem.startsWith(u8, part, "*")) {
+                const pname = std.mem.trim(u8, part[1..], " \t\r\n");
+                if (pname.len == 0) return error.InvalidSignature;
+                try params.append(a, .{ .name = pname, .star = true });
+            } else if (splitNameValue(part)) |nv| {
+                if (nv.name.len == 0 or nv.value.len == 0) return error.InvalidSignature;
+                try params.append(a, .{ .name = nv.name, .default = nv.value });
             } else {
-                try params.append(a, .{ .name = p });
+                try params.append(a, .{ .name = part });
             }
         }
     }
     return .{ .name = name, .params = try params.toOwnedSlice(a) };
+}
+
+/// Parses `{% with %}` / call-site assignments `a=1, b=x` into CallArgs.
+/// Every entry must be `name = expr`.
+pub fn parseAssignList(a: Allocator, s: []const u8) ![]CallArg {
+    var out = std.ArrayList(CallArg).empty;
+    errdefer out.deinit(a);
+    const trimmed = std.mem.trim(u8, s, " \t\r\n");
+    if (trimmed.len == 0) return out.toOwnedSlice(a);
+    const parts = try splitTopLevel(a, trimmed);
+    defer a.free(parts);
+    for (parts) |part| {
+        if (part.len == 0) continue;
+        const nv = splitNameValue(part) orelse return error.InvalidSignature;
+        if (nv.name.len == 0 or nv.value.len == 0) return error.InvalidSignature;
+        try out.append(a, .{ .name = nv.name, .value = nv.value });
+    }
+    return out.toOwnedSlice(a);
+}
+
+/// Parses `{% from %}` import name lists: `a, b as c`.
+pub fn parseFromNames(a: Allocator, s: []const u8) ![]ImportName {
+    var out = std.ArrayList(ImportName).empty;
+    errdefer out.deinit(a);
+    const parts = try splitTopLevel(a, s);
+    defer a.free(parts);
+    for (parts) |part| {
+        if (part.len == 0) continue;
+        if (findTopLevelWord(part, "as")) |asPos| {
+            const nm = std.mem.trim(u8, part[0..asPos], " \t\r\n");
+            const al = std.mem.trim(u8, part[asPos + 2 ..], " \t\r\n");
+            if (nm.len == 0 or al.len == 0) return error.InvalidSignature;
+            try out.append(a, .{ .name = nm, .alias = al });
+        } else {
+            try out.append(a, .{ .name = part });
+        }
+    }
+    if (out.items.len == 0) return error.InvalidSignature;
+    return out.toOwnedSlice(a);
 }
 
 pub const Parser = struct {
@@ -608,12 +936,23 @@ pub const Parser = struct {
         };
     }
 
+    /// Extracts the directive command word: the leading alphabetic run,
+    /// so `{% call(item) %}` yields `call` just like `{% call x() %}`.
+    fn directiveCmd(content: []const u8) []const u8 {
+        var i: usize = 0;
+        while (i < content.len and std.ascii.isAlphabetic(content[i])) : (i += 1) {}
+        if (i == 0) {
+            var it = std.mem.tokenizeAny(u8, content, " \t\r\n");
+            return it.next() orelse "";
+        }
+        return content[0..i];
+    }
+
     fn peekDirectiveCmd(self: *Parser, tokens: []const TsToken, at: usize) []const u8 {
         if (at >= tokens.len or tokens[at].kind != .directive) return "";
         const raw = self.source[tokens[at].start + 2 .. tokens[at].end - 2];
         const stripped = stripDashControl(raw);
-        var it = std.mem.tokenizeAny(u8, stripped.content, " \t\r\n");
-        return it.next() orelse "";
+        return directiveCmd(stripped.content);
     }
 
     fn isStopCmd(stopTag: ?[]const u8, cmd: []const u8) bool {
@@ -688,8 +1027,7 @@ pub const Parser = struct {
                 .directive => {
                     const stripped = stripDashControl(self.source[tok.start + 2 .. tok.end - 2]);
                     const tagContent = stripped.content;
-                    var tagIt = std.mem.tokenizeAny(u8, tagContent, " \t\r\n");
-                    const tagCmd = tagIt.next() orelse "";
+                    const tagCmd = directiveCmd(tagContent);
                     if (isStopCmd(stopTag, tagCmd)) {
                         return;
                     }
@@ -789,22 +1127,22 @@ pub const Parser = struct {
                         return self.fail(.unexpectedToken, tagStart, "unexpected endif/else without matching {% if %}");
                     } else if (std.mem.eql(u8, tagCmd, "for")) {
                         const remainder = std.mem.trim(u8, tagContent[3..], " \t\r\n");
-                        const inPos = std.mem.indexOf(u8, remainder, " in ") orelse {
+                        const head = parseForHead(remainder) orelse {
                             return self.fail(.syntaxError, tagStart, "invalid for loop syntax, expected '{% for item in items %}'");
                         };
-                        const itemVar = std.mem.trim(u8, remainder[0..inPos], " \t\r\n");
-                        const collExpr = std.mem.trim(u8, remainder[inPos + 4 ..], " \t\r\n");
-                        if (itemVar.len == 0 or collExpr.len == 0) {
-                            return self.fail(.syntaxError, tagStart, "invalid for loop syntax, expected '{% for item in items %}'");
+                        // N loop targets: `k, v` or `(k, v)` tuple form.
+                        const varParts = try splitTopLevel(a, stripParens(head.vars));
+                        defer a.free(varParts);
+                        if (varParts.len == 0) {
+                            return self.fail(.syntaxError, tagStart, "invalid loop variables, expected '{% for key, value in items %}'");
                         }
-                        var itemName = itemVar;
-                        var itemName2: ?[]const u8 = null;
-                        if (std.mem.indexOfScalar(u8, itemVar, ',')) |comma| {
-                            itemName = std.mem.trim(u8, itemVar[0..comma], " \t\r\n");
-                            itemName2 = std.mem.trim(u8, itemVar[comma + 1 ..], " \t\r\n");
-                            if (itemName.len == 0 or itemName2.?.len == 0) {
+                        var itemVars = std.ArrayList([]const u8).empty;
+                        errdefer itemVars.deinit(a);
+                        for (varParts) |vp| {
+                            if (vp.len == 0) {
                                 return self.fail(.syntaxError, tagStart, "invalid loop variables, expected '{% for key, value in items %}'");
                             }
+                            try itemVars.append(a, vp);
                         }
                         var bodyNodes = std.ArrayList(TemplateNode).empty;
                         var elseNodes = std.ArrayList(TemplateNode).empty;
@@ -830,9 +1168,10 @@ pub const Parser = struct {
                         }
                         try outNodes.append(a, .{
                             .forLoop = .{
-                                .itemVar = itemName,
-                                .itemVar2 = itemName2,
-                                .collectionExpr = collExpr,
+                                .itemVars = try itemVars.toOwnedSlice(a),
+                                .collectionExpr = head.collection,
+                                .filterExpr = head.filter,
+                                .recursive = head.recursive,
                                 .bodyNodes = try bodyNodes.toOwnedSlice(a),
                                 .elseNodes = try elseNodes.toOwnedSlice(a),
                                 .startByte = tagStart,
@@ -869,13 +1208,98 @@ pub const Parser = struct {
                             .extends = .{ .parentPath = path, .startByte = tagStart, .line = loc.line, .col = loc.col },
                         });
                     } else if (std.mem.eql(u8, tagCmd, "include")) {
-                        const rawPath = std.mem.trim(u8, tagContent[7..], " \t\r\n");
-                        const path = parseQuotedString(rawPath) orelse {
-                            return self.fail(.syntaxError, tagStart, "invalid path in '{% include \"...\" %}'");
+                        const spec = parseIncludeSpec(a, std.mem.trim(u8, tagContent[7..], " \t\r\n")) catch {
+                            return self.fail(.syntaxError, tagStart, "invalid include syntax, expected '{% include \"...\" [ignore missing] [with|without context] %}'");
                         };
-                        try includesList.append(a, path);
+                        if (!spec.pathIsExpr) try includesList.append(a, spec.path);
                         try outNodes.append(a, .{
-                            .include = .{ .templatePath = path, .startByte = tagStart, .line = loc.line, .col = loc.col },
+                            .include = .{
+                                .templatePath = spec.path,
+                                .pathIsExpr = spec.pathIsExpr,
+                                .ignoreMissing = spec.ignoreMissing,
+                                .withContext = spec.withContext,
+                                .startByte = tagStart,
+                                .line = loc.line,
+                                .col = loc.col,
+                            },
+                        });
+                    } else if (std.mem.eql(u8, tagCmd, "import")) {
+                        const spec = parseImportSpec(std.mem.trim(u8, tagContent[6..], " \t\r\n")) catch {
+                            return self.fail(.syntaxError, tagStart, "invalid import syntax, expected '{% import \"...\" as name [with|without context] %}'");
+                        };
+                        try outNodes.append(a, .{
+                            .importAs = .{
+                                .templatePath = spec.path,
+                                .alias = spec.alias,
+                                .withContext = spec.withContext,
+                                .startByte = tagStart,
+                                .line = loc.line,
+                                .col = loc.col,
+                            },
+                        });
+                    } else if (std.mem.eql(u8, tagCmd, "from")) {
+                        const spec = parseFromSpec(a, std.mem.trim(u8, tagContent[4..], " \t\r\n")) catch {
+                            return self.fail(.syntaxError, tagStart, "invalid from-import syntax, expected '{% from \"...\" import a, b as c %}'");
+                        };
+                        try outNodes.append(a, .{
+                            .fromImport = .{
+                                .templatePath = spec.path,
+                                .names = spec.names,
+                                .withContext = spec.withContext,
+                                .startByte = tagStart,
+                                .line = loc.line,
+                                .col = loc.col,
+                            },
+                        });
+                    } else if (std.mem.eql(u8, tagCmd, "filter") or std.mem.eql(u8, tagCmd, "apply")) {
+                        const isApply = std.mem.eql(u8, tagCmd, "apply");
+                        const endName: []const u8 = if (isApply) "endapply" else "endfilter";
+                        const spec = std.mem.trim(u8, tagContent[if (isApply) 5 else 6 ..], " \t\r\n");
+                        if (spec.len == 0) {
+                            return self.fail(.syntaxError, tagStart, "expected a filter after '{% filter %}'");
+                        }
+                        var filterBody = std.ArrayList(TemplateNode).empty;
+                        try self.parseTokenNodes(a, tokens, cursor, &filterBody, blocksList, includesList, macrosList, extendsPath, endName, inLoop, stripLeading);
+                        if (!std.mem.eql(u8, self.peekDirectiveCmd(tokens, cursor.*), endName)) {
+                            return self.fail(.unclosedBlock, tagStart, "unclosed {% filter %}, expected {% endfilter %}");
+                        }
+                        trimSliceTail(filterBody.items);
+                        if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) stripLeading.* = true;
+                        cursor.* += 1;
+                        try outNodes.append(a, .{
+                            .filterBlock = .{ .filterExpr = spec, .bodyNodes = try filterBody.toOwnedSlice(a), .startByte = tagStart, .line = loc.line, .col = loc.col },
+                        });
+                    } else if (std.mem.eql(u8, tagCmd, "with")) {
+                        const remainder = std.mem.trim(u8, tagContent[4..], " \t\r\n");
+                        const assigns = parseAssignList(a, remainder) catch {
+                            return self.fail(.syntaxError, tagStart, "invalid with syntax, expected '{% with a=1, b=x %}'");
+                        };
+                        var withBody = std.ArrayList(TemplateNode).empty;
+                        try self.parseTokenNodes(a, tokens, cursor, &withBody, blocksList, includesList, macrosList, extendsPath, "endwith", inLoop, stripLeading);
+                        if (!std.mem.eql(u8, self.peekDirectiveCmd(tokens, cursor.*), "endwith")) {
+                            return self.fail(.unclosedBlock, tagStart, "unclosed {% with %}, expected {% endwith %}");
+                        }
+                        trimSliceTail(withBody.items);
+                        if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) stripLeading.* = true;
+                        cursor.* += 1;
+                        try outNodes.append(a, .{
+                            .withBlock = .{ .assigns = assigns, .bodyNodes = try withBody.toOwnedSlice(a), .startByte = tagStart, .line = loc.line, .col = loc.col },
+                        });
+                    } else if (std.mem.eql(u8, tagCmd, "autoescape")) {
+                        const remainder = std.mem.trim(u8, tagContent[10..], " \t\r\n");
+                        const enabled = parseAutoescapeFlag(remainder) orelse {
+                            return self.fail(.syntaxError, tagStart, "invalid autoescape flag, expected true or false");
+                        };
+                        var aeBody = std.ArrayList(TemplateNode).empty;
+                        try self.parseTokenNodes(a, tokens, cursor, &aeBody, blocksList, includesList, macrosList, extendsPath, "endautoescape", inLoop, stripLeading);
+                        if (!std.mem.eql(u8, self.peekDirectiveCmd(tokens, cursor.*), "endautoescape")) {
+                            return self.fail(.unclosedBlock, tagStart, "unclosed {% autoescape %}, expected {% endautoescape %}");
+                        }
+                        trimSliceTail(aeBody.items);
+                        if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) stripLeading.* = true;
+                        cursor.* += 1;
+                        try outNodes.append(a, .{
+                            .autoescapeBlock = .{ .enabled = enabled, .bodyNodes = try aeBody.toOwnedSlice(a), .startByte = tagStart, .line = loc.line, .col = loc.col },
                         });
                     } else if (std.mem.eql(u8, tagCmd, "set")) {
                         const remainder = std.mem.trim(u8, tagContent[3..], " \t\r\n");
@@ -905,9 +1329,52 @@ pub const Parser = struct {
                             });
                         }
                     } else if (std.mem.eql(u8, tagCmd, "call")) {
-                        const sig = std.mem.trim(u8, tagContent[4..], " \t\r\n");
+                        var sig = std.mem.trim(u8, tagContent[4..], " \t\r\n");
+                        // `{% call(item) macro() %}` declares caller parameters.
+                        var callerParams: []const []const u8 = &.{};
+                        if (sig.len > 0 and sig[0] == '(') {
+                            var depth: usize = 0;
+                            var qi: u8 = 0;
+                            var ci: usize = 0;
+                            var closeAt: ?usize = null;
+                            while (ci < sig.len) : (ci += 1) {
+                                const c = sig[ci];
+                                if (qi != 0) {
+                                    if (c == qi) qi = 0;
+                                    continue;
+                                }
+                                switch (c) {
+                                    '"', '\'' => qi = c,
+                                    '(' => depth += 1,
+                                    ')' => {
+                                        depth -= 1;
+                                        if (depth == 0) {
+                                            closeAt = ci;
+                                            break;
+                                        }
+                                    },
+                                    else => {},
+                                }
+                                if (closeAt != null) break;
+                            }
+                            const close = closeAt orelse {
+                                return self.fail(.syntaxError, tagStart, "invalid call syntax, expected '{% call [(args)] name(args) %}'");
+                            };
+                            const paramList = try splitTopLevel(a, sig[1..close]);
+                            defer a.free(paramList);
+                            var cp = std.ArrayList([]const u8).empty;
+                            errdefer cp.deinit(a);
+                            for (paramList) |p| {
+                                if (p.len == 0 or splitNameValue(p) != null) {
+                                    return self.fail(.syntaxError, tagStart, "caller parameters must be bare names");
+                                }
+                                try cp.append(a, p);
+                            }
+                            callerParams = try cp.toOwnedSlice(a);
+                            sig = std.mem.trim(u8, sig[close + 1 ..], " \t\r\n");
+                        }
                         const parsed = parseCallSig(a, sig) catch {
-                            return self.fail(.syntaxError, tagStart, "invalid call syntax, expected '{% call name(args) %}'");
+                            return self.fail(.syntaxError, tagStart, "invalid call syntax, expected '{% call [(args)] name(args) %}'");
                         };
                         var callBody = std.ArrayList(TemplateNode).empty;
                         try self.parseTokenNodes(a, tokens, cursor, &callBody, blocksList, includesList, macrosList, extendsPath, "endcall", inLoop, stripLeading);
@@ -918,7 +1385,7 @@ pub const Parser = struct {
                         if (stripDashControl(self.source[tokens[cursor.*].start + 2 .. tokens[cursor.*].end - 2]).right) stripLeading.* = true;
                         cursor.* += 1;
                         try outNodes.append(a, .{
-                            .call = .{ .name = parsed.name, .args = parsed.args, .bodyNodes = try callBody.toOwnedSlice(a), .startByte = tagStart, .line = loc.line, .col = loc.col },
+                            .call = .{ .name = parsed.name, .args = parsed.args, .callerParams = callerParams, .bodyNodes = try callBody.toOwnedSlice(a), .startByte = tagStart, .line = loc.line, .col = loc.col },
                         });
                     } else if (std.mem.eql(u8, tagCmd, "macro")) {
                         const sig = std.mem.trim(u8, tagContent[5..], " \t\r\n");
@@ -949,7 +1416,7 @@ pub const Parser = struct {
                     } else if (std.mem.eql(u8, tagCmd, "continue")) {
                         if (!inLoop) return self.fail(.unexpectedToken, tagStart, "{% continue %} outside of a loop");
                         try outNodes.append(a, .{ .continueLoop = .{ .startByte = tagStart, .line = loc.line, .col = loc.col } });
-                    } else if (std.mem.eql(u8, tagCmd, "endfor") or std.mem.eql(u8, tagCmd, "endblock") or std.mem.eql(u8, tagCmd, "endmacro") or std.mem.eql(u8, tagCmd, "endcall") or std.mem.eql(u8, tagCmd, "endset") or std.mem.eql(u8, tagCmd, "endraw")) {
+                    } else if (std.mem.eql(u8, tagCmd, "endfor") or std.mem.eql(u8, tagCmd, "endblock") or std.mem.eql(u8, tagCmd, "endmacro") or std.mem.eql(u8, tagCmd, "endcall") or std.mem.eql(u8, tagCmd, "endset") or std.mem.eql(u8, tagCmd, "endraw") or std.mem.eql(u8, tagCmd, "endfilter") or std.mem.eql(u8, tagCmd, "endapply") or std.mem.eql(u8, tagCmd, "endwith") or std.mem.eql(u8, tagCmd, "endautoescape")) {
                         return self.fail(.unexpectedToken, tagStart, "unexpected end tag without matching block");
                     } else {
                         return self.fail(.unexpectedToken, tagStart, "unknown template directive");
@@ -1043,8 +1510,7 @@ pub const Parser = struct {
                 };
 
                 const tagContent = std.mem.trim(u8, self.source[openIdx + 2 .. closeIdx], " \t\r\n");
-                var tagIt = std.mem.tokenizeAny(u8, tagContent, " \t\r\n");
-                const tagCmd = tagIt.next() orelse "";
+                const tagCmd = directiveCmd(tagContent);
 
                 // Check if this matches stopTag
                 if (stopTag) |target| {
@@ -1099,7 +1565,8 @@ pub const Parser = struct {
                         },
                     });
                 } else if (std.mem.eql(u8, tagCmd, "for")) {
-                    // Syntax: {% for item in collection %}
+                    // Syntax: {% for item in collection %} (fallback path:
+                    // single target, no if-filter or recursion support).
                     const remainder = std.mem.trim(u8, tagContent[3..], " \t\r\n");
                     const inPos = std.mem.indexOf(u8, remainder, " in ") orelse {
                         return self.fail(.syntaxError, tagStart, "invalid for loop syntax, expected '{% for item in items %}'");
@@ -1119,9 +1586,11 @@ pub const Parser = struct {
                         return self.fail(.unclosedBlock, tagStart, "unclosed {% for %}, expected {% endfor %}");
                     }
 
+                    const fallbackVars = try a.alloc([]const u8, 1);
+                    fallbackVars[0] = itemVar;
                     try outNodes.append(a, .{
                         .forLoop = .{
-                            .itemVar = itemVar,
+                            .itemVars = fallbackVars,
                             .collectionExpr = collExpr,
                             .bodyNodes = try bodyNodes.toOwnedSlice(a),
                             .startByte = tagStart,
@@ -1185,6 +1654,9 @@ pub const Parser = struct {
                     try outNodes.append(a, .{
                         .include = .{
                             .templatePath = path,
+                            .pathIsExpr = false,
+                            .ignoreMissing = false,
+                            .withContext = null,
                             .startByte = tagStart,
                             .line = loc.line,
                             .col = loc.col,
@@ -1388,4 +1860,139 @@ test "Parser tree-driven path preserves syntax positions" {
     }
     try testing.expect(exprStart != null);
     try testing.expectEqual(std.mem.indexOf(u8, src, "{{").?, exprStart.?);
+}
+
+test "Parser parses import from filter with autoescape statements" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const src = "{% import \"m.html\" as m %}{% from \"n.html\" import a, b as c %}{% filter upper %}x{% endfilter %}{% apply lower %}Y{% endapply %}{% with k=1 %}v{% endwith %}{% autoescape false %}z{% endautoescape %}";
+    var parser = Parser.init(alloc, "t.html", src);
+    var ast = try parser.parse();
+    defer ast.deinit();
+    try testing.expectEqual(@as(usize, 6), ast.nodes.len);
+    try testing.expect(ast.nodes[0] == .importAs);
+    try testing.expectEqualStrings("m.html", ast.nodes[0].importAs.templatePath);
+    try testing.expectEqualStrings("m", ast.nodes[0].importAs.alias);
+    try testing.expect(ast.nodes[1] == .fromImport);
+    try testing.expectEqual(@as(usize, 2), ast.nodes[1].fromImport.names.len);
+    try testing.expectEqualStrings("a", ast.nodes[1].fromImport.names[0].name);
+    try testing.expectEqualStrings("c", ast.nodes[1].fromImport.names[1].alias.?);
+    try testing.expect(ast.nodes[2] == .filterBlock);
+    try testing.expectEqualStrings("upper", ast.nodes[2].filterBlock.filterExpr);
+    try testing.expect(ast.nodes[3] == .filterBlock);
+    try testing.expect(ast.nodes[4] == .withBlock);
+    try testing.expectEqual(@as(usize, 1), ast.nodes[4].withBlock.assigns.len);
+    try testing.expectEqualStrings("k", ast.nodes[4].withBlock.assigns[0].name.?);
+    try testing.expect(ast.nodes[5] == .autoescapeBlock);
+    try testing.expect(!ast.nodes[5].autoescapeBlock.enabled);
+}
+
+test "Parser parses for filters recursion and include modifiers" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const src = "{% for x in y if x %}{% endfor %}{% for a, b in z recursive %}{% endfor %}{% include \"p\" ignore missing %}{% include \"q\" without context %}{% include name %}";
+    var parser = Parser.init(alloc, "t.html", src);
+    var ast = try parser.parse();
+    defer ast.deinit();
+    try testing.expectEqual(@as(usize, 5), ast.nodes.len);
+    const f0 = ast.nodes[0].forLoop;
+    try testing.expect(f0.filterExpr != null);
+    try testing.expectEqualStrings("x", f0.filterExpr.?);
+    try testing.expect(!f0.recursive);
+    try testing.expectEqual(@as(usize, 1), f0.itemVars.len);
+    const f1 = ast.nodes[1].forLoop;
+    try testing.expect(f1.recursive);
+    try testing.expectEqual(@as(usize, 2), f1.itemVars.len);
+    try testing.expectEqualStrings("a", f1.itemVars[0]);
+    try testing.expectEqualStrings("b", f1.itemVars[1]);
+    const inc0 = ast.nodes[2].include;
+    try testing.expect(inc0.ignoreMissing);
+    try testing.expect(!inc0.pathIsExpr);
+    const inc1 = ast.nodes[3].include;
+    try testing.expect(inc1.withContext != null and !inc1.withContext.?);
+    const inc2 = ast.nodes[4].include;
+    try testing.expect(inc2.pathIsExpr);
+}
+
+test "Parser parses macro star args and call params" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const src = "{% macro m(a, b=1, *r, **k) %}{% endmacro %}{% call(item) m() %}x{% endcall %}";
+    var parser = Parser.init(alloc, "t.html", src);
+    var ast = try parser.parse();
+    defer ast.deinit();
+    try testing.expectEqual(@as(usize, 1), ast.macros.len);
+    const params = ast.macros[0].params;
+    try testing.expectEqual(@as(usize, 4), params.len);
+    try testing.expectEqualStrings("a", params[0].name);
+    try testing.expectEqualStrings("b", params[1].name);
+    try testing.expect(params[1].default != null);
+    try testing.expect(params[2].star);
+    try testing.expect(params[3].starStar);
+    var foundCall = false;
+    for (ast.nodes) |n| {
+        if (n == .call) {
+            foundCall = true;
+            try testing.expectEqual(@as(usize, 1), n.call.callerParams.len);
+            try testing.expectEqualStrings("item", n.call.callerParams[0]);
+        }
+    }
+    try testing.expect(foundCall);
+}
+
+test "Parser rejects malformed new statements" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const bad = [_][]const u8{
+        "{% import %}",
+        "{% import \"m.html\" %}",
+        "{% from \"m.html\" import %}",
+        "{% filter %}{% endfilter %}",
+        "{% filter upper %}",
+        "{% with a %}{% endwith %}",
+        "{% autoescape maybe %}x{% endautoescape %}",
+        "{% autoescape true %}x",
+        "{% for x in %}{% endfor %}",
+        "{% call(item %}x{% endcall %}",
+        "{% macro m(**) %}{% endmacro %}",
+        "{% include %}",
+    };
+    for (bad) |src| {
+        var parser = Parser.init(alloc, "t.html", src);
+        if (parser.parse()) |ast| {
+            var mut = ast;
+            mut.deinit();
+            std.debug.print("EXPECTED-ERROR src={s}\n", .{src});
+            try testing.expect(false);
+        } else |_| {}
+    }
+}
+
+test "Parser helpers split names values and for heads" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    {
+        const nv = splitNameValue("a = b=c");
+        try testing.expect(nv != null);
+        try testing.expectEqualStrings("a", nv.?.name);
+        try testing.expectEqualStrings("b=c", nv.?.value);
+    }
+    try testing.expect(splitNameValue("a == b") == null);
+    {
+        const head = parseForHead("x in y if x > 1 recursive").?;
+        try testing.expectEqualStrings("x", std.mem.trim(u8, head.vars, " "));
+        try testing.expectEqualStrings("y", head.collection);
+        try testing.expectEqualStrings("x > 1", head.filter.?);
+        try testing.expect(head.recursive);
+    }
+    {
+        const head = parseForHead("(k, v) in items").?;
+        try testing.expect(head.filter == null);
+        try testing.expect(!head.recursive);
+    }
+    try testing.expect(parseForHead("x y") == null);
+    try testing.expect(parseAutoescapeFlag("True") == true);
+    try testing.expect(parseAutoescapeFlag("FALSE") == false);
+    try testing.expect(parseAutoescapeFlag("x") == null);
+    _ = alloc;
 }
