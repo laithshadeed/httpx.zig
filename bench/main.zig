@@ -513,10 +513,17 @@ fn h2BenchHandler(_: ?*anyopaque, method: []const u8, path: []const u8, _: []con
     return .{ .status = 404, .body = "nope" };
 }
 
+var h2BenchStop: std.atomic.Value(bool) = .init(false);
+
 fn h2BenchServe() void {
-    var conn = h2BenchListener.accept(h2BenchIo) catch return;
-    defer conn.close();
-    httpx.http2.transport.serveConnection(benchAllocator, &conn, h2BenchHandler, null) catch {};
+    while (!h2BenchStop.load(.acquire)) {
+        var conn = h2BenchListener.accept(h2BenchIo) catch {
+            if (h2BenchStop.load(.acquire)) return;
+            continue;
+        };
+        defer conn.close();
+        httpx.http2.transport.serveConnection(benchAllocator, &conn, h2BenchHandler, null) catch {};
+    }
 }
 
 fn benchH2PooledGet() void {
@@ -553,16 +560,53 @@ const H3BenchServer = struct {
     }
 
     fn run(srv: *H3BenchServer) void {
+        // Free the placeholder connection installed during setup; each
+        // iteration below allocates its own fresh server Connection.
+        srv.ep.conn.deinit();
+        srv.ep.conn = undefined;
         while (!h3BenchStop.load(.acquire)) {
-            serveOne(srv) catch continue;
+            const alloc = benchAllocator;
+
+            // Stop and restart the pump so stale datagrams from the previous
+            // client are drained and the reader thread is synchronized with
+            // the fresh connection. Without this, datagrams arriving during
+            // the conn-swap gap are fed to an uninitialized connection, the
+            // boot handshake discards them, and the next feedPumped call
+            // blocks until its full 10-second timeout — deadlocking the bench.
+            srv.pump.stop();
+            // Reset peer: old client address must not bleed into the new conn.
+            srv.ep.peer = null;
+
+            // Allocate a fresh server Connection for this incoming client.
+            const qconn = httpx.quic.Connection.init(alloc, .server, .{}, 0xB1) catch continue;
+            srv.ep.conn = qconn;
+
+            // Restart pump with the new conn in place BEFORE serveOne so the
+            // reader thread starts capturing the client's Initial packet
+            // immediately.
+            srv.pump.start(&srv.ep, alloc) catch {
+                qconn.deinit();
+                srv.ep.conn = undefined;
+                continue;
+            };
+
+            serveOne(srv, qconn) catch {
+                // deinit before looping to avoid leaking on error path.
+                qconn.deinit();
+                srv.ep.conn = undefined;
+                continue;
+            };
+            qconn.deinit();
+            srv.ep.conn = undefined;
         }
+        // Final pump stop so the global defer in main can join cleanly.
+        srv.pump.stop();
     }
 
-    fn serveOne(srv: *H3BenchServer) !void {
+    /// Serve exactly one HTTP/3 request on the already-assigned `srv.ep.conn`.
+    /// Ownership of `qconn` stays with `run()`; this function must not deinit it.
+    fn serveOne(srv: *H3BenchServer, qconn: *httpx.quic.Connection) !void {
         const alloc = benchAllocator;
-        var qconn = try httpx.quic.Connection.init(alloc, .server, .{}, 0xB1);
-        defer qconn.deinit();
-        srv.ep.conn = qconn;
         var drv = httpx.quic.HandshakeDriver.initServer(alloc, .{ .certChainPem = benchCertPem, .privateKeyPem = benchKeyPem });
         defer drv.deinit();
         qconn.tls = .{ .ctx = &drv, .start = httpx.quic.HandshakeDriver.clientStart, .onData = httpx.quic.HandshakeDriver.onData };
@@ -576,7 +620,13 @@ const H3BenchServer = struct {
         while (true) {
             const now: u64 = @intCast(@divTrunc(std.Io.Timestamp.now(h3BenchIo, .awake).toNanoseconds(), 1_000_000));
             if (now -| start > 10_000) return error.Timeout;
-            try httpx.quic.handshake.feedPumped(&srv.ep, &srv.pump, null, 200, now);
+            // Use a short 50 ms quantum so the loop stays responsive.
+            // PumpStopped means shutdown was signalled — propagate immediately
+            // so the server thread exits cleanly rather than burning the timeout.
+            httpx.quic.handshake.feedPumped(&srv.ep, &srv.pump, null, 50, now) catch |e| switch (e) {
+                error.PumpStopped => return error.PumpStopped,
+                else => {},
+            };
             if (!acc.fin) continue;
             var off: usize = 0;
             const fr = try httpx.http3.frame.parseFrame(acc.buf.items, &off);
@@ -642,7 +692,7 @@ var tlsBenchThread: std.Thread = undefined;
 var tlsBenchPort: u16 = 0;
 var tlsBenchStop: std.atomic.Value(bool) = .init(false);
 var tlsBenchIo: std.Io = undefined;
-var tlsBenchSession: ?httpx.tls.ClientSession = null;
+var tlsBenchSession: ?httpx.tls.Session = null;
 
 fn tlsBenchServe() void {
     while (!tlsBenchStop.load(.acquire)) {
@@ -651,12 +701,13 @@ fn tlsBenchServe() void {
             continue;
         };
         defer sock.close();
-        var srv = httpx.tls.TlsServer.init(.{
-            .allocator = benchAllocator,
-            .defaultIdentity = .{ .certChainPem = benchCertPem, .privateKeyPem = benchKeyPem },
+        var srv = httpx.tls.Server.init(benchAllocator, tlsBenchIo, .{
+            .certificatePem = benchCertPem,
+            .privateKeyPem = benchKeyPem,
             .ticketKeys = .{ .current = [_]u8{0xBE} ** 32 },
-        });
-        var conn = srv.handshake(tlsBenchIo, &sock) catch continue;
+        }) catch continue;
+        defer srv.deinit();
+        var conn = srv.accept(&sock) catch continue;
         defer conn.deinit();
         var b: [8]u8 = undefined;
         _ = conn.read(&b) catch continue;
@@ -664,17 +715,18 @@ fn tlsBenchServe() void {
     }
 }
 
-fn tlsBenchDial(session: ?*const httpx.tls.ClientSession) void {
+fn tlsBenchDial(session: ?*const httpx.tls.Session) void {
     var sock = httpx.tcp.connect(tlsBenchIo, "127.0.0.1", tlsBenchPort) catch return;
     defer sock.close();
-    var cli = httpx.tls.TlsClient.init(.{
-        .allocator = benchAllocator,
+    var cli = httpx.tls.Client.init(benchAllocator, tlsBenchIo, .{}) catch return;
+    defer cli.deinit();
+    var conn = cli.connect(&sock, "127.0.0.1", .{
         .verify = .caBundle,
         .caPem = benchCertPem,
+        .transport = .native,
         .session = session,
         .captureSession = true,
-    });
-    var conn = cli.handshake(tlsBenchIo, &sock, "127.0.0.1") catch return;
+    }) catch return;
     defer conn.deinit();
     conn.writeAll("ping") catch return;
     var b: [8]u8 = undefined;
@@ -808,7 +860,9 @@ pub fn main() !void {
         warmupRes.deinit();
     }
     defer {
-        // Client close unblocks the single-connection server; then join.
+        // Stop server, wake listener, join thread, then close and deinit.
+        h2BenchStop.store(true, .release);
+        httpx.tcp.wakeListenerPort(h2port);
         h2BenchClient.deinit();
         h2BenchThread.join();
         h2BenchListener.close(io);
@@ -816,7 +870,7 @@ pub fn main() !void {
 
     // 8. HTTP/3 live loopback (fresh QUIC+TLS handshake per op)
     h3BenchIo = io;
-    h3BenchServer.ep = try httpx.quic.transport.Endpoint.initPort(benchAllocator, io, try httpx.quic.Connection.init(benchAllocator, .server, .{}, 0xB1), 0);
+    h3BenchServer.ep = try httpx.quic.transport.Endpoint.init(benchAllocator, io, try httpx.quic.Connection.init(benchAllocator, .server, .{}, 0xB1), .{});
     const h3port = h3BenchServer.ep.localPort();
     try h3BenchServer.pump.start(&h3BenchServer.ep, benchAllocator);
     h3BenchThread = try std.Thread.spawn(.{}, H3BenchServer.run, .{&h3BenchServer});
@@ -846,13 +900,14 @@ pub fn main() !void {
         // Prime the resumption session (full handshake + read captures NST).
         var sock = try httpx.tcp.connect(io, "127.0.0.1", tlsBenchPort);
         defer sock.close();
-        var cli = httpx.tls.TlsClient.init(.{
-            .allocator = benchAllocator,
+        var cli = httpx.tls.Client.init(benchAllocator, io, .{}) catch return error.NoSessionCaptured;
+        defer cli.deinit();
+        var conn = try cli.connect(&sock, "127.0.0.1", .{
             .verify = .caBundle,
             .caPem = benchCertPem,
+            .transport = .native,
             .captureSession = true,
         });
-        var conn = try cli.handshake(io, &sock, "127.0.0.1");
         defer conn.deinit();
         try conn.writeAll("ping");
         var b: [8]u8 = undefined;
@@ -880,12 +935,14 @@ pub fn main() !void {
 
     const fastCfg = BenchConfig{ .iterations = 2_000_000, .warmupIterations = 20_000, .rounds = 5 };
     const coreCfg = BenchConfig{ .iterations = 200_000, .warmupIterations = 5_000, .rounds = 5 };
-    const medCfg = BenchConfig{ .iterations = 50_000, .warmupIterations = 1_000, .rounds = 5 };
-    const ioCfg = BenchConfig{ .iterations = 5_000, .warmupIterations = 200, .rounds = 5 };
-    const tlsCfg = BenchConfig{ .iterations = 5_000, .warmupIterations = 100, .rounds = 5 };
-    const netCfg = BenchConfig{ .iterations = 1_000, .warmupIterations = 50, .rounds = 3 };
-    const hsCfg = BenchConfig{ .iterations = 100, .warmupIterations = 10, .rounds = 3 };
-    const h3Cfg = BenchConfig{ .iterations = 20, .warmupIterations = 2, .rounds = 3 };
+    const medCfg = BenchConfig{ .iterations = 20_000, .warmupIterations = 500, .rounds = 3 };
+    const compCfg = BenchConfig{ .iterations = 2_000, .warmupIterations = 100, .rounds = 3 };
+    const scanCfg = BenchConfig{ .iterations = 500, .warmupIterations = 20, .rounds = 3 };
+    const ioCfg = BenchConfig{ .iterations = 2_000, .warmupIterations = 100, .rounds = 3 };
+    const tlsCfg = BenchConfig{ .iterations = 5_000, .warmupIterations = 100, .rounds = 3 };
+    const netCfg = BenchConfig{ .iterations = 200, .warmupIterations = 20, .rounds = 3 };
+    const hsCfg = BenchConfig{ .iterations = 50, .warmupIterations = 5, .rounds = 3 };
+    const h3Cfg = BenchConfig{ .iterations = 10, .warmupIterations = 2, .rounds = 3 };
     @memset(&sampleTlsPayload, 0xAB);
 
     std.debug.print("[1] Core Operations & Parsing:\n", .{});
@@ -914,10 +971,10 @@ pub fn main() !void {
     runBench("Security", "bearer_token_parse", "ops/sec", fastCfg, benchBearerTokenParse);
 
     std.debug.print("\n[5] Compression & Codecs (1 KiB payload):\n", .{});
-    runBench("Compression", "gzip_compress", "ops/sec", medCfg, benchGzipCompress);
-    runBench("Compression", "gzip_decompress", "ops/sec", medCfg, benchGzipDecompress);
-    runBench("Compression", "deflate_compress", "ops/sec", medCfg, benchDeflateCompress);
-    runBench("Compression", "deflate_decompress", "ops/sec", medCfg, benchDeflateDecompress);
+    runBench("Compression", "gzip_compress", "ops/sec", compCfg, benchGzipCompress);
+    runBench("Compression", "gzip_decompress", "ops/sec", compCfg, benchGzipDecompress);
+    runBench("Compression", "deflate_compress", "ops/sec", compCfg, benchDeflateCompress);
+    runBench("Compression", "deflate_decompress", "ops/sec", compCfg, benchDeflateDecompress);
 
     std.debug.print("\n[6] Web & Document Parsing:\n", .{});
     runBench("Parsing", "html_parse", "ops/sec", medCfg, benchHtmlParse);
@@ -929,7 +986,7 @@ pub fn main() !void {
     runBench("Parsing", "template_render", "ops/sec", medCfg, benchTemplateRender);
     if (benchTemplateAst) |*ast| ast.deinit();
     runBench("Parsing", "template_incremental", "ops/sec", medCfg, benchTemplateIncremental);
-    runBench("Watcher", "watcher_scan", "ops/sec", medCfg, benchWatcherScan);
+    runBench("Watcher", "watcher_scan", "ops/sec", scanCfg, benchWatcherScan);
     runBench("Watcher", "watcher_deps", "ops/sec", medCfg, benchWatcherDeps);
 
     std.debug.print("\n[7] Concurrency & Queues:\n", .{});

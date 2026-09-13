@@ -62,7 +62,7 @@ A wrong chain fails fast and loudly (`error.TlsCertificateNotVerified`); an ALPN
 An H3 server is one UDP socket plus the protocol pieces (full example in `examples/http3Client.zig`):
 
 ```zig
-var ep = try httpx.quic.transport.Endpoint.initPort(allocator, io, conn, 8443);
+var ep = try httpx.quic.transport.Endpoint.init(allocator, io, conn, .{ .port = 8443 });
 var pump = httpx.quic.Pump{};
 try pump.start(&ep, allocator);
 defer pump.stop();

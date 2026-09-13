@@ -128,6 +128,8 @@ pub const Config = struct {
     http2: bool = false,
     /// Fast boolean toggle to use HTTP/3 as default protocol
     http3: bool = false,
+    /// Default early data options (disabled by default).
+    earlyData: req.EarlyDataOptions = .{},
 
     pub const DnsCacheOptions = struct {
         enable: bool = true,
@@ -175,6 +177,8 @@ pub const RequestOptions = struct {
     maxResponseSize: ?usize = null,
     /// Optional proxy URL for this request.
     proxy: ?[]const u8 = null,
+    /// 0-RTT early data options for this request.
+    earlyData: ?req.EarlyDataOptions = null,
 };
 
 pub const Response = req.Response;
@@ -1246,6 +1250,21 @@ pub const Client = struct {
             .dnsCache = if (self.dnsCache) |*cache| cache else null,
             .pool = &self.pool,
             .sessionCache = &self.sessionCache,
+            .earlyData = blk: {
+                if (@hasField(@TypeOf(opts), "earlyData")) {
+                    const v = opts.earlyData;
+                    const T = @TypeOf(v);
+                    if (T == req.EarlyDataOptions) break :blk v;
+                    if (@typeInfo(T) == .optional and v != null) break :blk v.?;
+                    if (comptime @typeInfo(T) == .@"struct") {
+                        break :blk req.EarlyDataOptions{
+                            .enabled = if (@hasField(T, "enabled")) v.enabled else self.config.earlyData.enabled,
+                            .allowUnsafeMethods = if (@hasField(T, "allowUnsafeMethods")) v.allowUnsafeMethods else self.config.earlyData.allowUnsafeMethods,
+                        };
+                    }
+                }
+                break :blk self.config.earlyData;
+            },
             .allowLfLineEndings = if (@hasField(@TypeOf(opts), "allowLfLineEndings")) opts.allowLfLineEndings else self.config.allowLfLineEndings,
             .httpVersion = reqHttpVersion,
             .tls = reqTls,
@@ -1846,7 +1865,7 @@ test "client get over https negotiates h2 end to end" {
     defer ctx.deinit();
 
     const h2t = @import("../protocols/http2/transport.zig");
-    const tlsServerMod = @import("../protocols/tls/tcpTls.zig");
+    const tlsServerMod = @import("../protocols/tls/server.zig");
     const certPem = @embedFile("../protocols/tls/testdata/localhostCert.pem");
     const keyPem = @embedFile("../protocols/tls/testdata/localhostKey.pem");
 
@@ -1869,11 +1888,15 @@ test "client get over https negotiates h2 end to end" {
                 return;
             };
             defer conn.close();
-            var srv = tlsServerMod.TlsServer.init(.{
-                .allocator = std.heap.page_allocator,
-                .defaultIdentity = .{ .certChainPem = certPem, .privateKeyPem = keyPem },
-            });
-            var tlsConn = srv.handshake(io2, &conn) catch |e| {
+            var srv = tlsServerMod.Server.init(std.heap.page_allocator, io2, .{
+                .certificatePem = certPem,
+                .privateKeyPem = keyPem,
+            }) catch |e| {
+                out.* = e;
+                return;
+            };
+            defer srv.deinit();
+            var tlsConn = srv.accept(&conn) catch |e| {
                 out.* = e;
                 return;
             };
@@ -2040,7 +2063,7 @@ test "client pools h2-tls sessions across sequential requests" {
     defer ctx.deinit();
 
     const h2t = @import("../protocols/http2/transport.zig");
-    const tlsServerMod = @import("../protocols/tls/tcpTls.zig");
+    const tlsServerMod = @import("../protocols/tls/server.zig");
     const certPem = @embedFile("../protocols/tls/testdata/localhostCert.pem");
     const keyPem = @embedFile("../protocols/tls/testdata/localhostKey.pem");
 
@@ -2063,11 +2086,15 @@ test "client pools h2-tls sessions across sequential requests" {
                 return;
             };
             defer conn.close();
-            var srv = tlsServerMod.TlsServer.init(.{
-                .allocator = std.heap.page_allocator,
-                .defaultIdentity = .{ .certChainPem = certPem, .privateKeyPem = keyPem },
-            });
-            var tlsConn = srv.handshake(io2, &conn) catch |e| {
+            var srv = tlsServerMod.Server.init(std.heap.page_allocator, io2, .{
+                .certificatePem = certPem,
+                .privateKeyPem = keyPem,
+            }) catch |e| {
+                out.* = e;
+                return;
+            };
+            defer srv.deinit();
+            var tlsConn = srv.accept(&conn) catch |e| {
                 out.* = e;
                 return;
             };
@@ -2122,7 +2149,7 @@ test "client resumes h2-tls across fresh handshakes via session cache" {
     defer ctx.deinit();
 
     const h2t = @import("../protocols/http2/transport.zig");
-    const tlsServerMod = @import("../protocols/tls/tcpTls.zig");
+    const tlsServerMod = @import("../protocols/tls/server.zig");
     const certPem = @embedFile("../protocols/tls/testdata/localhostCert.pem");
     const keyPem = @embedFile("../protocols/tls/testdata/localhostKey.pem");
 
@@ -2147,12 +2174,16 @@ test "client resumes h2-tls across fresh handshakes via session cache" {
                     return;
                 };
                 defer conn.close();
-                var srv = tlsServerMod.TlsServer.init(.{
-                    .allocator = std.heap.page_allocator,
-                    .defaultIdentity = .{ .certChainPem = certPem, .privateKeyPem = keyPem },
+                var srv = tlsServerMod.Server.init(std.heap.page_allocator, io2, .{
+                    .certificatePem = certPem,
+                    .privateKeyPem = keyPem,
                     .ticketKeys = .{ .current = [_]u8{0x5E} ** 32 },
-                });
-                var tlsConn = srv.handshake(io2, &conn) catch |e| {
+                }) catch |e| {
+                    out.* = e;
+                    return;
+                };
+                defer srv.deinit();
+                var tlsConn = srv.accept(&conn) catch |e| {
                     out.* = e;
                     return;
                 };
@@ -2332,7 +2363,7 @@ test "client get over http3 serves loopback over real udp" {
     var placeholder = try quicConn.Connection.init(a, .server, .{}, 0x90);
     defer placeholder.deinit();
     var srv = Server{};
-    srv.ep = try quicEp.Endpoint.initPort(a, ctx.io, placeholder, 0);
+    srv.ep = try quicEp.Endpoint.init(a, ctx.io, placeholder, .{});
     const port = srv.ep.localPort();
     defer srv.ep.deinit();
     try srv.pump.start(&srv.ep, a);
@@ -2404,14 +2435,18 @@ test "client get over mtls presents certificate through high-level api" {
                 return;
             };
             defer conn.close();
-            const tlsServerMod = @import("../protocols/tls/tcpTls.zig");
-            var srv = tlsServerMod.TlsServer.init(.{
-                .allocator = std.heap.page_allocator,
-                .defaultIdentity = .{ .certChainPem = certPem, .privateKeyPem = keyPem },
+            const tlsServerMod = @import("../protocols/tls/server.zig");
+            var srv = tlsServerMod.Server.init(std.heap.page_allocator, io2, .{
+                .certificatePem = certPem,
+                .privateKeyPem = keyPem,
                 .clientAuth = .required,
                 .clientCaPem = certPem,
-            });
-            var tlsConn = srv.handshake(io2, &conn) catch |e| {
+            }) catch |e| {
+                out.* = e;
+                return;
+            };
+            defer srv.deinit();
+            var tlsConn = srv.accept(&conn) catch |e| {
                 out.* = e;
                 return;
             };
@@ -2613,4 +2648,206 @@ test "normalizeMethod enum and string literals" {
     try std.testing.expectEqual(Method.GET, normalizeMethod("GET"));
     try std.testing.expectEqual(Method.GET, normalizeMethod("get"));
     try std.testing.expectEqual(Method.POST, normalizeMethod("post"));
+}
+
+test "early data policy method safety defaults" {
+    const isMethodSafe = struct {
+        fn check(method: Method, opts: req.EarlyDataOptions) bool {
+            const safe = method == .GET or method == .HEAD or method == .OPTIONS;
+            return opts.enabled and (safe or opts.allowUnsafeMethods);
+        }
+    }.check;
+
+    // Disabled by default
+    try std.testing.expect(!isMethodSafe(.GET, .{}));
+    try std.testing.expect(!isMethodSafe(.POST, .{}));
+
+    // Enabled without allowUnsafeMethods: only safe methods allowed
+    const safeOnly = req.EarlyDataOptions{ .enabled = true, .allowUnsafeMethods = false };
+    try std.testing.expect(isMethodSafe(.GET, safeOnly));
+    try std.testing.expect(isMethodSafe(.HEAD, safeOnly));
+    try std.testing.expect(isMethodSafe(.OPTIONS, safeOnly));
+    try std.testing.expect(!isMethodSafe(.POST, safeOnly));
+    try std.testing.expect(!isMethodSafe(.PUT, safeOnly));
+    try std.testing.expect(!isMethodSafe(.PATCH, safeOnly));
+    try std.testing.expect(!isMethodSafe(.DELETE, safeOnly));
+
+    // Enabled with allowUnsafeMethods: unsafe methods permitted
+    const unsafeAllowed = req.EarlyDataOptions{ .enabled = true, .allowUnsafeMethods = true };
+    try std.testing.expect(isMethodSafe(.POST, unsafeAllowed));
+    try std.testing.expect(isMethodSafe(.PUT, unsafeAllowed));
+    try std.testing.expect(isMethodSafe(.PATCH, unsafeAllowed));
+    try std.testing.expect(isMethodSafe(.DELETE, unsafeAllowed));
+}
+
+test "client get over http3 with 0-rtt early data resumes session" {
+    const a = std.testing.allocator;
+    const IoContext = tcp.IoContext;
+    var ctx = try IoContext.init(a);
+    defer ctx.deinit();
+
+    const quicConn = @import("../protocols/quic/connection.zig");
+    const quicEp = @import("../protocols/quic/transport.zig");
+    const quicHs = @import("../protocols/quic/handshake.zig");
+    const quicFrames = @import("../protocols/quic/frames.zig");
+    const h3conn = @import("../protocols/http3/connection.zig");
+    const h3frame = @import("../protocols/http3/frame.zig");
+    const h3qpack = @import("../protocols/http3/qpack.zig");
+    const sessionMod = @import("../protocols/tls/session.zig");
+    const certPem = @embedFile("../protocols/tls/testdata/localhostCert.pem");
+    const keyPem = @embedFile("../protocols/tls/testdata/localhostKey.pem");
+
+    const tk = sessionMod.TicketKeys{ .current = [_]u8{0x77} ** 32 };
+    var replayCache = sessionMod.ReplayCache.init(a, 64);
+    defer replayCache.deinit();
+
+    const Server = struct {
+        ep: quicEp.Endpoint = undefined,
+        pump: quicEp.Pump = undefined,
+
+        const Acc = struct {
+            sid: u64 = std.math.maxInt(u64),
+            buf: std.ArrayList(u8) = .empty,
+            fin: bool = false,
+        };
+
+        fn onStream(c: ?*anyopaque, sid: u64, data: []const u8, fin: bool) void {
+            const acc: *Acc = @ptrCast(@alignCast(c.?));
+            if (acc.sid == std.math.maxInt(u64) and sid % 4 == 0) acc.sid = sid;
+            if (sid != acc.sid) return;
+            acc.buf.appendSlice(std.testing.allocator, data) catch return;
+            if (fin) acc.fin = true;
+        }
+
+        fn sendStream(conn: *quicConn.Connection, sid: u64, bytes: []const u8, fin: bool) !void {
+            const B = struct {
+                var sId: u64 = 0;
+                var sFin: bool = false;
+                var sData: []const u8 = "";
+                pub fn build(gpa: std.mem.Allocator, payload: *std.ArrayList(u8)) quicConn.Error!void {
+                    quicFrames.encode(payload, gpa, .{ .stream = .{ .id = sId, .offset = 0, .data = sData, .fin = sFin } }) catch
+                        return quicConn.Error.OutOfMemory;
+                }
+            };
+            B.sId = sid;
+            B.sFin = fin;
+            B.sData = bytes;
+            try conn.sendFrames(.application, B.build, 0);
+        }
+
+        fn serveOne(srv: *@This(), seed: u64, deadlineMs: u64, tkeys: sessionMod.TicketKeys, rcache: *sessionMod.ReplayCache) !void {
+            const alloc = std.testing.allocator;
+            var qconn = try quicConn.Connection.init(alloc, .server, .{}, seed);
+            defer qconn.deinit();
+            srv.ep.conn = qconn;
+            var drv = quicHs.Driver.initServer(alloc, .{
+                .certChainPem = certPem,
+                .privateKeyPem = keyPem,
+                .ticketKeys = tkeys,
+                .maxEarlyData = 0xFFFFFFFF,
+                .replayCache = rcache,
+            });
+            defer drv.deinit();
+            qconn.tls = .{ .ctx = &drv, .start = quicHs.Driver.clientStart, .onData = quicHs.Driver.onData };
+            try quicHs.serveHandshake(&srv.ep, &srv.pump, &drv, deadlineMs);
+
+            var h3 = h3conn.Connection.init(alloc, .server);
+            defer h3.deinit();
+            var acc = Acc{};
+            defer acc.buf.deinit(alloc);
+            qconn.cbs = .{ .ctx = &acc, .onStreamData = onStream };
+            const start: u64 = @intCast(clock.millisNow());
+            while (true) {
+                const now: u64 = @intCast(clock.millisNow());
+                if (now -| start > deadlineMs) return error.Timeout;
+                try quicHs.feedPumped(&srv.ep, &srv.pump, null, 500, now);
+                if (!acc.fin) continue;
+                var off: usize = 0;
+                const fr = try h3frame.parseFrame(acc.buf.items, &off);
+                const fields = try h3.qdec.decodeSectionCounted(fr.payload, 0, null);
+                defer h3.qdec.freeFields(fields);
+                var path: []const u8 = "";
+                for (fields) |f| {
+                    if (std.mem.eql(u8, f.name, ":path")) path = f.value;
+                }
+                const isEarly = std.mem.eql(u8, path, "/early");
+                var qenc = h3qpack.Encoder.init(alloc);
+                defer qenc.deinit();
+                var rs = h3conn.RequestStream{ .id = acc.sid, .allocator = alloc, .qpack = &qenc };
+                const rhead = try rs.buildResponseHeaders(200, &.{});
+                defer alloc.free(rhead);
+                const rdata = try rs.buildData(if (isEarly) "resumed-0rtt" else "initial-1rtt");
+                defer alloc.free(rdata);
+                var wire = std.ArrayList(u8).empty;
+                defer wire.deinit(alloc);
+                try wire.appendSlice(alloc, rhead);
+                try wire.appendSlice(alloc, rdata);
+                try sendStream(qconn, acc.sid, wire.items, true);
+                _ = try srv.ep.flush(null);
+                return;
+            }
+        }
+
+        fn run(srv: *@This(), out: *?anyerror, tkeys: sessionMod.TicketKeys, rcache: *sessionMod.ReplayCache) void {
+            serveOne(srv, 0x95, 15_000, tkeys, rcache) catch |e| {
+                out.* = e;
+                return;
+            };
+            serveOne(srv, 0x96, 15_000, tkeys, rcache) catch |e| {
+                out.* = e;
+                return;
+            };
+            out.* = null;
+        }
+    };
+
+    var placeholder = try quicConn.Connection.init(a, .server, .{}, 0x94);
+    defer placeholder.deinit();
+    var srv = Server{};
+    srv.ep = try quicEp.Endpoint.init(a, ctx.io, placeholder, .{});
+    const port = srv.ep.localPort();
+    defer srv.ep.deinit();
+    try srv.pump.start(&srv.ep, a);
+    defer srv.pump.stop();
+
+    var result: ?anyerror = error.NotRun;
+    const th = try std.Thread.spawn(.{}, Server.run, .{ &srv, &result, tk, &replayCache });
+
+    var client = Client.init(a, ctx.io, .{});
+    errdefer client.deinit();
+
+    var urlBuf: [64]u8 = undefined;
+    // 1. First request: full handshake, acquires session ticket
+    const url1 = try std.fmt.bufPrint(&urlBuf, "https://127.0.0.1:{d}/initial", .{port});
+    var res1 = try client.get(url1, .{
+        .httpVersion = .http3,
+        .tls = .{ .verify = .caBundle, .caPem = certPem },
+        .timeoutMs = 15_000,
+    });
+    defer res1.deinit();
+    try std.testing.expectEqual(@as(u16, 200), res1.status);
+    try std.testing.expectEqualStrings("initial-1rtt", res1.body);
+
+    // Verify session was captured in client session cache
+    var cached = client.sessionCache.getWithAlpn("127.0.0.1", port, @intCast(clock.millisNow()), "h3");
+    try std.testing.expect(cached != null);
+    if (cached) |*c| {
+        c.deinit(a);
+    }
+
+    // 2. Second request: resumes session with early data enabled
+    const url2 = try std.fmt.bufPrint(&urlBuf, "https://127.0.0.1:{d}/early", .{port});
+    var res2 = try client.get(url2, .{
+        .httpVersion = .http3,
+        .tls = .{ .verify = .caBundle, .caPem = certPem },
+        .earlyData = .{ .enabled = true },
+        .timeoutMs = 15_000,
+    });
+    defer res2.deinit();
+    try std.testing.expectEqual(@as(u16, 200), res2.status);
+    try std.testing.expectEqualStrings("resumed-0rtt", res2.body);
+
+    client.deinit();
+    th.join();
+    try std.testing.expect(result == null);
 }

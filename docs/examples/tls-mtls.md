@@ -52,9 +52,9 @@ var listener = try httpx.tls.Listener.init(allocator, io, .{
 defer listener.deinit();
 ```
 
-The same fields exist one layer down: `TlsServerConfig.clientAuth` /
+The same fields exist one layer down: `tls.Server.Config.clientAuth` /
 `clientCaPem`, fed from `Server.init`'s `.tls = .{ .clientAuth =
-.required, .clientCa = ca_pem }`. Presented chains are verified with
+.required, .clientCaPem = ca_pem }`. Presented chains are verified with
 `verifyCertificateChain` (expiry, CA-ness, anchor match; no hostname
 check — client certificates identify a principal, not a host), the
 `CertificateVerify` P-256 signature is checked over the live transcript,

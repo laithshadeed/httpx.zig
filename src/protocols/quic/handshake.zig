@@ -45,17 +45,27 @@ const quicVarint = @import("varint.zig");
 const clockMod = @import("../../common/clock.zig");
 const addressMod = @import("../../net/address.zig");
 
+const sessionMod = @import("../tls/session.zig");
+
 pub const ClientConfig = struct {
     /// Server hostname: SNI (DNS names) + chain hostname check + ticket binding.
     host: []const u8,
     verify: transportTls.VerifyMode = .caBundle,
     /// Extra/custom CA PEM trusted in addition to system roots.
     caPem: ?[]const u8 = null,
+    /// Resumption session with 0-RTT allowance
+    session: ?*const sessionMod.ClientSession = null,
+    earlyData: bool = false,
+    /// Output pointer to capture new session ticket from server
+    sessionOut: ?*sessionMod.ClientSession = null,
 };
 
 pub const ServerConfig = struct {
     certChainPem: []const u8,
     privateKeyPem: []const u8,
+    ticketKeys: ?sessionMod.TicketKeys = null,
+    maxEarlyData: u32 = 0,
+    replayCache: ?*sessionMod.ReplayCache = null,
 };
 
 /// Precise handshake failure cause, preserved across the TlsDriver seam.
@@ -94,6 +104,9 @@ pub const Driver = struct {
     host: []const u8 = "",
     verify: transportTls.VerifyMode = .caBundle,
     caPem: ?[]const u8 = null,
+    session: ?*const sessionMod.ClientSession = null,
+    earlyData: bool = false,
+    sessionOut: ?*sessionMod.ClientSession = null,
     // Server identity (unused on client role).
     certChainPem: []const u8 = "",
     privateKeyPem: []const u8 = "",
@@ -106,14 +119,21 @@ pub const Driver = struct {
             .host = cfg.host,
             .verify = cfg.verify,
             .caPem = cfg.caPem,
+            .session = cfg.session,
+            .earlyData = cfg.earlyData,
+            .sessionOut = cfg.sessionOut,
         };
     }
 
     pub fn initServer(allocator: Allocator, cfg: ServerConfig) Driver {
+        var eng = tlsEngine.Engine.initServer(allocator, .{});
+        eng.ticketKeys = cfg.ticketKeys;
+        eng.maxEarlyData = cfg.maxEarlyData;
+        eng.replayCache = cfg.replayCache;
         return .{
             .allocator = allocator,
             .role = .server,
-            .engine = tlsEngine.Engine.initServer(allocator, .{}),
+            .engine = eng,
             .certChainPem = cfg.certChainPem,
             .privateKeyPem = cfg.privateKeyPem,
         };
@@ -248,10 +268,26 @@ pub const Driver = struct {
         const tp = buildLocalTransportParams(conn.allocator, conn) catch
             return connMod.Error.OutOfMemory;
         defer conn.allocator.free(tp);
-        const ch = d.engine.produceClientHello(&.{"h3"}, &.{}, sniFor(d.host), tp) catch
-            return connMod.Error.TlsDriverFailed;
+
+        const ch = if (d.session) |sess| blk: {
+            if (d.earlyData and sess.maxEarlyData > 0) {
+                break :blk d.engine.produceClientHelloResumption(&.{"h3"}, &.{}, sniFor(d.host), sess, nowMs, tp) catch
+                    return connMod.Error.TlsDriverFailed;
+            } else {
+                break :blk d.engine.produceClientHello(&.{"h3"}, &.{}, sniFor(d.host), tp) catch
+                    return connMod.Error.TlsDriverFailed;
+            }
+        } else (d.engine.produceClientHello(&.{"h3"}, &.{}, sniFor(d.host), tp) catch
+            return connMod.Error.TlsDriverFailed);
         defer conn.allocator.free(ch);
+
         d.flight.appendSlice(conn.allocator, ch) catch return connMod.Error.OutOfMemory;
+
+        // If early data was offered, install 0-RTT packet keys immediately!
+        if (d.engine.earlyDataOffered and d.engine.clientEarlyTrafficSecret != null) {
+            conn.installZeroRttKeys(d.engine.clientEarlyTrafficSecret.?, true);
+        }
+
         _ = conn.queueCrypto(.initial, ch) catch return connMod.Error.TlsDriverFailed;
         try sendQueued(conn, .initial, nowMs);
     }
@@ -281,13 +317,20 @@ pub const Driver = struct {
                     d.engine.processServerHello(rec.msg) catch return connMod.Error.TlsDriverFailed;
                     const shared = d.engine.sharedSecret orelse return connMod.Error.TlsDriverFailed;
                     const chSh = d.engine.transcript.finish();
-                    const hs = qtls.handshakeKeys(shared, chSh);
+                    const hs = if (d.engine.resumptionPsk) |psk|
+                        qtls.handshakeKeysWithEarly(qtls.earlySecret(psk), shared, chSh)
+                    else
+                        qtls.handshakeKeys(shared, chSh);
                     d.hsSecret = hs.hsSecret;
                     try conn.installKeys(.handshake, hs.keys.txSecret, hs.keys.rxSecret);
                     conn.discardInitialKeys();
                 },
                 @intFromEnum(ths.HandshakeType.encrypted_extensions) => {
                     d.engine.processEncryptedExtensions(rec.msg) catch return connMod.Error.TlsDriverFailed;
+                    conn.earlyDataAccepted = d.engine.earlyDataAccepted;
+                    if (d.engine.earlyDataOffered and !d.engine.earlyDataAccepted) {
+                        conn.discardZeroRtt();
+                    }
                     const alpn = d.engine.negotiatedAlpn orelse {
                         d.detail = .alpnMismatch;
                         return connMod.Error.TlsDriverFailed;
@@ -334,11 +377,13 @@ pub const Driver = struct {
                 @intFromEnum(ths.HandshakeType.finished) => {
                     d.engine.processFinished(rec.msg) catch return connMod.Error.TlsDriverFailed;
                     // Chain verification BEFORE installing application
-                    // keys: never encrypt to an untrusted peer.
-                    verifyMod.verifyServerChain(a, connIo(conn), d.verify, d.caPem, d.host, d.certDers.items) catch {
-                        d.detail = .certFailed;
-                        return connMod.Error.TlsDriverFailed;
-                    };
+                    // keys: never encrypt to an untrusted peer (omitted on PSK resumption).
+                    if (d.engine.resumptionPsk == null) {
+                        verifyMod.verifyServerChain(a, connIo(conn), d.verify, d.caPem, d.host, d.certDers.items) catch {
+                            d.detail = .certFailed;
+                            return connMod.Error.TlsDriverFailed;
+                        };
+                    }
                     const hsSecret = d.hsSecret orelse return connMod.Error.TlsDriverFailed;
                     const chSf = d.engine.transcript.finish();
                     const ap = qtls.applicationKeys(hsSecret, chSf);
@@ -349,6 +394,18 @@ pub const Driver = struct {
                     defer a.free(fin);
                     _ = conn.queueCrypto(.handshake, fin) catch return connMod.Error.TlsDriverFailed;
                     try sendQueued(conn, .handshake, nowMs);
+                },
+                @intFromEnum(ths.HandshakeType.new_session_ticket) => {
+                    if (d.engine.deriveResumptionMaster()) |rm| {
+                        var session = d.engine.processNewSessionTicket(rec.msg, rm, d.host, nowMs) catch null;
+                        if (session) |*sess| {
+                            if (d.sessionOut) |so| {
+                                so.* = sess.*;
+                            } else {
+                                sess.deinit(a);
+                            }
+                        }
+                    } else |_| {}
                 },
                 else => return connMod.Error.ProtocolViolation,
             }
@@ -368,13 +425,33 @@ pub const Driver = struct {
                 d.engine.verifyClientFinished(rec.msg) catch return connMod.Error.TlsDriverFailed;
                 conn.state = .established;
                 dropFront(&d.incoming, a, rec.msg.len);
-                // Handshake confirmed: tell the client to open 1-RTT.
+
+                // If ticket keys configured, produce NewSessionTicket for client
+                if (d.engine.ticketKeys != null) {
+                    if (d.engine.deriveResumptionMaster()) |rm| {
+                        if (d.engine.produceNewSessionTicket(rm, d.engine.selectedSuite, 86400, nowMs)) |nstMsg| {
+                            defer a.free(nstMsg);
+                            _ = conn.queueCrypto(.application, nstMsg) catch {};
+                        } else |_| {}
+                    } else |_| {}
+                }
+
+                // Handshake confirmed: tell the client to open 1-RTT (and deliver any queued NewSessionTicket).
                 const DoneB = struct {
+                    var target: ?*Connection = null;
                     pub fn build(gpa: Allocator, payload: *std.ArrayList(u8)) connMod.Error!void {
                         frames.encode(payload, gpa, .handshakeDone) catch
                             return connMod.Error.OutOfMemory;
+                        if (target) |c| {
+                            while (c.takeCrypto(.application, 1200)) |chunk| {
+                                frames.encode(payload, gpa, .{ .crypto = .{ .offset = chunk.offset, .data = chunk.data } }) catch
+                                    return connMod.Error.OutOfMemory;
+                                _ = c.consumeCrypto(.application, chunk.data.len);
+                            }
+                        }
                     }
                 };
+                DoneB.target = conn;
                 try conn.sendFrames(.application, DoneB.build, nowMs);
             }
             return;
@@ -425,6 +502,16 @@ pub const Driver = struct {
         const localTp = buildLocalTransportParams(a, conn) catch
             return connMod.Error.OutOfMemory;
         defer a.free(localTp);
+
+        if (d.engine.ticketKeys != null) {
+            _ = d.engine.selectPsk(chMsg, nowMs);
+            if (d.engine.earlyDataAccepted and d.engine.clientEarlyTrafficSecret != null) {
+                conn.earlyDataAccepted = true;
+                conn.maxEarlyData = d.engine.maxEarlyData;
+                conn.installZeroRttKeys(d.engine.clientEarlyTrafficSecret.?, false);
+            }
+        }
+
         var flight = d.engine.produceServerFlight(chMsg[4..], d.certChainPem, d.privateKeyPem, &.{.h3}, clientAlpn, localTp) catch
             return connMod.Error.TlsDriverFailed;
         defer flight.deinit(a);
@@ -436,7 +523,10 @@ pub const Driver = struct {
         d.flight.appendSlice(a, flight.finished) catch return connMod.Error.OutOfMemory;
 
         const shared = d.engine.sharedSecret orelse return connMod.Error.TlsDriverFailed;
-        const hs = qtls.handshakeKeys(shared, flight.hsHash);
+        const hs = if (d.engine.resumptionPsk) |psk|
+            qtls.handshakeKeysWithEarly(qtls.earlySecret(psk), shared, flight.hsHash)
+        else
+            qtls.handshakeKeys(shared, flight.hsHash);
         // LevelKeys are client-oriented (tx = client); mirror them.
         try conn.installKeys(.handshake, hs.keys.rxSecret, hs.keys.txSecret);
 
@@ -568,7 +658,6 @@ pub fn feedPumped(
 /// NOT stopped here — the caller owns its lifetime (handshake, then
 /// request exchange, then stop).
 pub fn serveHandshake(serverEp: *Endpoint, pump: *transportMod.Pump, driver: ?*Driver, deadlineMs: u64) !void {
-    const a = serverEp.conn.allocator;
     const start: u64 = @intCast(clockMod.millisNow());
     var booted = false;
     while (true) {
@@ -581,9 +670,12 @@ pub fn serveHandshake(serverEp: *Endpoint, pump: *transportMod.Pump, driver: ?*D
             if (d.failed) return error.HandshakeFailed;
         }
         const remain = deadlineMs -| (now -| start);
+        // Poll at 100 ms quanta: short enough to stay responsive to new
+        // clients and shutdown signals, long enough to avoid hot-spinning
+        // on a quiet path.
         if (!booted) {
-            const d = try pump.next(@min(remain, 1000)) orelse continue;
-            defer a.free(d.data);
+            const d = try pump.next(@min(remain, 100)) orelse continue;
+            defer pump.allocator.free(d.data);
             const parsed = packetMod.parseLongHeader(d.data) catch continue;
             if (parsed.header.type != .initial) continue;
             serverEp.peer = d.from;
@@ -592,7 +684,7 @@ pub fn serveHandshake(serverEp: *Endpoint, pump: *transportMod.Pump, driver: ?*D
             booted = true;
             continue;
         }
-        try feedPumped(serverEp, pump, null, @min(remain, 1000), now);
+        try feedPumped(serverEp, pump, null, @min(remain, 100), now);
         if (serverEp.conn.state == .established) return;
     }
 }
@@ -610,9 +702,9 @@ test "live handshake over real udp loopback establishes both ends" {
     var srvConn = try connMod.Connection.init(a, .server, .{}, 0x4312);
     defer srvConn.deinit();
 
-    var cliEp = try transportMod.Endpoint.init(a, ctx.io, cliConn);
+    var cliEp = try transportMod.Endpoint.init(a, ctx.io, cliConn, .{});
     defer cliEp.deinit();
-    var srvEp = try transportMod.Endpoint.initPort(a, ctx.io, srvConn, 0);
+    var srvEp = try transportMod.Endpoint.init(a, ctx.io, srvConn, .{});
     defer srvEp.deinit();
     const sport = srvEp.localPort();
 
@@ -646,7 +738,7 @@ test "live handshake over real udp loopback establishes both ends" {
 /// failure with a mappable cause. No pump is stopped here — lifetimes
 /// stay with the caller. Returns when our side reaches `.established`
 /// (and the peer confirms, when co-pumped).
-pub fn performHandshake(
+pub fn performHandshakeWithEarlyData(
     clientEp: *Endpoint,
     clientPump: *transportMod.Pump,
     clientDriver: ?*Driver,
@@ -655,9 +747,15 @@ pub fn performHandshake(
     serverDriver: ?*Driver,
     dest: std.Io.net.IpAddress,
     deadlineMs: u64,
+    earlyStream: ?struct { sid: u64, data: []const u8 },
 ) !void {
     const start: u64 = @intCast(clockMod.millisNow());
     try clientEp.conn.startHandshake(start);
+    if (earlyStream) |es| {
+        if (clientEp.conn.zeroRttKeysTx != null) {
+            try clientEp.conn.sendStreamChecked(es.sid, 0, es.data, false, start);
+        }
+    }
     _ = try clientEp.flush(dest);
     var serverBooted = serverEp == null;
     while (true) {
@@ -673,7 +771,7 @@ pub fn performHandshake(
         if (serverEp) |sep| {
             const spump = serverPump orelse return error.HandshakeTimeout;
             if (!serverBooted) {
-                const d = try spump.next(@min(remain, 1000)) orelse continue;
+                const d = try spump.next(@min(remain, 100)) orelse continue;
                 defer spump.allocator.free(d.data);
                 const parsed = packetMod.parseLongHeader(d.data) catch continue;
                 if (parsed.header.type != .initial) continue;
@@ -683,9 +781,9 @@ pub fn performHandshake(
                 serverBooted = true;
                 continue;
             }
-            try feedPumped(sep, spump, null, @min(remain, 1000), now);
+            try feedPumped(sep, spump, null, @min(remain, 100), now);
         }
-        try feedPumped(clientEp, clientPump, dest, @min(remain, 1000), now);
+        try feedPumped(clientEp, clientPump, dest, @min(remain, 100), now);
         if (clientEp.conn.state == .established) {
             if (serverEp) |sep| {
                 if (sep.conn.state == .established) return;
@@ -695,6 +793,20 @@ pub fn performHandshake(
         }
     }
 }
+
+pub fn performHandshake(
+    clientEp: *Endpoint,
+    clientPump: *transportMod.Pump,
+    clientDriver: ?*Driver,
+    serverEp: ?*Endpoint,
+    serverPump: ?*transportMod.Pump,
+    serverDriver: ?*Driver,
+    dest: std.Io.net.IpAddress,
+    deadlineMs: u64,
+) !void {
+    return performHandshakeWithEarlyData(clientEp, clientPump, clientDriver, serverEp, serverPump, serverDriver, dest, deadlineMs, null);
+}
+
 test "peer transport parameters apply to connection windows" {
     const a = std.testing.allocator;
     var conn = try connMod.Connection.init(a, .client, .{}, 0x7771);
@@ -802,4 +914,145 @@ test "server closes unknown alpn with no_application_protocol" {
     // built for the rejected client.
     try std.testing.expect(srvConn.outbuf.items.len > 0);
     try std.testing.expectEqual(@as(usize, 0), srvDrv.flight.items.len);
+}
+
+test "live QUIC 0-RTT resumption over real udp loopback sends early data and establishes" {
+    const a = std.testing.allocator;
+    var ctx = @import("../../sockets/tcp.zig").IoContext.init(a) catch return;
+    defer ctx.deinit();
+
+    const tk = sessionMod.TicketKeys{ .current = [_]u8{0x5A} ** 32 };
+    var replayCache = sessionMod.ReplayCache.init(a, 100);
+    defer replayCache.deinit();
+
+    // 1. Initial Connection: Establish full handshake and obtain NewSessionTicket
+    var savedSession: sessionMod.ClientSession = .{
+        .ticket = &.{},
+        .psk = [_]u8{0} ** 32,
+        .ageAdd = 0,
+        .createdMs = 0,
+        .lifetimeSecs = 0,
+        .suite = .AES_128_GCM_SHA256,
+        .host = &.{},
+    };
+    var sessionCaptured = false;
+
+    {
+        var cliConn = try connMod.Connection.init(a, .client, .{}, 0x5101);
+        defer cliConn.deinit();
+        var srvConn = try connMod.Connection.init(a, .server, .{}, 0x5102);
+        defer srvConn.deinit();
+
+        var cliEp = try transportMod.Endpoint.init(a, ctx.io, cliConn, .{});
+        defer cliEp.deinit();
+        var srvEp = try transportMod.Endpoint.init(a, ctx.io, srvConn, .{});
+        defer srvEp.deinit();
+        const sport = srvEp.localPort();
+
+        var cliDrv = Driver.initClient(a, .{
+            .host = "127.0.0.1",
+            .caPem = hsTestCertPem,
+            .sessionOut = &savedSession,
+        });
+        defer cliDrv.deinit();
+
+        var srvDrv = Driver.initServer(a, .{
+            .certChainPem = hsTestCertPem,
+            .privateKeyPem = hsTestKeyPem,
+            .ticketKeys = tk,
+            .maxEarlyData = 0xFFFFFFFF,
+            .replayCache = &replayCache,
+        });
+        defer srvDrv.deinit();
+
+        cliConn.tls = .{ .ctx = &cliDrv, .start = Driver.clientStart, .onData = Driver.onData };
+        srvConn.tls = .{ .ctx = &srvDrv, .start = Driver.clientStart, .onData = Driver.onData };
+
+        var cliPump: transportMod.Pump = undefined;
+        try cliPump.start(&cliEp, a);
+        defer cliPump.stop();
+        var srvPump: transportMod.Pump = undefined;
+        try srvPump.start(&srvEp, a);
+        defer srvPump.stop();
+
+        const dest = std.Io.net.IpAddress.parseIp4("127.0.0.1", sport) catch unreachable;
+        try performHandshake(&cliEp, &cliPump, &cliDrv, &srvEp, &srvPump, &srvDrv, dest, 15_000);
+        try std.testing.expectEqual(connMod.State.established, cliConn.state);
+        try std.testing.expectEqual(connMod.State.established, srvConn.state);
+
+        // Pump until the server's post-handshake NewSessionTicket is received
+        var tries: usize = 0;
+        while (tries < 20 and savedSession.ticket.len == 0) : (tries += 1) {
+            const now2: u64 = @intCast(clockMod.millisNow());
+            _ = srvEp.flush(null) catch {};
+            try feedPumped(&cliEp, &cliPump, dest, 50, now2);
+        }
+
+        if (savedSession.ticket.len > 0) {
+            sessionCaptured = true;
+        }
+    }
+    defer if (savedSession.ticket.len > 0) savedSession.deinit(a);
+    try std.testing.expect(sessionCaptured);
+    try std.testing.expectEqual(@as(u32, 0xFFFFFFFF), savedSession.maxEarlyData);
+
+    // 2. Resumed Connection: Client uses savedSession and sends 0-RTT early data
+    {
+        var cliConn = try connMod.Connection.init(a, .client, .{}, 0x5201);
+        defer cliConn.deinit();
+        var srvConn = try connMod.Connection.init(a, .server, .{}, 0x5202);
+        defer srvConn.deinit();
+
+        var cliEp = try transportMod.Endpoint.init(a, ctx.io, cliConn, .{});
+        defer cliEp.deinit();
+        var srvEp = try transportMod.Endpoint.init(a, ctx.io, srvConn, .{});
+        defer srvEp.deinit();
+        const sport = srvEp.localPort();
+
+        var cliDrv = Driver.initClient(a, .{
+            .host = "127.0.0.1",
+            .caPem = hsTestCertPem,
+            .session = &savedSession,
+            .earlyData = true,
+        });
+        defer cliDrv.deinit();
+
+        var srvDrv = Driver.initServer(a, .{
+            .certChainPem = hsTestCertPem,
+            .privateKeyPem = hsTestKeyPem,
+            .ticketKeys = tk,
+            .maxEarlyData = 0xFFFFFFFF,
+            .replayCache = &replayCache,
+        });
+        defer srvDrv.deinit();
+
+        cliConn.tls = .{ .ctx = &cliDrv, .start = Driver.clientStart, .onData = Driver.onData };
+        srvConn.tls = .{ .ctx = &srvDrv, .start = Driver.clientStart, .onData = Driver.onData };
+
+        var cliPump: transportMod.Pump = undefined;
+        try cliPump.start(&cliEp, a);
+        defer cliPump.stop();
+        var srvPump: transportMod.Pump = undefined;
+        try srvPump.start(&srvEp, a);
+        defer srvPump.stop();
+
+        const dest = std.Io.net.IpAddress.parseIp4("127.0.0.1", sport) catch unreachable;
+
+        // Drive both to completion with 0-RTT early data sent on stream 0
+        try performHandshakeWithEarlyData(
+            &cliEp,
+            &cliPump,
+            &cliDrv,
+            &srvEp,
+            &srvPump,
+            &srvDrv,
+            dest,
+            15_000,
+            .{ .sid = 0, .data = "0-rtt-early-payload" },
+        );
+        try std.testing.expectEqual(connMod.State.established, cliConn.state);
+        try std.testing.expectEqual(connMod.State.established, srvConn.state);
+        try std.testing.expect(srvConn.earlyDataAccepted);
+        try std.testing.expect(cliConn.earlyDataAccepted);
+    }
 }

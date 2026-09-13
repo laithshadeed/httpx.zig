@@ -99,117 +99,43 @@ const demoKeyPem =
     \\-----END PRIVATE KEY-----
 ;
 
-const DemoServer = struct {
-    ep: httpx.quic.Endpoint = undefined,
-    pump: httpx.quic.Pump = undefined,
-
-    const Acc = struct {
-        sid: u64 = std.math.maxInt(u64),
-        buf: std.ArrayList(u8) = .empty,
-        fin: bool = false,
-        alloc: std.mem.Allocator = undefined,
-    };
-
-    fn onStream(c: ?*anyopaque, sid: u64, data: []const u8, fin: bool) void {
-        const acc: *Acc = @ptrCast(@alignCast(c.?));
-        if (acc.sid == std.math.maxInt(u64) and sid % 4 == 0) acc.sid = sid;
-        if (sid != acc.sid) return;
-        acc.buf.appendSlice(acc.alloc, data) catch return;
-        if (fin) acc.fin = true;
-    }
-
-    fn run(srv: *DemoServer, io: std.Io, alloc: std.mem.Allocator, out: *?anyerror) void {
-        serve(srv, io, alloc) catch |e| {
-            out.* = e;
-            return;
-        };
-        out.* = null;
-    }
-
-    fn nowMs(io: std.Io) u64 {
-        return @intCast(@divTrunc(std.Io.Timestamp.now(io, .awake).toNanoseconds(), 1_000_000));
-    }
-
-    fn serve(srv: *DemoServer, io: std.Io, alloc: std.mem.Allocator) !void {
-        var qconn = try httpx.quic.Connection.init(alloc, .server, .{}, 0x51);
-        defer qconn.deinit();
-        srv.ep.conn = qconn;
-        var drv = httpx.quic.HandshakeDriver.initServer(alloc, .{ .certChainPem = demoCertPem, .privateKeyPem = demoKeyPem });
-        defer drv.deinit();
-        qconn.tls = .{ .ctx = &drv, .start = httpx.quic.HandshakeDriver.clientStart, .onData = httpx.quic.HandshakeDriver.onData };
-        try httpx.quic.handshake.serveHandshake(&srv.ep, &srv.pump, &drv, 15_000);
-
-        var h3 = httpx.http3.Connection.init(alloc, .server);
-        defer h3.deinit();
-        var acc = Acc{ .alloc = alloc };
-        defer acc.buf.deinit(alloc);
-        qconn.cbs = .{ .ctx = &acc, .onStreamData = onStream };
-        const start = nowMs(io);
-        while (true) {
-            const now = nowMs(io);
-            if (now -| start > 15_000) return error.Timeout;
-            try httpx.quic.handshake.feedPumped(&srv.ep, &srv.pump, null, 500, now);
-            if (!acc.fin) continue;
-            var off: usize = 0;
-            const fr = try httpx.http3.frame.parseFrame(acc.buf.items, &off);
-            const fields = try h3.qdec.decodeSectionCounted(fr.payload, 0, null);
-            defer h3.qdec.freeFields(fields);
-            var path: []const u8 = "/";
-            for (fields) |f| {
-                if (std.mem.eql(u8, f.name, ":path")) path = f.value;
-            }
-            var exQenc = httpx.http3.qpack.Encoder.init(alloc);
-            defer exQenc.deinit();
-            var rs = httpx.http3.RequestStream{ .id = acc.sid, .allocator = alloc, .qpack = &exQenc };
-            const rhead = try rs.buildResponseHeaders(200, &.{});
-            defer alloc.free(rhead);
-            const body = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\",\"protocol\":\"HTTP/3\"}}", .{path});
-            defer alloc.free(body);
-            const rdata = try rs.buildData(body);
-            defer alloc.free(rdata);
-            try sendH3(qconn, acc.sid, rhead, rdata);
-            _ = try srv.ep.flush(null);
-            return;
-        }
-    }
-
-    fn sendH3(conn: *httpx.quic.Connection, sid: u64, head: []const u8, data: []const u8) !void {
-        const B = struct {
-            var sId: u64 = 0;
-            var sData: []const u8 = "";
-            var sData2: []const u8 = "";
-            pub fn build(gpa: std.mem.Allocator, payload: *std.ArrayList(u8)) httpx.quic.connection.Error!void {
-                httpx.quic.frames.encode(payload, gpa, .{ .stream = .{ .id = sId, .offset = 0, .data = sData, .fin = false } }) catch
-                    return httpx.quic.connection.Error.OutOfMemory;
-                httpx.quic.frames.encode(payload, gpa, .{ .stream = .{ .id = sId, .offset = sData.len, .data = sData2, .fin = true } }) catch
-                    return httpx.quic.connection.Error.OutOfMemory;
-            }
-        };
-        B.sId = sid;
-        B.sData = head;
-        B.sData2 = data;
-        try conn.sendFrames(.application, B.build, 0);
-    }
-};
-
 /// Live loopback: a real QUIC + TLS 1.3 handshake (ALPN h3, verified
 /// chain) over kernel UDP sockets, then an HTTP/3 GET through the
-/// high-level client. Always runs (no internet required).
+/// high-level client against high-level httpx.Server. Always runs (no internet required).
 fn liveLoopbackDemo(allocator: std.mem.Allocator, io: std.Io) !void {
     std.debug.print("=== HTTP/3 live loopback (QUIC + TLS 1.3 over UDP) ===\n", .{});
 
-    var placeholder = try httpx.quic.Connection.init(allocator, .server, .{}, 0x50);
-    defer placeholder.deinit();
-    var srv = DemoServer{};
-    srv.ep = try httpx.quic.transport.Endpoint.initPort(allocator, io, placeholder, 0);
-    const port = srv.ep.localPort();
-    defer srv.ep.deinit();
-    try srv.pump.start(&srv.ep, allocator);
-    defer srv.pump.stop();
+    var server = try httpx.Server.init(allocator, io, .{
+        .host = "127.0.0.1",
+        .port = 0,
+        .http3 = true,
+        .tls = .{
+            .certificatePem = demoCertPem,
+            .privateKeyPem = demoKeyPem,
+        },
+        .enableDocs = false,
+    });
+    defer server.deinit();
 
-    var result: ?anyerror = error.NotRun;
-    const th = try std.Thread.spawn(.{}, DemoServer.run, .{ &srv, io, allocator, &result });
-    defer th.join();
+    const ApiHandler = struct {
+        fn handle(ctx: *httpx.Context) anyerror!httpx.Response {
+            const body = try std.fmt.allocPrint(ctx.allocator, "{{\"path\":\"{s}\",\"protocol\":\"HTTP/3\"}}", .{ctx.path});
+            return .{
+                .status = 200,
+                .body = body,
+                .contentType = "application/json",
+            };
+        }
+    };
+    try server.get("/api/v1/resource", ApiHandler.handle);
+
+    const srvThread = try server.start();
+    defer {
+        server.requestShutdown();
+        srvThread.join();
+    }
+
+    const port = server.localPort();
 
     var client = httpx.Client.init(allocator, io, .{});
     defer client.deinit();

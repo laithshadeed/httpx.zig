@@ -12,7 +12,14 @@
 //!   - Config (config.zig) — certificate chain, private key, SNI map
 //!   - TCP socket (sockets/tcp.zig) — transport
 //!
-//! Thread-safety: one connection = one TlsServerConn, not shared.
+//! Public entry point: `Server` (see below). It owns allocator, IO,
+//! configuration, the validated default identity and mTLS trust for its
+//! lifetime and hands out `Connection` values borrowing the peer socket.
+//! The handshake engine, records and crypto stay internal.
+//!
+//! Thread-safety: a `Server` is safe for concurrent `accept` calls.
+//! Shared state is immutable after `init`; every handshake uses strictly
+//! per-connection state. One connection = one `Connection`, not shared.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -25,8 +32,10 @@ const alpnMod = @import("alpn.zig");
 const configMod = @import("config.zig");
 const sessionMod = @import("session.zig");
 const certMod = @import("certificate.zig");
+const keyMod = @import("key.zig");
 const verifyMod = @import("verify.zig");
 const trustStoreMod = @import("trustStore.zig");
+const fsMod = @import("../../utils/fs.zig");
 const clockMod = @import("../../common/clock.zig");
 const addressMod = @import("../../net/address.zig");
 const tcp = @import("../../sockets/tcp.zig");
@@ -57,221 +66,321 @@ pub const Error = error{
 // TLS server connection (post-handshake)
 
 /// Represents a completed TLS server connection ready for application data.
-pub const TlsServerConn = struct {
-    socket: *tcp.Socket,
-    allocator: Allocator,
-
-    /// Negotiated ALPN protocol.
-    alpn: ?alpnMod.Protocol,
-
-    /// SNI hostname from ClientHello, if any.
-    sni: ?[]const u8,
-
-    /// True when this connection resumed via PSK (abbreviated flight:
-    /// no Certificate/CertificateVerify was exchanged).
-    resumed: bool = false,
-
-    /// Application traffic keys for encrypt/decrypt.
-    appKeys: engineMod.DerivedKeys,
-
-    /// Sequence numbers for application records.
-    txSeq: u64 = 0,
-    rxSeq: u64 = 0,
-
-    /// Write buffer for outgoing encrypted records.
-    writeBuf: []u8,
-
-    /// Read buffer for incoming encrypted records.
-    readBuf: []u8,
-
-    /// Leftover plaintext from a previous read (partial record).
-    /// Owned copy in `leftoverBuf` — never a slice of a stack buffer.
-    leftoverBuf: [recordMod.maxRecordPlaintext + 1]u8 = undefined,
-    leftoverLen: usize = 0,
-    leftover: []const u8 = &.{},
-
-    pub fn deinit(self: *TlsServerConn) void {
-        self.allocator.free(self.writeBuf);
-        self.allocator.free(self.readBuf);
-        if (self.sni) |hostname| self.allocator.free(hostname);
-    }
-
-    /// Encrypt and send application data.
-    pub fn writeAll(self: *TlsServerConn, plaintext: []const u8) Error!void {
-        var offset: usize = 0;
-        while (offset < plaintext.len) {
-            const chunkLen = @min(plaintext.len - offset, recordMod.maxRecordPlaintext);
-            const encoded = try recordMod.encodeRecord(
-                .application_data,
-                plaintext[offset..][0..chunkLen],
-                self.txSeq,
-                self.appKeys.serverKeySlice(),
-                &self.appKeys.serverIv,
-                self.appKeys.cipher,
-            );
-            self.socket.writeAll(encoded.bytes[0..encoded.len]) catch return error.IoError;
-            self.txSeq +%= 1;
-            offset += chunkLen;
-        }
-    }
-
-    /// Read and decrypt one record worth of application data.
-    /// Returns the decrypted plaintext (valid until next readAll call).
-    pub fn read(self: *TlsServerConn, buf: []u8) Error!usize {
-        if (self.leftoverLen > 0) {
-            const n = @min(self.leftoverLen, buf.len);
-            @memcpy(buf[0..n], self.leftoverBuf[0..n]);
-            const remain = self.leftoverLen - n;
-            if (remain > 0) std.mem.copyForwards(u8, self.leftoverBuf[0..remain], self.leftoverBuf[n..][0..remain]);
-            self.leftoverLen = remain;
-            self.leftover = self.leftoverBuf[0..self.leftoverLen];
-            return n;
-        }
-
-        // Read record header (5 bytes)
-        var hdrBuf: [5]u8 = undefined;
-        var totalRead: usize = 0;
-        while (totalRead < 5) {
-            const n = self.socket.read(hdrBuf[totalRead..]) catch return error.IoError;
-            if (n == 0) return 0; // peer closed
-            totalRead += n;
-        }
-
-        // TLS 1.3 records use the TLS 1.2 legacy version on the wire.
-        if (hdrBuf[1] != 0x03 or hdrBuf[2] != 0x03) return error.TlsRecordError;
-
-        const recordLen: usize = (@as(usize, hdrBuf[3]) << 8) | hdrBuf[4];
-        const tagLen = self.appKeys.cipher.tagLen();
-        if (recordLen < tagLen or
-            recordLen > recordMod.maxRecordPlaintext + 1 + tagLen)
-        {
-            return error.TlsRecordError;
-        }
-
-        // Read record body
-        var wireBuf: [recordMod.maxRecordWire]u8 = undefined;
-        @memcpy(wireBuf[0..5], &hdrBuf);
-        totalRead = 0;
-        while (totalRead < recordLen) {
-            const n = self.socket.read(wireBuf[5 + totalRead ..][0 .. recordLen - totalRead]) catch return error.IoError;
-            if (n == 0) return error.TlsRecordError;
-            totalRead += n;
-        }
-
-        // Check content type
-        const contentTypeByte = wireBuf[0];
-        if (contentTypeByte != @intFromEnum(recordMod.ContentType.application_data)) {
-            if (contentTypeByte == @intFromEnum(recordMod.ContentType.alert)) {
-                // Try to decrypt to read alert description
-                var decryptBuf: [recordMod.maxRecordPlaintext + 1]u8 = undefined;
-                const result = recordMod.decodeRecord(
-                    wireBuf[0..][0 .. 5 + recordLen],
-                    &decryptBuf,
-                    self.rxSeq,
-                    self.appKeys.clientKeySlice(),
-                    &self.appKeys.clientIv,
-                    self.appKeys.cipher,
-                ) catch return error.TlsFatalAlert;
-                if (result.plaintext.len >= 2) {
-                    const alert = handshakeMod.Alert.decode(.{ result.plaintext[0], result.plaintext[1] });
-                    if (alert.description == .closeNotify) return error.TlsCloseNotify;
-                }
-                return error.TlsFatalAlert;
-            }
-            return error.TlsRecordError;
-        }
-
-        // Decrypt application record
-        var decryptBuf: [recordMod.maxRecordPlaintext + 1]u8 = undefined;
-        const result = recordMod.decodeRecord(
-            wireBuf[0..][0 .. 5 + recordLen],
-            &decryptBuf,
-            self.rxSeq,
-            self.appKeys.clientKeySlice(),
-            &self.appKeys.clientIv,
-            self.appKeys.cipher,
-        ) catch return error.TlsRecordError;
-        self.rxSeq +%= 1;
-
-        const n = @min(result.plaintext.len, buf.len);
-        @memcpy(buf[0..n], result.plaintext[0..n]);
-        if (n < result.plaintext.len) {
-            const rest = result.plaintext[n..];
-            @memcpy(self.leftoverBuf[0..rest.len], rest);
-            self.leftoverLen = rest.len;
-            self.leftover = self.leftoverBuf[0..self.leftoverLen];
-        } else {
-            self.leftoverLen = 0;
-            self.leftover = &.{};
-        }
-        return n;
-    }
-};
 
 // TLS server listener
 
 /// SNI-based certificate selector. Maps hostname → certificate identity.
-pub const CertSelector = struct {
-    ctx: ?*anyopaque = null,
-    select: *const fn (ctx: ?*anyopaque, hostname: ?[]const u8) ?CertIdentity,
-};
+/// Reads a PEM buffer or file path (paths lack a PEM header).
+fn loadPemOrFile(allocator: Allocator, pemOrPath: []const u8) ![]u8 {
+    if (std.mem.indexOf(u8, pemOrPath, "-----BEGIN") != null) {
+        return allocator.dupe(u8, pemOrPath);
+    }
+    return fsMod.readFileLimited(allocator, pemOrPath, 10 * 1024 * 1024);
+}
 
-pub const CertIdentity = struct {
-    certChainPem: []const u8,
-    privateKeyPem: []const u8,
-};
+/// Validates a server identity once at startup: chain parses and the
+/// private key parses (fail fast instead of mid-handshake).
+fn validateIdentity(allocator: Allocator, certPemOrPath: []const u8, keyPemOrPath: []const u8) !void {
+    const certData = try loadPemOrFile(allocator, certPemOrPath);
+    defer allocator.free(certData);
+    var chain = try certMod.parseCertificateChainPem(allocator, certData);
+    defer chain.deinit();
+    if (chain.count() == 0) return error.MissingCertificate;
+    const keyData = try loadPemOrFile(allocator, keyPemOrPath);
+    defer {
+        std.crypto.secureZero(u8, keyData);
+        allocator.free(keyData);
+    }
+    const parsedKey = try keyMod.parsePrivateKeyPem(allocator, keyData);
+    std.crypto.secureZero(u8, parsedKey.der);
+    allocator.free(parsedKey.der);
+}
 
-/// Configuration for the TLS server.
-pub const TlsServerConfig = struct {
+/// Adds CA PEM blocks to a store with structural pre-validation:
+/// malformed operator configuration fails closed, never panics downstream.
+fn addCaPemChecked(allocator: Allocator, store: *trustStoreMod.TrustStore, caPem: []const u8) !void {
+    var searchFrom: usize = 0;
+    var blocks: usize = 0;
+    while (std.mem.indexOfPos(u8, caPem, searchFrom, "-----BEGIN CERTIFICATE-----")) |idx| {
+        const der = certMod.decodePemBlock(allocator, caPem[idx..], "CERTIFICATE") catch return error.ClientCertificateInvalid;
+        defer allocator.free(der);
+        if (!certMod.checkDerStructure(der)) return error.ClientCertificateInvalid;
+        blocks += 1;
+        searchFrom = idx + 26;
+    }
+    if (blocks == 0) return error.ClientCertificateInvalid;
+    store.addCertPem(caPem) catch return error.ClientCertificateInvalid;
+}
+
+/// TLS server owner: allocator, IO, configuration, validated default
+/// identity and mTLS trust, retained for the server's lifetime.
+///
+/// The default identity is parsed and validated once here (fail fast at
+/// startup, never mid-handshake); per-handshake flight building reuses
+/// the configured PEMs. Safe for concurrent `accept`: shared state is
+/// immutable after `init`.
+pub const Server = struct {
     allocator: Allocator,
+    io: std.Io,
+    config: Config,
+    /// mTLS client-CA trust, parsed once at `init` when client auth is
+    /// enabled with `clientCaPem`. Borrowed by handshakes.
+    clientTrust: ?trustStoreMod.TrustStore = null,
+    /// Bounded replay defense cache for 0-RTT early data.
+    replayCache: ?sessionMod.ReplayCache = null,
 
-    /// Default certificate (used when SNI doesn't match any specific cert).
-    defaultIdentity: ?CertIdentity = null,
+    pub const CertSelector = struct {
+        ctx: ?*anyopaque = null,
+        select: *const fn (ctx: ?*anyopaque, hostname: ?[]const u8) ?CertIdentity,
+    };
 
-    /// SNI certificate selector (optional; falls back to defaultIdentity).
-    certSelector: ?CertSelector = null,
+    pub const CertIdentity = struct {
+        certChainPem: []const u8,
+        privateKeyPem: []const u8,
+    };
 
-    /// ALPN protocols in server preference order (TCP: no h3, QUIC handles h3 separately).
-    alpnProtocols: []const alpnMod.Protocol = &alpnMod.DEFAULT_TCP_PREFERENCE,
+    /// Configuration for the TLS server.
+    pub const Config = struct {
+        /// Default certificate (PEM string or file path). Used when SNI
+        /// doesn't match any selector identity. Both must be set for the
+        /// server to complete handshakes (validated once at `init`).
+        certificatePem: ?[]const u8 = null,
+        /// Default private key (PEM string or file path).
+        privateKeyPem: ?[]const u8 = null,
 
-    /// Mutual TLS mode: request and enforce client certificates.
-    clientAuth: configMod.ClientAuthMode = .disabled,
-    /// PEM bundle (or file path) of CAs trusted for client certificates.
-    clientCaPem: ?[]const u8 = null,
-    /// Ticket keys for TLS 1.3 session resumption (stateless NST issue
-    /// + PSK-accept on offer). Null disables resumption entirely: no
-    /// tickets are sent and PSK offers fall back to full handshakes.
-    ticketKeys: ?sessionMod.TicketKeys = null,
-    /// Lifetime (seconds) stamped into issued session tickets.
-    ticketLifetimeSecs: u32 = 7200,
+        /// SNI certificate selector (optional; falls back to the default
+        /// identity above).
+        certSelector: ?CertSelector = null,
 
-    pub fn init(allocator: Allocator) TlsServerConfig {
-        return .{ .allocator = allocator };
+        /// ALPN protocols in server preference order (TCP: no h3, QUIC
+        /// handles h3 separately).
+        alpn: []const alpnMod.Protocol = &alpnMod.DEFAULT_TCP_PREFERENCE,
+
+        /// Mutual TLS mode: request and enforce client certificates.
+        clientAuth: configMod.ClientAuthMode = .disabled,
+        /// PEM bundle (or file path) of CAs trusted for client
+        /// certificates. Parsed once at `init` when mTLS is enabled.
+        clientCaPem: ?[]const u8 = null,
+        /// Ticket keys for TLS 1.3 session resumption (stateless NST issue
+        /// + PSK-accept on offer). Null disables resumption entirely: no
+        /// tickets are sent and PSK offers fall back to full handshakes.
+        ticketKeys: ?sessionMod.TicketKeys = null,
+        /// Lifetime (seconds) stamped into issued session tickets.
+        ticketLifetimeSecs: u32 = 7200,
+        /// Maximum early data allowance in bytes. 0 disables early data (safe default).
+        maxEarlyData: u32 = 0,
+        /// Replay window capacity for bounded replay defense.
+        replayWindowCapacity: u32 = 1024,
+        /// Whether the listener accepts cleartext HTTP on the TLS port
+        /// (dispatch behavior, not cryptography). Defaults to false
+        /// (strict HTTPS: plain HTTP gets 400 Bad Request).
+        allowPlainHttp: bool = false,
+    };
+
+    pub const Connection = struct {
+        socket: *tcp.Socket,
+        allocator: Allocator,
+
+        /// Negotiated ALPN protocol.
+        alpn: ?alpnMod.Protocol,
+
+        /// SNI hostname from ClientHello, if any.
+        sni: ?[]const u8,
+
+        /// True when this connection resumed via PSK (abbreviated flight:
+        /// no Certificate/CertificateVerify was exchanged).
+        resumed: bool = false,
+
+        /// Application traffic keys for encrypt/decrypt.
+        appKeys: engineMod.DerivedKeys,
+
+        /// Sequence numbers for application records.
+        txSeq: u64 = 0,
+        rxSeq: u64 = 0,
+
+        /// Write buffer for outgoing encrypted records.
+        writeBuf: []u8,
+
+        /// Read buffer for incoming encrypted records.
+        readBuf: []u8,
+
+        /// Leftover plaintext from a previous read (partial record).
+        /// Owned copy in `leftoverBuf` — never a slice of a stack buffer.
+        leftoverBuf: [recordMod.maxRecordPlaintext + 1]u8 = undefined,
+        leftoverLen: usize = 0,
+        leftover: []const u8 = &.{},
+
+        pub fn deinit(self: *Connection) void {
+            self.allocator.free(self.writeBuf);
+            self.allocator.free(self.readBuf);
+            if (self.sni) |hostname| self.allocator.free(hostname);
+        }
+
+        /// Encrypt and send application data.
+        pub fn writeAll(self: *Connection, plaintext: []const u8) Error!void {
+            var offset: usize = 0;
+            while (offset < plaintext.len) {
+                const chunkLen = @min(plaintext.len - offset, recordMod.maxRecordPlaintext);
+                const encoded = try recordMod.encodeRecord(
+                    .application_data,
+                    plaintext[offset..][0..chunkLen],
+                    self.txSeq,
+                    self.appKeys.serverKeySlice(),
+                    &self.appKeys.serverIv,
+                    self.appKeys.cipher,
+                );
+                self.socket.writeAll(encoded.bytes[0..encoded.len]) catch return error.IoError;
+                self.txSeq +%= 1;
+                offset += chunkLen;
+            }
+        }
+
+        /// Read and decrypt one record worth of application data.
+        /// Returns the decrypted plaintext (valid until next readAll call).
+        pub fn read(self: *Connection, buf: []u8) Error!usize {
+            if (self.leftoverLen > 0) {
+                const n = @min(self.leftoverLen, buf.len);
+                @memcpy(buf[0..n], self.leftoverBuf[0..n]);
+                const remain = self.leftoverLen - n;
+                if (remain > 0) std.mem.copyForwards(u8, self.leftoverBuf[0..remain], self.leftoverBuf[n..][0..remain]);
+                self.leftoverLen = remain;
+                self.leftover = self.leftoverBuf[0..self.leftoverLen];
+                return n;
+            }
+
+            // Read record header (5 bytes)
+            var hdrBuf: [5]u8 = undefined;
+            var totalRead: usize = 0;
+            while (totalRead < 5) {
+                const n = self.socket.read(hdrBuf[totalRead..]) catch return error.IoError;
+                if (n == 0) return 0; // peer closed
+                totalRead += n;
+            }
+
+            // TLS 1.3 records use the TLS 1.2 legacy version on the wire.
+            if (hdrBuf[1] != 0x03 or hdrBuf[2] != 0x03) return error.TlsRecordError;
+
+            const recordLen: usize = (@as(usize, hdrBuf[3]) << 8) | hdrBuf[4];
+            const tagLen = self.appKeys.cipher.tagLen();
+            if (recordLen < tagLen or
+                recordLen > recordMod.maxRecordPlaintext + 1 + tagLen)
+            {
+                return error.TlsRecordError;
+            }
+
+            // Read record body
+            var wireBuf: [recordMod.maxRecordWire]u8 = undefined;
+            @memcpy(wireBuf[0..5], &hdrBuf);
+            totalRead = 0;
+            while (totalRead < recordLen) {
+                const n = self.socket.read(wireBuf[5 + totalRead ..][0 .. recordLen - totalRead]) catch return error.IoError;
+                if (n == 0) return error.TlsRecordError;
+                totalRead += n;
+            }
+
+            // Check content type
+            const contentTypeByte = wireBuf[0];
+            if (contentTypeByte != @intFromEnum(recordMod.ContentType.application_data)) {
+                if (contentTypeByte == @intFromEnum(recordMod.ContentType.alert)) {
+                    // Try to decrypt to read alert description
+                    var decryptBuf: [recordMod.maxRecordPlaintext + 1]u8 = undefined;
+                    const result = recordMod.decodeRecord(
+                        wireBuf[0..][0 .. 5 + recordLen],
+                        &decryptBuf,
+                        self.rxSeq,
+                        self.appKeys.clientKeySlice(),
+                        &self.appKeys.clientIv,
+                        self.appKeys.cipher,
+                    ) catch return error.TlsFatalAlert;
+                    if (result.plaintext.len >= 2) {
+                        const alert = handshakeMod.Alert.decode(.{ result.plaintext[0], result.plaintext[1] });
+                        if (alert.description == .closeNotify) return error.TlsCloseNotify;
+                    }
+                    return error.TlsFatalAlert;
+                }
+                return error.TlsRecordError;
+            }
+
+            // Decrypt application record
+            var decryptBuf: [recordMod.maxRecordPlaintext + 1]u8 = undefined;
+            const result = recordMod.decodeRecord(
+                wireBuf[0..][0 .. 5 + recordLen],
+                &decryptBuf,
+                self.rxSeq,
+                self.appKeys.clientKeySlice(),
+                &self.appKeys.clientIv,
+                self.appKeys.cipher,
+            ) catch return error.TlsRecordError;
+            self.rxSeq +%= 1;
+
+            const n = @min(result.plaintext.len, buf.len);
+            @memcpy(buf[0..n], result.plaintext[0..n]);
+            if (n < result.plaintext.len) {
+                const rest = result.plaintext[n..];
+                @memcpy(self.leftoverBuf[0..rest.len], rest);
+                self.leftoverLen = rest.len;
+                self.leftover = self.leftoverBuf[0..self.leftoverLen];
+            } else {
+                self.leftoverLen = 0;
+                self.leftover = &.{};
+            }
+            return n;
+        }
+    };
+
+    pub fn init(allocator: Allocator, io: std.Io, config: Config) !Server {
+        var self = Server{
+            .allocator = allocator,
+            .io = io,
+            .config = config,
+        };
+        errdefer self.deinit();
+        // Fail fast: a misconfigured identity or CA bundle surfaces here,
+        // not on the first inbound connection.
+        if (config.certificatePem != null and config.privateKeyPem != null) {
+            try validateIdentity(allocator, config.certificatePem.?, config.privateKeyPem.?);
+        }
+        if (config.clientAuth != .disabled) {
+            if (config.clientCaPem) |pem| {
+                var store = trustStoreMod.TrustStore.init(allocator, io);
+                errdefer store.deinit();
+                try addCaPemChecked(allocator, &store, pem);
+                if (store.count() == 0) return error.ClientCertificateInvalid;
+                self.clientTrust = store;
+            }
+        }
+        if (config.maxEarlyData > 0) {
+            self.replayCache = sessionMod.ReplayCache.init(allocator, config.replayWindowCapacity);
+        }
+        return self;
     }
-};
 
-/// TLS server that wraps TCP + TLS handshake.
-pub const TlsServer = struct {
-    config: TlsServerConfig,
-
-    pub fn init(config: TlsServerConfig) TlsServer {
-        return .{ .config = config };
+    pub fn deinit(self: *Server) void {
+        if (self.clientTrust) |*store| {
+            store.deinit();
+            self.clientTrust = null;
+        }
+        if (self.replayCache) |*rc| {
+            rc.deinit();
+            self.replayCache = null;
+        }
+        self.* = undefined;
     }
 
-    /// Perform TLS 1.3 server handshake on an accepted TCP connection.
+    /// Accept a TLS 1.3 connection on an already-accepted TCP socket.
+    /// Returns an owned `Connection` borrowing `socket`.
     ///
-    /// This reads the ClientHello, extracts SNI, performs ALPN negotiation,
+    /// Reads the ClientHello, extracts SNI, performs ALPN negotiation,
     /// derives keys via the TLS 1.3 key schedule, and sends the full server
     /// flight (ServerHello + EncryptedExtensions + Certificate +
     /// CertificateVerify + Finished) as plaintext records.
-    pub fn handshake(self: *TlsServer, io: std.Io, socket: *tcp.Socket) !TlsServerConn {
-        return self.handshakeBuffered(io, socket, &.{});
+    pub fn accept(self: *Server, socket: *tcp.Socket) !Connection {
+        return self.acceptBuffered(socket, &.{});
     }
 
-    /// Perform TLS 1.3 server handshake on an accepted TCP connection,
-    /// accepting any pre-read bytes from initial buffer peek.
-    pub fn handshakeBuffered(self: *TlsServer, io: std.Io, socket: *tcp.Socket, initial: []const u8) !TlsServerConn {
-        const a = self.config.allocator;
+    /// Accept with pre-read bytes from an initial buffer peek.
+    pub fn acceptBuffered(self: *Server, socket: *tcp.Socket, initial: []const u8) !Connection {
+        const a = self.allocator;
 
         var engine = engineMod.Engine.initServer(a, .{});
         defer engine.deinit();
@@ -309,6 +418,12 @@ pub const TlsServer = struct {
         const nowMs: u64 = @intCast(clockMod.millisNow());
         const fullCh = readBuf[hello.offset..][0 .. 4 + hello.bodyLen];
         if (self.config.clientAuth == .disabled) {
+            if (self.config.maxEarlyData > 0) {
+                engine.maxEarlyData = self.config.maxEarlyData;
+                if (self.replayCache) |*rc| {
+                    engine.replayCache = rc;
+                }
+            }
             _ = engine.selectPsk(fullCh, nowMs);
         }
 
@@ -333,7 +448,7 @@ pub const TlsServer = struct {
             chBody,
             identity.certChainPem,
             identity.privateKeyPem,
-            self.config.alpnProtocols,
+            self.config.alpn,
             parsedCh.alpnProtocols.items,
             null, // TCP never carries QUIC transport parameters
         );
@@ -377,7 +492,7 @@ pub const TlsServer = struct {
         {
             const finKeys = engine.hsKeys orelse return error.TlsHandshakeFailed;
             if (self.config.clientAuth != .disabled and engine.resumptionPsk == null) {
-                try self.verifyClientFlight(io, socket, &engine, finKeys);
+                try self.verifyClientFlight(socket, &engine, finKeys);
             } else {
                 var finishedOk = false;
                 while (!finishedOk) {
@@ -435,8 +550,8 @@ pub const TlsServer = struct {
 
         // Session ticket (RFC 8446 Section 4.6.1): issued exactly once per
         // full handshake when ticket keys are configured — never on
-        // abbreviated handshakes (the client already holds a ticket) and
-        // never with early-data extensions (0-RTT stays unimplemented).
+        // abbreviated handshakes (the client already holds a ticket).
+        // Carries early-data extension with maxEarlyData when configured.
         // The ticket record uses application traffic keys at sequence 0,
         // so the returned connection starts its application sequence at 1.
         var apTxSeq: u64 = 0;
@@ -489,13 +604,12 @@ pub const TlsServer = struct {
     /// presented chain must anchor in `clientCaPem` with a valid P-256
     /// signature; Finished always binds the transcript. Fails closed.
     fn verifyClientFlight(
-        self: *TlsServer,
-        io: std.Io,
+        self: *Server,
         socket: *tcp.Socket,
         engine: *engineMod.Engine,
         hsKeys: engineMod.DerivedKeys,
     ) !void {
-        const a = self.config.allocator;
+        const a = self.allocator;
         var hsBuf = std.ArrayList(u8).empty;
         defer hsBuf.deinit(a);
 
@@ -518,27 +632,14 @@ pub const TlsServer = struct {
         if (presented.ders.len == 0) {
             if (self.config.clientAuth == .required) return error.ClientCertificateRequired;
         } else {
-            const caPem = self.config.clientCaPem orelse return error.ClientCertificateInvalid;
-            var store = trustStoreMod.TrustStore.init(a, io);
-            defer store.deinit();
-            // Pre-validate CA blocks structurally: malformed operator
-            // configuration must fail closed, never panic downstream.
-            var searchFrom: usize = 0;
-            var blocks: usize = 0;
-            while (std.mem.indexOfPos(u8, caPem, searchFrom, "-----BEGIN CERTIFICATE-----")) |idx| {
-                const der = certMod.decodePemBlock(a, caPem[idx..], "CERTIFICATE") catch return error.ClientCertificateInvalid;
-                defer a.free(der);
-                if (!certMod.checkDerStructure(der)) return error.ClientCertificateInvalid;
-                blocks += 1;
-                searchFrom = idx + 26;
-            }
-            if (blocks == 0) return error.ClientCertificateInvalid;
-            store.addCertPem(caPem) catch return error.ClientCertificateInvalid;
-            if (store.count() == 0) return error.ClientCertificateInvalid;
+            // Trust was parsed and validated once at init; a server that
+            // requests client certificates without trust fails closed here.
+            // The store is read-only after init (concurrent verifies share it).
+            const store = if (self.clientTrust) |*s| s else return error.ClientCertificateInvalid;
             // Borrowed view: ownership of the DER bytes stays with `presented`.
             const chain = certMod.CertificateChain{ .certs = presented.ders, .allocator = a };
             const nowSec: i64 = @divFloor(clockMod.millisNow(), 1000);
-            verifyMod.verifyCertificateChain(chain, &store, null, nowSec) catch return error.ClientCertificateInvalid;
+            verifyMod.verifyCertificateChain(chain, store, null, nowSec) catch return error.ClientCertificateInvalid;
             try engine.processClientCertificateVerify(hsBuf.items[sp.cvOff..sp.cvEnd], presented.ders[0]);
         }
         try engine.verifyClientFinished(hsBuf.items[sp.finOff..sp.finEnd]);
@@ -730,11 +831,13 @@ pub const TlsServer = struct {
         }
     }
 
-    fn resolveIdentity(self: *const TlsServer, sni: ?[]const u8) ?CertIdentity {
+    fn resolveIdentity(self: *const Server, sni: ?[]const u8) ?CertIdentity {
         if (self.config.certSelector) |sel| {
-            return sel.select(sel.ctx, sni);
+            if (sel.select(sel.ctx, sni)) |id| return id;
         }
-        return self.config.defaultIdentity;
+        const certPem = self.config.certificatePem orelse return null;
+        const keyPem = self.config.privateKeyPem orelse return null;
+        return .{ .certChainPem = certPem, .privateKeyPem = keyPem };
     }
 };
 
@@ -864,13 +967,11 @@ test "tls server handshake processes client hello" {
 }
 
 test "alpn negotiation in server config" {
-    const cfg = TlsServerConfig{
-        .allocator = std.testing.allocator,
-    };
-    try std.testing.expectEqual(@as(usize, 3), cfg.alpnProtocols.len);
-    try std.testing.expectEqual(alpnMod.Protocol.h2, cfg.alpnProtocols[0]);
-    try std.testing.expectEqual(alpnMod.Protocol.@"http/1.1", cfg.alpnProtocols[1]);
-    try std.testing.expectEqual(alpnMod.Protocol.@"http/1.0", cfg.alpnProtocols[2]);
+    const cfg = Server.Config{};
+    try std.testing.expectEqual(@as(usize, 3), cfg.alpn.len);
+    try std.testing.expectEqual(alpnMod.Protocol.h2, cfg.alpn[0]);
+    try std.testing.expectEqual(alpnMod.Protocol.@"http/1.1", cfg.alpn[1]);
+    try std.testing.expectEqual(alpnMod.Protocol.@"http/1.0", cfg.alpn[2]);
 }
 
 test "ClientHello SNI parsing" {
@@ -914,17 +1015,18 @@ test "server without certificate fails fast with MissingCertificate" {
     defer listener.close(ctx.io);
     const port = listener.localPort();
 
-    // No defaultIdentity and no selector: unusable server by construction.
-    var server = TlsServer.init(.{ .allocator = a });
+    // No identity and no selector: unusable server by construction.
+    var server = try Server.init(a, ctx.io, .{});
+    defer server.deinit();
 
     const Acceptor = struct {
-        fn run(lst: *tcp.Listener, io2: std.Io, srv: *TlsServer, out: *anyerror) void {
+        fn run(lst: *tcp.Listener, io2: std.Io, srv: *Server, out: *anyerror) void {
             var sock = lst.accept(io2) catch {
                 out.* = error.AcceptFailed;
                 return;
             };
             defer sock.close();
-            if (srv.handshakeBuffered(io2, &sock, &.{})) |conn| {
+            if (srv.acceptBuffered(&sock, &.{})) |conn| {
                 var c = conn;
                 c.deinit();
                 out.* = error.UnexpectedSuccess;
@@ -1142,10 +1244,10 @@ const MtlsScript = struct {
 const mtlsCertPem = @embedFile("testdata/localhostCert.pem");
 const mtlsKeyPem = @embedFile("testdata/localhostKey.pem");
 
-fn mtlsTestServer(a: Allocator, auth: configMod.ClientAuthMode, caPem: ?[]const u8) TlsServer {
-    return TlsServer.init(.{
-        .allocator = a,
-        .defaultIdentity = .{ .certChainPem = mtlsCertPem, .privateKeyPem = mtlsKeyPem },
+fn mtlsTestServer(a: Allocator, io: std.Io, auth: configMod.ClientAuthMode, caPem: ?[]const u8) !Server {
+    return Server.init(a, io, .{
+        .certificatePem = mtlsCertPem,
+        .privateKeyPem = mtlsKeyPem,
         .clientAuth = auth,
         .clientCaPem = caPem,
     });
@@ -1159,16 +1261,17 @@ test "mtls required accepts valid client certificate over loopback" {
     defer listener.close(ctx.io);
     const port = listener.localPort();
 
-    var server = mtlsTestServer(a, .required, mtlsCertPem);
+    var server = try mtlsTestServer(a, ctx.io, .required, mtlsCertPem);
+    defer server.deinit();
 
     const Acceptor = struct {
-        fn run(lst: *tcp.Listener, io2: std.Io, srv: *TlsServer, out: *?anyerror, got: *[32]u8, gotLen: *usize) void {
+        fn run(lst: *tcp.Listener, io2: std.Io, srv: *Server, out: *?anyerror, got: *[32]u8, gotLen: *usize) void {
             var sock = lst.accept(io2) catch {
                 out.* = error.AcceptFailed;
                 return;
             };
             defer sock.close();
-            var conn = srv.handshake(io2, &sock) catch |e| {
+            var conn = srv.accept(&sock) catch |e| {
                 out.* = e;
                 return;
             };
@@ -1224,16 +1327,17 @@ test "mtls required rejects missing client certificate" {
     defer listener.close(ctx.io);
     const port = listener.localPort();
 
-    var server = mtlsTestServer(a, .required, mtlsCertPem);
+    var server = try mtlsTestServer(a, ctx.io, .required, mtlsCertPem);
+    defer server.deinit();
 
     const Acceptor = struct {
-        fn run(lst: *tcp.Listener, io2: std.Io, srv: *TlsServer, out: *?anyerror) void {
+        fn run(lst: *tcp.Listener, io2: std.Io, srv: *Server, out: *?anyerror) void {
             var sock = lst.accept(io2) catch {
                 out.* = error.AcceptFailed;
                 return;
             };
             defer sock.close();
-            if (srv.handshake(io2, &sock)) |conn| {
+            if (srv.accept(&sock)) |conn| {
                 var c = conn;
                 c.deinit();
                 out.* = error.UnexpectedSuccess;
@@ -1259,50 +1363,12 @@ test "mtls required rejects misconfigured client CA" {
     const a = std.testing.allocator;
     var ctx = try tcp.IoContext.init(a);
     defer ctx.deinit();
-    var listener = try tcp.Listener.bind(ctx.io, 0);
-    defer listener.close(ctx.io);
-    const port = listener.localPort();
 
     const badCa = "-----BEGIN CERTIFICATE-----\nbm90LWEtdmFsaWQtY2VydA==\n-----END CERTIFICATE-----\n";
-    var server = mtlsTestServer(a, .required, badCa);
-
-    const Acceptor = struct {
-        fn run(lst: *tcp.Listener, io2: std.Io, srv: *TlsServer, out: *?anyerror) void {
-            var sock = lst.accept(io2) catch {
-                out.* = error.AcceptFailed;
-                return;
-            };
-            defer sock.close();
-            if (srv.handshake(io2, &sock)) |conn| {
-                var c = conn;
-                c.deinit();
-                out.* = error.UnexpectedSuccess;
-            } else |e| {
-                out.* = e;
-            }
-        }
-    };
-    var result: ?anyerror = error.NotRun;
-    const th = try std.Thread.spawn(.{}, Acceptor.run, .{ &listener, ctx.io, &server, &result });
-
-    var cli = try MtlsScript.dial(a, ctx.io, port);
-    defer cli.deinit();
-    try cli.readServerFlight();
-
-    var chain = try certMod.parseCertificateChainPem(a, mtlsCertPem);
-    defer chain.deinit();
-    var ders = std.ArrayList([]const u8).empty;
-    defer ders.deinit(a);
-    var ci: usize = 0;
-    while (chain.get(ci)) |c| : (ci += 1) {
-        try ders.append(a, c.rawDer());
-    }
-    try cli.sendClientFlight(ders.items, mtlsKeyPem);
-
-    th.join();
-    try std.testing.expect(result.? == error.ClientCertificateInvalid);
+    // Fail fast: a structurally invalid CA bundle is rejected at Server
+    // init, never deferred to the first inbound handshake.
+    try std.testing.expectError(error.ClientCertificateInvalid, mtlsTestServer(a, ctx.io, .required, badCa));
 }
-
 test "mtls optional allows missing client certificate" {
     const a = std.testing.allocator;
     var ctx = try tcp.IoContext.init(a);
@@ -1311,16 +1377,17 @@ test "mtls optional allows missing client certificate" {
     defer listener.close(ctx.io);
     const port = listener.localPort();
 
-    var server = mtlsTestServer(a, .optional, mtlsCertPem);
+    var server = try mtlsTestServer(a, ctx.io, .optional, mtlsCertPem);
+    defer server.deinit();
 
     const Acceptor = struct {
-        fn run(lst: *tcp.Listener, io2: std.Io, srv: *TlsServer, out: *?anyerror) void {
+        fn run(lst: *tcp.Listener, io2: std.Io, srv: *Server, out: *?anyerror) void {
             var sock = lst.accept(io2) catch {
                 out.* = error.AcceptFailed;
                 return;
             };
             defer sock.close();
-            var conn = srv.handshake(io2, &sock) catch |e| {
+            var conn = srv.accept(&sock) catch |e| {
                 out.* = e;
                 return;
             };

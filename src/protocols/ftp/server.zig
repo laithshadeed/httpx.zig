@@ -8,7 +8,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const tcp = @import("../../sockets/tcp.zig");
 const addressMod = @import("../../net/address.zig");
-const tlsServerMod = @import("../tls/tcpTls.zig");
+const tlsServerMod = @import("../tls/server.zig");
 
 pub const Error = error{ AcceptFailed, ReadFailed, WriteFailed, ProtocolError, OutOfMemory, TlsHandshakeFailed };
 
@@ -51,13 +51,29 @@ pub const Server = struct {
     ioThreaded: ?*std.Io.Threaded = null,
     stop: std.atomic.Value(bool) = .init(false),
     listenerClosed: bool = false,
+    /// TLS owner for AUTH TLS upgrades (control + data). Built when the
+    /// configured identity is present; identity problems fail fast here.
+    tlsServer: ?tlsServerMod.Server = null,
 
     pub fn init(allocator: Allocator, io: std.Io, cfg: Config) !Server {
         if (!std.mem.eql(u8, cfg.host, "0.0.0.0")) return error.ProtocolError;
-        return .{ .allocator = allocator, .io = io, .listener = try tcp.Listener.bind(io, cfg.port), .cfg = cfg };
+        var self = Server{ .allocator = allocator, .io = io, .listener = try tcp.Listener.bind(io, cfg.port), .cfg = cfg };
+        errdefer self.deinit();
+        if (cfg.secureAvailable()) {
+            self.tlsServer = try tlsServerMod.Server.init(allocator, io, .{
+                .certificatePem = cfg.certChainPem.?,
+                .privateKeyPem = cfg.privateKeyPem.?,
+                .alpn = &.{},
+            });
+        }
+        return self;
     }
 
     pub fn deinit(self: *Server) void {
+        if (self.tlsServer) |*s| {
+            s.deinit();
+            self.tlsServer = null;
+        }
         if (!self.listenerClosed) {
             self.listener.close(self.io);
             self.listenerClosed = true;
@@ -87,7 +103,7 @@ pub const Server = struct {
             var control = self.listener.accept(self.io) catch return error.AcceptFailed;
             defer control.close();
             tcp.setTimeouts(control.netSocketHandle(), self.cfg.timeoutMs);
-            var session = Session.init(self.allocator, self.io, &control, self.cfg);
+            var session = Session.init(self.allocator, self.io, &control, self.cfg, if (self.tlsServer) |*s| s else null);
             session.run() catch {};
             served += 1;
         }
@@ -108,12 +124,14 @@ const Session = struct {
     /// the `Session` value itself (never moved after `run` starts), so the
     /// connection's borrow of `tlsSock` stays valid for the session.
     tlsSock: ?tcp.Socket = null,
-    tlsConn: ?tlsServerMod.TlsServerConn = null,
+    tlsConn: ?tlsServerMod.Server.Connection = null,
+    /// Borrowed TLS owner for AUTH TLS upgrades (null when unavailable).
+    tlsServer: ?*tlsServerMod.Server = null,
     /// `PROT P` negotiated: data connections are TLS-wrapped.
     protPrivate: bool = false,
 
-    fn init(allocator: Allocator, io: std.Io, control: *tcp.Socket, cfg: Config) Session {
-        return .{ .allocator = allocator, .io = io, .control = control, .cfg = cfg };
+    fn init(allocator: Allocator, io: std.Io, control: *tcp.Socket, cfg: Config, tlsServer: ?*tlsServerMod.Server) Session {
+        return .{ .allocator = allocator, .io = io, .control = control, .cfg = cfg, .tlsServer = tlsServer };
     }
 
     fn run(self: *Session) Error!void {
@@ -298,15 +316,8 @@ const Session = struct {
         // `control` still aliases the same OS handle, but `close()` is
         // idempotent so the deferred close there is harmless.
         self.tlsSock = self.control.*;
-        var srv = tlsServerMod.TlsServer.init(.{
-            .allocator = self.allocator,
-            .defaultIdentity = .{
-                .certChainPem = self.cfg.certChainPem.?,
-                .privateKeyPem = self.cfg.privateKeyPem.?,
-            },
-            .alpnProtocols = &.{},
-        });
-        self.tlsConn = srv.handshake(self.io, &self.tlsSock.?) catch return error.TlsHandshakeFailed;
+        const srv = self.tlsServer orelse return error.TlsHandshakeFailed;
+        self.tlsConn = srv.accept(&self.tlsSock.?) catch return error.TlsHandshakeFailed;
         return true;
     }
 
@@ -445,14 +456,14 @@ const Session = struct {
         return true;
     }
 
-    /// Heap box for a TLS-wrapped data connection. `TlsServerConn`
+    /// Heap box for a TLS-wrapped data connection. The TLS connection
     /// borrows its socket, and `acceptData` returns the channel by value,
     /// so a stable heap address is the only sound home for the pair (a
     /// by-value channel would dangle its own borrow on return — a
     /// use-after-free that Debug tolerates but ReleaseFast crashes on).
     const DataTlsBox = struct {
         socket: tcp.Socket,
-        conn: tlsServerMod.TlsServerConn,
+        conn: tlsServerMod.Server.Connection,
     };
 
     /// An accepted data connection, TLS-wrapped when `PROT P` is active.
@@ -498,15 +509,11 @@ const Session = struct {
         };
         errdefer self.allocator.destroy(box);
         box.socket = plain;
-        var srv = tlsServerMod.TlsServer.init(.{
-            .allocator = self.allocator,
-            .defaultIdentity = .{
-                .certChainPem = self.cfg.certChainPem.?,
-                .privateKeyPem = self.cfg.privateKeyPem.?,
-            },
-            .alpnProtocols = &.{},
-        });
-        box.conn = srv.handshake(self.io, &box.socket) catch {
+        const srv = self.tlsServer orelse {
+            plain.close();
+            return error.TlsHandshakeFailed;
+        };
+        box.conn = srv.accept(&box.socket) catch {
             box.socket.close();
             return error.TlsHandshakeFailed;
         };

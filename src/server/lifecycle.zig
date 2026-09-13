@@ -28,18 +28,26 @@ const httpVersion = @import("../common/httpVersion.zig");
 pub const HttpVersion = httpVersion.HttpVersion;
 const watcherMod = @import("../web/watcher/backend.zig");
 const templatesMod = @import("../web/templates/templates.zig");
-const tcpTlsMod = @import("../protocols/tls/tcpTls.zig");
-const tlsConfigMod = @import("../protocols/tls/config.zig");
+const tlsServerMod = @import("../protocols/tls/server.zig");
 const fsMod = @import("../utils/fs.zig");
 const alpnMod = @import("../protocols/tls/alpn.zig");
 const metricsMod = @import("../web/metrics/registry.zig");
+const tlsSessionMod = @import("../protocols/tls/session.zig");
+const quicTransport = @import("../protocols/quic/transport.zig");
+const quicConn = @import("../protocols/quic/connection.zig");
+const quicHs = @import("../protocols/quic/handshake.zig");
+const quicFrames = @import("../protocols/quic/frames.zig");
+const http3Frame = @import("../protocols/http3/frame.zig");
+const http3Conn = @import("../protocols/http3/connection.zig");
+const http3Stream = @import("../protocols/http3/stream.zig");
+const http3Qpack = @import("../protocols/http3/qpack.zig");
 
 pub const maxHeadBytes = 32 * 1024;
 
 /// Unified abstraction over plain TCP sockets and encrypted TLS server connections.
 pub const StreamConn = union(enum) {
     plain: *tcp.Socket,
-    tls: *tcpTlsMod.TlsServerConn,
+    tls: *tlsServerMod.Server.Connection,
 
     pub fn read(self: StreamConn, buf: []u8) anyerror!usize {
         return switch (self) {
@@ -153,7 +161,7 @@ pub const Config = struct {
     templates: ?templatesMod.Config = null,
     /// Production-grade TLS / HTTPS configuration.
     /// When provided with certificate & private key (PEM or file path), enables HTTPS server.
-    tls: ?tlsConfigMod.ServerConfig = null,
+    tls: ?tlsServerMod.Server.Config = null,
 };
 
 /// Global pointer to the active server for the Ctrl+C handler.
@@ -222,9 +230,14 @@ pub const Server = struct {
     /// `hotReload` (CSS swap) vs `reload` (full page) payloads.
     liveReloadStrategy: std.atomic.Value(u8) = .init(1),
     templateEngine: ?*templatesMod.Engine = null,
-    tlsServer: ?tcpTlsMod.TlsServer = null,
+    tlsServer: ?tlsServerMod.Server = null,
     tlsCertPemLoaded: ?[]const u8 = null,
     tlsKeyPemLoaded: ?[]const u8 = null,
+    h3Endpoint: ?quicTransport.Endpoint = null,
+    h3PlaceholderConn: ?*quicConn.Connection = null,
+    h3Pump: ?*quicTransport.Pump = null,
+    h3Thread: ?std.Thread = null,
+    h3Stop: std.atomic.Value(bool) = .init(false),
     metricsRegistry: metricsMod.Registry = .{},
     startTimeMs: i64 = 0,
 
@@ -333,19 +346,15 @@ pub const Server = struct {
             templateEngine = eng;
         }
 
-        var tlsServer_opt: ?tcpTlsMod.TlsServer = null;
+        var tlsServer_opt: ?tlsServerMod.Server = null;
         var loadedCertPem: ?[]const u8 = null;
         var loadedKeyPem: ?[]const u8 = null;
 
         if (effectiveCfg.tls) |*tCfg| {
-            tCfg.allocator = allocator;
-            const certOpt = tCfg.certPem;
-            const keyOpt = tCfg.keyPem;
+            const certOpt = tCfg.certificatePem;
+            const keyOpt = tCfg.privateKeyPem;
             if (certOpt) |cert| {
                 if (keyOpt) |key| {
-                    if (!tCfg.hasIdentity()) {
-                        tCfg.loadCertificates(cert, key) catch {};
-                    }
                     if (std.mem.indexOf(u8, cert, "-----BEGIN") != null) {
                         loadedCertPem = allocator.dupe(u8, cert) catch null;
                     } else {
@@ -357,21 +366,27 @@ pub const Server = struct {
                         loadedKeyPem = fsMod.readFileLimited(allocator, key, 10 * 1024 * 1024) catch null;
                     }
                     if (loadedCertPem != null and loadedKeyPem != null) {
-                        tlsServer_opt = tcpTlsMod.TlsServer.init(.{
-                            .allocator = allocator,
-                            .defaultIdentity = .{
-                                .certChainPem = loadedCertPem.?,
-                                .privateKeyPem = loadedKeyPem.?,
-                            },
-                            .alpnProtocols = tCfg.alpnProtocols,
-                            .clientAuth = tCfg.clientAuth,
-                            .clientCaPem = tCfg.clientCa,
-                            .ticketKeys = tCfg.ticketKeys,
-                            .ticketLifetimeSecs = tCfg.ticketLifetimeSecs,
-                        });
+                        tCfg.certificatePem = loadedCertPem.?;
+                        tCfg.privateKeyPem = loadedKeyPem.?;
+                        // Identity problems surface here at startup; a
+                        // failure leaves TLS disabled (historical leniency).
+                        tlsServer_opt = tlsServerMod.Server.init(allocator, io, tCfg.*) catch null;
                     }
                 }
             }
+        }
+
+        var h3Ep_opt: ?quicTransport.Endpoint = null;
+        var h3Placeholder_opt: ?*quicConn.Connection = null;
+        if (effectiveCfg.http3 and loadedCertPem != null and loadedKeyPem != null) {
+            const placeholder = try quicConn.Connection.init(allocator, .server, .{}, 0x4833);
+            errdefer placeholder.deinit();
+            const ep = quicTransport.Endpoint.init(allocator, io, placeholder, .{ .port = listener.localPort() }) catch |err| {
+                placeholder.deinit();
+                return err;
+            };
+            h3Ep_opt = ep;
+            h3Placeholder_opt = placeholder;
         }
 
         var srv = Server{
@@ -387,6 +402,9 @@ pub const Server = struct {
             .tlsServer = tlsServer_opt,
             .tlsCertPemLoaded = loadedCertPem,
             .tlsKeyPemLoaded = loadedKeyPem,
+            .h3Endpoint = h3Ep_opt,
+            .h3PlaceholderConn = h3Placeholder_opt,
+            .h3Pump = null,
             .startTimeMs = clock.millisNow(),
         };
         srv.router.templateEngine = templateEngine;
@@ -400,6 +418,12 @@ pub const Server = struct {
             if (loadedKeyPem) |k| {
                 std.crypto.secureZero(u8, @constCast(k));
                 allocator.free(k);
+            }
+            if (h3Ep_opt) |*ep| {
+                ep.deinit();
+            }
+            if (h3Placeholder_opt) |p| {
+                p.deinit();
             }
         }
 
@@ -552,7 +576,28 @@ pub const Server = struct {
             self.allocator.free(k);
             self.tlsKeyPemLoaded = null;
         }
-        if (self.cfg.tls) |*t| t.deinit();
+        if (self.tlsServer) |*s| {
+            s.deinit();
+            self.tlsServer = null;
+        }
+        self.h3Stop.store(true, .release);
+        if (self.h3Pump) |p| p.stop();
+        if (self.h3Thread) |th| {
+            th.join();
+            self.h3Thread = null;
+        }
+        if (self.h3Pump) |p| {
+            self.allocator.destroy(p);
+            self.h3Pump = null;
+        }
+        if (self.h3Endpoint) |*ep| {
+            ep.deinit();
+            self.h3Endpoint = null;
+        }
+        if (self.h3PlaceholderConn) |p| {
+            p.deinit();
+            self.h3PlaceholderConn = null;
+        }
         if (self.cfg.enableDocs) docs.unmount();
         self.router.deinit();
         self.listener.close(self.io);
@@ -572,13 +617,10 @@ pub const Server = struct {
     }
 
     /// Dynamically sets or updates TLS certificates on this server instance.
+    /// Old PEMs are released only after the replacement owner builds
+    /// successfully, so a failed rotation keeps serving with the old
+    /// identity (and old buffers are never freed twice).
     pub fn setTls(self: *Server, certPemOrPath: []const u8, keyPemOrPath: []const u8) !void {
-        if (self.tlsCertPemLoaded) |c| self.allocator.free(c);
-        if (self.tlsKeyPemLoaded) |k| {
-            std.crypto.secureZero(u8, @constCast(k));
-            self.allocator.free(k);
-            self.tlsKeyPemLoaded = null;
-        }
         var certStr: []u8 = undefined;
         if (std.mem.indexOf(u8, certPemOrPath, "-----BEGIN") != null) {
             certStr = try self.allocator.dupe(u8, certPemOrPath);
@@ -598,21 +640,30 @@ pub const Server = struct {
             self.allocator.free(keyStr);
         }
 
-        self.tlsCertPemLoaded = certStr;
-        self.tlsKeyPemLoaded = keyStr;
-
-        self.tlsServer = tcpTlsMod.TlsServer.init(.{
-            .allocator = self.allocator,
-            .defaultIdentity = .{
-                .certChainPem = certStr,
-                .privateKeyPem = keyStr,
-            },
-            .alpnProtocols = if (self.cfg.tls) |t| t.alpnProtocols else &alpnMod.DEFAULT_TCP_PREFERENCE,
+        // Build the replacement owner first: on failure the errdefers
+        // above release the new PEMs and the previous server (if any)
+        // keeps serving.
+        var newServer: ?tlsServerMod.Server = null;
+        newServer = tlsServerMod.Server.init(self.allocator, self.io, .{
+            .certificatePem = certStr,
+            .privateKeyPem = keyStr,
+            .alpn = if (self.cfg.tls) |t| t.alpn else &alpnMod.DEFAULT_TCP_PREFERENCE,
             .clientAuth = if (self.cfg.tls) |t| t.clientAuth else .disabled,
-            .clientCaPem = if (self.cfg.tls) |t| t.clientCa else null,
+            .clientCaPem = if (self.cfg.tls) |t| t.clientCaPem else null,
             .ticketKeys = if (self.cfg.tls) |t| t.ticketKeys else null,
             .ticketLifetimeSecs = if (self.cfg.tls) |t| t.ticketLifetimeSecs else 7200,
-        });
+        }) catch null;
+        if (newServer == null) return error.TlsInitializationFailed;
+
+        if (self.tlsServer) |*s| s.deinit();
+        if (self.tlsCertPemLoaded) |c| self.allocator.free(c);
+        if (self.tlsKeyPemLoaded) |k| {
+            std.crypto.secureZero(u8, @constCast(k));
+            self.allocator.free(k);
+        }
+        self.tlsCertPemLoaded = certStr;
+        self.tlsKeyPemLoaded = keyStr;
+        self.tlsServer = newServer;
     }
 
     /// Returns the active template engine, if templates are enabled.
@@ -632,6 +683,8 @@ pub const Server = struct {
             self.emit(.{ .kind = .serverStopped, .level = .info, .message = "shutting down" });
         }
         self.stopFlag.store(true, .release);
+        self.h3Stop.store(true, .release);
+        if (self.h3Pump) |p| p.stop();
 
         // On Windows (Zig 0.16), the AFD-backed listener uses IOCP for accept().
         // Closing the listening socket while a thread is blocked in netAcceptWindows
@@ -776,6 +829,17 @@ pub const Server = struct {
             .status = self.listener.localPort(),
             .message = "server started",
         });
+        if (self.h3Endpoint != null and self.h3Pump == null) {
+            const pumpPtr = self.allocator.create(quicTransport.Pump) catch null;
+            if (pumpPtr) |p| {
+                if (p.start(&self.h3Endpoint.?, self.allocator)) {
+                    self.h3Pump = p;
+                    self.h3Thread = std.Thread.spawn(.{}, Server.runHttp3Loop, .{self}) catch null;
+                } else |_| {
+                    self.allocator.destroy(p);
+                }
+            }
+        }
         var served: usize = 0;
         while (!self.stopFlag.load(.acquire)) {
             if (self.cfg.maxConnections != 0 and served >= self.cfg.maxConnections) break;
@@ -797,6 +861,16 @@ pub const Server = struct {
 
             // Stop before blocking on the next accept when asked.
             if (self.stopFlag.load(.acquire)) break;
+        }
+        self.h3Stop.store(true, .release);
+        if (self.h3Pump) |p| p.stop();
+        if (self.h3Thread) |th| {
+            th.join();
+            self.h3Thread = null;
+        }
+        if (self.h3Pump) |p| {
+            self.allocator.destroy(p);
+            self.h3Pump = null;
         }
         self.emit(.{ .kind = .serverStopped, .level = .info, .message = "shutdown complete" });
     }
@@ -822,7 +896,7 @@ pub const Server = struct {
         // Check for TLS Handshake record (ContentType = 0x16, TLS legacy version 0x03, 0x01..0x03)
         if (self.tlsServer != null) {
             if (nPeek >= 3 and peekBuf[0] == 0x16 and peekBuf[1] == 0x03) {
-                var tlsConn = self.tlsServer.?.handshakeBuffered(self.io, conn, peekBuf[0..nPeek]) catch |err| {
+                var tlsConn = self.tlsServer.?.acceptBuffered(conn, peekBuf[0..nPeek]) catch |err| {
                     var msgBuf: [64]u8 = undefined;
                     const msg = std.fmt.bufPrint(&msgBuf, "TLS handshake failed: {s}", .{@errorName(err)}) catch "TLS handshake failed";
                     self.emit(.{ .kind = .tlsHandshakeFailed, .level = .warn, .message = msg });
@@ -831,7 +905,7 @@ pub const Server = struct {
                 defer tlsConn.deinit();
 
                 const streamConn = StreamConn{ .tls = &tlsConn };
-                if (self.cfg.http2 and tlsConn.alpn == .h2) {
+                if (self.cfg.http2 and tlsConn.alpn != null and tlsConn.alpn.? == .h2) {
                     try self.serveHttp2Connection(streamConn, true, "");
                 } else {
                     try self.serveHttp1Connection(streamConn, true, "");
@@ -1025,6 +1099,178 @@ pub const Server = struct {
             const n = conn.read(&buf) catch break;
             if (n == 0) break;
             session.feed(buf[0..n]) catch break;
+        }
+    }
+
+    fn runHttp3Loop(self: *Server) void {
+        while (!self.stopFlag.load(.acquire) and !self.h3Stop.load(.acquire)) {
+            self.serveOneHttp3() catch |err| {
+                if (err == error.Timeout or err == error.Cancelled) continue;
+                if (self.stopFlag.load(.acquire) or self.h3Stop.load(.acquire)) break;
+            };
+        }
+    }
+
+    fn serveOneHttp3(self: *Server) !void {
+        const ep = &(self.h3Endpoint orelse return error.NoEndpoint);
+        const pump = self.h3Pump orelse return error.NoPump;
+        const certPem = self.tlsCertPemLoaded orelse return error.NoCertificate;
+        const keyPem = self.tlsKeyPemLoaded orelse return error.NoPrivateKey;
+
+        const seed: u64 = @as(u64, @intCast(clock.millisNow())) ^ 0x4833;
+        const oldConn = ep.conn;
+        const qconn = try quicConn.Connection.init(self.allocator, .server, .{}, seed);
+        defer {
+            qconn.deinit();
+            ep.conn = oldConn;
+        }
+        ep.conn = qconn;
+
+        var replayCache = tlsSessionMod.ReplayCache.init(self.allocator, 256);
+        defer replayCache.deinit();
+
+        const ticketKeys = if (self.cfg.tls) |t| t.ticketKeys orelse tlsSessionMod.TicketKeys{ .current = [_]u8{0x5A} ** 32 } else tlsSessionMod.TicketKeys{ .current = [_]u8{0x5A} ** 32 };
+
+        var drv = quicHs.Driver.initServer(self.allocator, .{
+            .certChainPem = certPem,
+            .privateKeyPem = keyPem,
+            .ticketKeys = ticketKeys,
+            .maxEarlyData = 16384,
+            .replayCache = &replayCache,
+        });
+        defer drv.deinit();
+
+        qconn.tls = .{
+            .ctx = &drv,
+            .start = quicHs.Driver.clientStart,
+            .onData = quicHs.Driver.onData,
+        };
+
+        try quicHs.serveHandshake(ep, pump, &drv, 10_000);
+
+        var h3 = http3Conn.Connection.init(self.allocator, .server);
+        defer h3.deinit();
+
+        const Acc = struct {
+            sid: u64 = std.math.maxInt(u64),
+            buf: std.ArrayList(u8) = .empty,
+            fin: bool = false,
+
+            fn onStream(c: ?*anyopaque, sid: u64, data: []const u8, fin: bool) void {
+                const acc: *@This() = @ptrCast(@alignCast(c.?));
+                if (acc.sid == std.math.maxInt(u64) and sid % 4 == 0) acc.sid = sid;
+                if (sid != acc.sid) return;
+                acc.buf.appendSlice(std.heap.page_allocator, data) catch return;
+                if (fin) acc.fin = true;
+            }
+        };
+
+        var acc = Acc{};
+        defer acc.buf.deinit(std.heap.page_allocator);
+        qconn.cbs = .{ .ctx = &acc, .onStreamData = Acc.onStream };
+
+        const startMs: u64 = @intCast(clock.millisNow());
+        while (!self.stopFlag.load(.acquire) and !self.h3Stop.load(.acquire)) {
+            const nowMs: u64 = @intCast(clock.millisNow());
+            if (nowMs -| startMs > 10_000) return error.Timeout;
+            try quicHs.feedPumped(ep, pump, null, 200, nowMs);
+            if (!acc.fin) continue;
+
+            var off: usize = 0;
+            const fr = try http3Frame.parseFrame(acc.buf.items, &off);
+            const fields = try h3.qdec.decodeSectionCounted(fr.payload, 0, null);
+            defer h3.qdec.freeFields(fields);
+
+            var mStr: []const u8 = "GET";
+            var pStr: []const u8 = "/";
+            var reqBody: []const u8 = "";
+            if (off < acc.buf.items.len) {
+                var bodyOff = off;
+                if (http3Frame.parseFrame(acc.buf.items, &bodyOff)) |dfr| {
+                    if (dfr.frameType == 0x00) {
+                        reqBody = dfr.payload;
+                    }
+                } else |_| {}
+            }
+
+            var arenaH3 = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arenaH3.deinit();
+            const a = arenaH3.allocator();
+
+            var ctxHdrs = try a.alloc(routerMod.Header, fields.len);
+            var hdrCount: usize = 0;
+            for (fields) |f| {
+                if (std.mem.eql(u8, f.name, ":method")) {
+                    mStr = f.value;
+                } else if (std.mem.eql(u8, f.name, ":path")) {
+                    pStr = f.value;
+                } else if (!std.mem.startsWith(u8, f.name, ":")) {
+                    ctxHdrs[hdrCount] = .{ .name = f.name, .value = f.value };
+                    hdrCount += 1;
+                }
+            }
+
+            const method = Method.fromString(mStr) orelse .GET;
+            var cleanPath = pStr;
+            if (std.mem.indexOfAny(u8, cleanPath, "?#")) |idx| {
+                cleanPath = cleanPath[0..idx];
+            }
+            var queryPart: []const u8 = "";
+            if (std.mem.indexOfScalar(u8, pStr, '?')) |qi| {
+                var q = pStr[qi + 1 ..];
+                if (std.mem.indexOfScalar(u8, q, '#')) |hi| q = q[0..hi];
+                queryPart = q;
+            }
+
+            var ctx = Context{
+                .allocator = a,
+                .io = self.io,
+                .headers = ctxHdrs[0..hdrCount],
+                .path = cleanPath,
+                .query = queryPart,
+                .method = method,
+                .body = reqBody,
+                .isTls = true,
+                .trustForwarded = self.cfg.trustForwardedHeaders,
+            };
+
+            const res = self.router.dispatch(&ctx);
+
+            var qenc = http3Qpack.Encoder.init(self.allocator);
+            defer qenc.deinit();
+            var rs = http3Conn.RequestStream{ .id = acc.sid, .allocator = self.allocator, .qpack = &qenc };
+
+            var respHeaders = std.ArrayList(http3Qpack.FieldLine).empty;
+            defer respHeaders.deinit(a);
+            for (res.headers) |h| {
+                try respHeaders.append(a, .{ .name = h.name, .value = h.value });
+            }
+            if (res.contentType) |ct| {
+                try respHeaders.append(a, .{ .name = "content-type", .value = ct });
+            }
+
+            const rhead = try rs.buildResponseHeaders(res.status, respHeaders.items);
+            defer self.allocator.free(rhead);
+            const rdata = try rs.buildData(res.body);
+            defer self.allocator.free(rdata);
+
+            const SendHelper = struct {
+                var sId: u64 = 0;
+                var sHead: []const u8 = "";
+                var sData: []const u8 = "";
+                pub fn build(gpa: Allocator, payload: *std.ArrayList(u8)) quicConn.Error!void {
+                    quicFrames.encode(payload, gpa, .{ .stream = .{ .id = sId, .offset = 0, .data = sHead, .fin = false } }) catch
+                        return quicConn.Error.OutOfMemory;
+                    quicFrames.encode(payload, gpa, .{ .stream = .{ .id = sId, .offset = sHead.len, .data = sData, .fin = true } }) catch
+                        return quicConn.Error.OutOfMemory;
+                }
+            };
+            SendHelper.sId = acc.sid;
+            SendHelper.sHead = rhead;
+            SendHelper.sData = rdata;
+            try qconn.sendFrames(.application, SendHelper.build, 0);
+            _ = try ep.flush(null);
+            return;
         }
     }
 
@@ -1763,15 +2009,15 @@ test "server setTls dynamic reconfiguration and key zeroing" {
 
     try std.testing.expect(!srv.isTls());
 
-    const cert1 = "-----BEGIN CERTIFICATE-----\nCERT1\n-----END CERTIFICATE-----\n";
-    const key1 = "-----BEGIN PRIVATE KEY-----\nKEY1\n-----END PRIVATE KEY-----\n";
+    const cert1 = @embedFile("../protocols/tls/testdata/localhostCert.pem");
+    const key1 = @embedFile("../protocols/tls/testdata/localhostKey.pem");
     try srv.setTls(cert1, key1);
     try std.testing.expect(srv.isTls());
     try std.testing.expectEqualStrings(cert1, srv.tlsCertPemLoaded.?);
 
     // Reconfigure dynamically with new cert/key
-    const cert2 = "-----BEGIN CERTIFICATE-----\nCERT2\n-----END CERTIFICATE-----\n";
-    const key2 = "-----BEGIN PRIVATE KEY-----\nKEY2\n-----END PRIVATE KEY-----\n";
+    const cert2 = @embedFile("../protocols/tls/testdata/localhostCert.pem");
+    const key2 = @embedFile("../protocols/tls/testdata/localhostKey.pem");
     try srv.setTls(cert2, key2);
     try std.testing.expect(srv.isTls());
     try std.testing.expectEqualStrings(cert2, srv.tlsCertPemLoaded.?);
@@ -1789,8 +2035,8 @@ test "strict HTTPS mode rejects plain HTTP with 400 Bad Request" {
     }) catch return;
     defer srv.deinit();
 
-    const cert = "-----BEGIN CERTIFICATE-----\nCERT\n-----END CERTIFICATE-----\n";
-    const key = "-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----\n";
+    const cert = @embedFile("../protocols/tls/testdata/localhostCert.pem");
+    const key = @embedFile("../protocols/tls/testdata/localhostKey.pem");
     try srv.setTls(cert, key);
     try std.testing.expect(srv.isTls());
 
@@ -1849,8 +2095,8 @@ test "malformed TLS handshake emits tlsHandshakeFailed event" {
     }) catch return;
     defer srv.deinit();
 
-    const cert = "-----BEGIN CERTIFICATE-----\nCERT\n-----END CERTIFICATE-----\n";
-    const key = "-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----\n";
+    const cert = @embedFile("../protocols/tls/testdata/localhostCert.pem");
+    const key = @embedFile("../protocols/tls/testdata/localhostKey.pem");
     try srv.setTls(cert, key);
 
     const Runner = struct {
@@ -2058,4 +2304,47 @@ test "port zero allocates ephemeral port; strict rejects occupied port" {
     }) catch return;
     defer second.deinit();
     try std.testing.expect(second.localPort() != 0);
+}
+
+test "Server high-level HTTP/3 initialization and endpoint lifecycle" {
+    const a = std.testing.allocator;
+    var ctx = tcp.IoContext.init(a) catch return;
+    defer ctx.deinit();
+
+    const certPem =
+        \\-----BEGIN CERTIFICATE-----
+        \\MIIBmTCCAT+gAwIBAgIURhx0CMJWTUTFJXV9z2OlmW/cNlcwCgYIKoZIzj0EAwIw
+        \\FDESMBAGA1UEAwwJMTI3LjAuMC4xMB4XDTI2MDkwOTE4MTczOFoXDTM2MDkwNjE4
+        \\MTczOFowFDESMBAGA1UEAwwJMTI3LjAuMC4xMFkwEwYHKoZIzj0CAQYIKoZIzj0D
+        \\AQcDQgAE71D4pM0SAPK8sdt+xlEESZX/EJoKHUC+4IpPuSlOiQuCXOkN04ozVGKA
+        \\mrmUtDqQCdvmdjHbjqGY6TCszXTCnKNvMG0wHQYDVR0OBBYEFFjYJYGodkVKyvXf
+        \\4qrn7rvQx+PFMB8GA1UdIwQYMBaAFFjYJYGodkVKyvXf4qrn7rvQx+PFMA8GA1Ud
+        \\EwEB/wQFMAMBAf8wGgYDVR0RBBMwEYcEfwAAAYIJbG9jYWxob3N0MAoGCCqGSM49
+        \\BAMCA0gAMEUCIQD0sAcuw/jdWdfBrxLXY1ur2cU8F0CAkPCvS2qKn7XK4QIgAP71
+        \\95toW+Gsh8/VZlNoHL2s14olRp5zl3cYDPzKM10=
+        \\-----END CERTIFICATE-----
+    ;
+    const keyPem =
+        \\-----BEGIN PRIVATE KEY-----
+        \\MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgyp549r9FrXbm02Cn
+        \\81gAdAbUzHatPYQWVDIWnQdCMPChRANCAATvUPikzRIA8ryx237GUQRJlf8Qmgod
+        \\QL7gik+5KU6JC4Jc6Q3TijNUYoCauZS0OpAJ2+Z2MduOoZjpMKzNdMKc
+        \\-----END PRIVATE KEY-----
+    ;
+
+    var srv = Server.init(a, ctx.io, .{
+        .host = "127.0.0.1",
+        .port = 0,
+        .http3 = true,
+        .tls = .{
+            .certificatePem = certPem,
+            .privateKeyPem = keyPem,
+        },
+        .enableDocs = false,
+    }) catch return;
+    defer srv.deinit();
+
+    try std.testing.expect(srv.h3Endpoint != null);
+    try std.testing.expect(srv.h3Pump == null);
+    try std.testing.expectEqual(srv.localPort(), srv.h3Endpoint.?.localPort());
 }

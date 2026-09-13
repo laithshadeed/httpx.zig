@@ -163,16 +163,15 @@ pub const Endpoint = struct {
     peer: ?std.Io.net.IpAddress = null,
     io: std.Io,
 
-    /// Binds an ephemeral local port for `conn`.
-    pub fn init(allocator: Allocator, io: std.Io, conn: *Connection) !Endpoint {
-        return initPort(allocator, io, conn, 0);
-    }
+    pub const Options = struct {
+        port: u16 = 0,
+    };
 
-    /// Binds `port` (0 = ephemeral) for `conn`. Servers bind a known
+    /// Binds `options.port` (0 = ephemeral by default) for `conn`. Servers bind a known
     /// port so clients can address them; clients use ephemeral ports.
-    pub fn initPort(allocator: Allocator, io: std.Io, conn: *Connection, port: u16) !Endpoint {
+    pub fn init(allocator: Allocator, io: std.Io, conn: *Connection, options: Options) !Endpoint {
         _ = allocator;
-        const sock = try udpMod.UdpSocket.bind(io, port);
+        const sock = try udpMod.UdpSocket.bind(io, options.port);
         // No SO_RCVTIMEO on purpose: a receive timeout surfaces as
         // error.WouldBlock, which the Threaded std.Io backend treats as
         // unreachable and aborts the process. The socket stays fully
@@ -261,9 +260,9 @@ test "quic endpoints exchange protected initial packets over real udp" {
     try client.sendFrames(.initial, PingC.build, 50);
     try server.acceptInitial(client.dcid[0..8]);
 
-    var ce = try Endpoint.init(a, ctx.io, client);
+    var ce = try Endpoint.init(a, ctx.io, client, .{});
     defer ce.deinit();
-    var se = try Endpoint.init(a, ctx.io, server);
+    var se = try Endpoint.init(a, ctx.io, server, .{});
     defer se.deinit();
 
     const cport = ce.localPort();

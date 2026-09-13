@@ -212,7 +212,7 @@ fn filterStringValue(allocator: Allocator, value: Value) ![]u8 {
 }
 
 fn filterUpper(allocator: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
-        _ = kwargs;
+    _ = kwargs;
     _ = args;
     const s = try filterStringValue(allocator, value);
     for (s) |*c| c.* = std.ascii.toUpper(c.*);
@@ -220,7 +220,7 @@ fn filterUpper(allocator: Allocator, value: Value, args: []const Value, kwargs: 
 }
 
 fn filterLower(allocator: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
-        _ = kwargs;
+    _ = kwargs;
     _ = args;
     const s = try filterStringValue(allocator, value);
     for (s) |*c| c.* = std.ascii.toLower(c.*);
@@ -228,7 +228,7 @@ fn filterLower(allocator: Allocator, value: Value, args: []const Value, kwargs: 
 }
 
 fn filterTrim(allocator: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
-        _ = kwargs;
+    _ = kwargs;
     _ = args;
     const s = try filterStringValue(allocator, value);
     defer allocator.free(s);
@@ -236,7 +236,7 @@ fn filterTrim(allocator: Allocator, value: Value, args: []const Value, kwargs: [
 }
 
 fn filterCapitalize(allocator: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
-        _ = kwargs;
+    _ = kwargs;
     _ = args;
     const s = try filterStringValue(allocator, value);
     for (s, 0..) |*c, i| c.* = if (i == 0) std.ascii.toUpper(c.*) else std.ascii.toLower(c.*);
@@ -244,7 +244,7 @@ fn filterCapitalize(allocator: Allocator, value: Value, args: []const Value, kwa
 }
 
 fn filterTitle(allocator: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
-        _ = kwargs;
+    _ = kwargs;
     _ = args;
     const s = try filterStringValue(allocator, value);
     var newWord = true;
@@ -262,7 +262,7 @@ fn filterTitle(allocator: Allocator, value: Value, args: []const Value, kwargs: 
 }
 
 fn filterEscape(allocator: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
-        _ = kwargs;
+    _ = kwargs;
     _ = args;
     // Already-safe markup passes through unescaped (Jinja Markup semantics);
     // use `forceescape` to escape even safe values.
@@ -286,7 +286,7 @@ fn filterEscape(allocator: Allocator, value: Value, args: []const Value, kwargs:
 }
 
 fn filterSafe(allocator: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
-        _ = kwargs;
+    _ = kwargs;
     _ = args;
     const s = try filterStringValue(allocator, value);
     return .{ .rawHtml = s };
@@ -301,7 +301,7 @@ fn filterDefault(allocator: Allocator, value: Value, args: []const Value, kwargs
 }
 
 fn filterLength(allocator: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
-        _ = kwargs;
+    _ = kwargs;
     _ = args;
     _ = allocator;
     return .{ .integer = switch (value) {
@@ -345,7 +345,7 @@ fn filterJoin(allocator: Allocator, value: Value, args: []const Value, kwargs: [
 }
 
 fn filterFirst(allocator: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
-        _ = kwargs;
+    _ = kwargs;
     _ = args;
     _ = allocator;
     return switch (value) {
@@ -356,7 +356,7 @@ fn filterFirst(allocator: Allocator, value: Value, args: []const Value, kwargs: 
 }
 
 fn filterLast(allocator: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
-        _ = kwargs;
+    _ = kwargs;
     _ = args;
     _ = allocator;
     return switch (value) {
@@ -367,7 +367,7 @@ fn filterLast(allocator: Allocator, value: Value, args: []const Value, kwargs: [
 }
 
 fn filterReplace(allocator: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
-        _ = kwargs;
+    _ = kwargs;
     if (args.len < 2) return value;
     const s = try filterStringValue(allocator, value);
     defer allocator.free(s);
@@ -430,7 +430,7 @@ fn filterTruncate(allocator: Allocator, value: Value, args: []const Value, kwarg
 }
 
 fn filterStriptags(allocator: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
-        _ = kwargs;
+    _ = kwargs;
     _ = args;
     const s = try filterStringValue(allocator, value);
     defer allocator.free(s);
@@ -512,13 +512,13 @@ fn filterFloat(_: Allocator, value: Value, args: []const Value, kwargs: []const 
 }
 
 fn filterString(allocator: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
-        _ = kwargs;
+    _ = kwargs;
     _ = args;
     return .{ .string = try filterStringValue(allocator, value) };
 }
 
 fn filterAbs(_: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
-        _ = kwargs;
+    _ = kwargs;
     _ = args;
     return switch (value) {
         .integer => |i| .{ .integer = if (i < 0) -i else i },
@@ -528,7 +528,7 @@ fn filterAbs(_: Allocator, value: Value, args: []const Value, kwargs: []const Fi
 }
 
 fn filterRound(_: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
-        _ = kwargs;
+    _ = kwargs;
     var prec: i32 = 0;
     if (args.len > 0) {
         prec = switch (args[0]) {
@@ -607,7 +607,7 @@ fn filterSort(allocator: Allocator, value: Value, args: []const Value, kwargs: [
 }
 
 fn filterReverse(allocator: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
-        _ = kwargs;
+    _ = kwargs;
     _ = args;
     if (value != .list) return value;
     const out = try allocator.dupe(Value, value.list);
@@ -615,8 +615,6 @@ fn filterReverse(allocator: Allocator, value: Value, args: []const Value, kwargs
     std.mem.reverse(Value, out);
     return .{ .list = out };
 }
-
-
 
 // ---------- extended filter helpers ----------
 
@@ -875,7 +873,6 @@ fn orderValues(a: Value, b: Value, caseSensitive: bool) std.math.Order {
     }
     return compareOrder(a, b);
 }
-
 
 fn filterAttr(allocator: Allocator, value: Value, args: []const Value, kwargs: []const FilterKwarg) !Value {
     _ = allocator;
@@ -3199,8 +3196,6 @@ pub const Renderer = struct {
         }
     };
 
-
-
     const NumOp = enum { add, sub, mul, div, floorDiv, mod, pow };
 
     fn numericBinop(left: Value, right: Value, op: NumOp) !Value {
@@ -4875,4 +4870,3 @@ test "Renderer urlFor-style globals take kwargs" {
     defer alloc.free(out);
     try testing.expectEqualStrings("/user/7", out);
 }
-

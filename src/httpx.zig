@@ -402,11 +402,6 @@ pub const StreamConn = server.StreamConn;
 pub const Router = router.Router;
 pub const Context = router.Context;
 pub const Response = router.Response;
-pub const TlsServer = tls.TlsServer;
-pub const TlsServerConn = tls.TlsServerConn;
-pub const TlsServerConfig = tls.TlsServerConfig;
-pub const TlsConfig = tls.ServerConfig;
-pub const TlsClientConfig = tls.ClientConfig;
 
 // Concurrency & Utilities
 pub const WorkerPoolConfig = @import("concurrency/workerPool.zig").Config;
@@ -438,7 +433,7 @@ pub const Status = status.Status;
 pub const Http1Parser = http1.parser.Http1Parser;
 pub const ChunkedDecoder = http1.parser.ChunkedDecoder;
 pub const H2Session = http2.connection.Session;
-pub const AlpnProtocol = tls.alpn.Protocol;
+pub const AlpnProtocol = tls.AlpnProtocol;
 
 // FTP (isolated protocol subsystem)
 pub const ftp = struct {
@@ -517,8 +512,8 @@ test {
     _ = @import("protocols/tls/handshake.zig");
     _ = @import("protocols/tls/engine.zig");
     _ = @import("protocols/tls/quicTls.zig");
-    _ = @import("protocols/tls/tcpTls.zig");
-    _ = @import("protocols/tls/tcpClient.zig");
+    _ = @import("protocols/tls/server.zig");
+    _ = @import("protocols/tls/client.zig");
     _ = @import("protocols/tls/session.zig");
     _ = @import("protocols/tls/tls.zig");
     _ = @import("protocols/tls/transport.zig");

@@ -81,16 +81,16 @@
 
 | Feature | Description |
 |---------|-------------|
-| **Protocol Support** | Client: `auto` negotiates to HTTP/1.1 over TLS and supports explicit HTTP/1.0, HTTP/1.1, cleartext HTTP/2, and HTTP/2 over TLS (native ALPN `h2`); server: HTTP/1.x plus HTTP/2 over cleartext and TLS ALPN; HTTP/3 frame/QPACK/QUIC primitives with TLS-in-QUIC handshake and request-path integration tested end to end over loopback (live `client.get` dispatch over UDP forthcoming). |
+| **Protocol Support** | Full client + server runtime across HTTP/1.0, HTTP/1.1, HTTP/2, and HTTP/3: HTTP/2 over TCP/TLS with ALPN `h2`, stream multiplexing, flow control, SETTINGS, and trailers; HTTP/3 over QUIC/UDP with native TLS 1.3, ALPN `h3`, QPACK encoder/decoder streams, dynamic table management, request/response streaming, and TLS 1.3 0-RTT early-data resumption. |
 | **Header Compression** | HPACK (RFC 7541) for HTTP/2; QPACK (RFC 9204) for HTTP/3 with static and dynamic table management. |
-| **HTTP/2 & HTTP/3 ALPN** | Server-side ALPN negotiation during the TLS handshake with graceful HTTP/1.1 fallback; the native client offers ALPN too, so explicit `.http2` over TLS negotiates `h2` end to end (a non-`h2` selection fails loudly instead of downgrading). |
-| **Stream Multiplexing** | HTTP/2 stream state machine with flow control (WINDOW_UPDATE), SETTINGS enforcement, GOAWAY/RST_STREAM, and trailers. |
-| **Connection Pooling** | Automatic reuse of TCP keep-alive connections with parking caps and stale-connection eviction. |
+| **HTTP/2 & HTTP/3 ALPN** | Server-side ALPN negotiation during the TLS handshake with graceful HTTP/1.1 fallback; the native client offers ALPN too, so explicit `.http2` over TLS negotiates `h2` end to end, and `.http3` over QUIC negotiates `h3` end to end. |
+| **Stream Multiplexing** | HTTP/2 and HTTP/3 stream state machines with flow control (WINDOW_UPDATE / MAX_STREAM_DATA), SETTINGS enforcement, GOAWAY/RST_STREAM, and trailers. |
+| **Connection Pooling** | Automatic reuse of TCP keep-alive connections, multiplexed HTTP/2 and HTTP/3 connections, and TLS session resumption caching. |
 | **Unified DOM & Web Parsing** | Native parser for HTML5, XML, RSS/Atom/JSON feeds, robots.txt, and sitemaps with zero-leak arena architecture. |
 | **Streaming Downloader** | Resumable chunked file downloader powered by `loaders.zig` progress bars, ETA calculation, and hash verification. |
 | **Pattern-based Routing** | Intuitive server routing with typed parameters (`/users/{id:int}`), slugs, catch-alls, groups, mounting, named routes + reversing, 404/405 handling, and OpenAPI integration. |
 | **Middleware Stack** | Built-in middleware for CORS, security headers (Helmet), recovery, logging, rate limiting, and CSRF, plus health endpoints. |
-| **TLS/SSL** | Native TLS 1.3 server engine + native TLS 1.3 client (RFC 8446) plus TLS 1.2/1.3 via the std-based HTTPS/1.1 transport: server ALPN (RFC 7301) with HTTP/1.1 fallback, native client ALPN (`h2` for HTTP/2 over TLS), X25519 ECDHE, AEAD ciphers, X.509 parsing/verification (P-256 ECDSA server certs), system/custom trust stores, hostname checks, mutual TLS enforcement (required/optional client certificates, presented via high-level `.tls = .{ .clientCertPem, .clientKeyPem }`), TLS 1.3 PSK resumption (`psk_dhe_ke` NST tickets) + HelloRetryRequest on native paths. 0-RTT intentionally unsupported (replay risk). |
+| **TLS/SSL** | Native TLS 1.3 server engine + native TLS 1.3 client (RFC 8446) plus TLS 1.2/1.3 via the std-based HTTPS/1.1 transport: server ALPN (RFC 7301) with HTTP/1.1 fallback, native client ALPN (`h2` for HTTP/2 over TLS, `h3` for HTTP/3 over QUIC), X25519 ECDHE, AEAD ciphers, X.509 parsing/verification (P-256 ECDSA server certs), system/custom trust stores, hostname checks, mutual TLS enforcement (required/optional client certificates, presented via high-level `.tls = .{ .clientCertPem, .clientKeyPem }`), TLS 1.3 PSK session resumption (`psk_dhe_ke` NST tickets) + HelloRetryRequest, and complete TLS 1.3 0-RTT early data with bounded server-side anti-replay cache (`ReplayCache`) and safe HTTP method policy. |
 | **Static Files & SPA** | High-performance static file serving with ETag, cache control, conditional GET, MIME detection, and SPA HTML5 fallback. |
 | **Interactive API Docs** | Auto-generated OpenAPI 3.1 specifications with embedded Swagger UI, ReDoc, Scalar, and GraphiQL interfaces. |
 | **Streaming & Realtime** | Chunked transfer responses with optional trailers, Server-Sent Events (SSE), and WebSocket frame support. |
@@ -852,12 +852,18 @@ server.pause()         // Pause accepting new connections
 server.resumeAccepting() // Resume accepting new connections
 
 // TLS API
+httpx.tls.Client         // TLS client owner (init takes allocator + io)
+httpx.tls.Server         // TLS server owner (init takes allocator + io)
 httpx.tls.Listener       // TLS listener (init takes allocator + io)
 httpx.tls.ListenerConfig // TLS listener configuration
 httpx.tls.Request        // Single-handler request (method/path/body)
 httpx.tls.Response       // Single-handler response (status/body)
-httpx.TlsConfig          // TLS server config
-httpx.TlsClientConfig    // TLS client config
+httpx.tls.Session        // Resumable TLS session (PSK identity)
+httpx.tls.SessionCache   // Origin-keyed session cache
+httpx.tls.Certificate    // Parsed X.509 certificate
+httpx.tls.TrustStore     // Trust anchor store
+httpx.tls.VerifyMode     // Verification policy (.caBundle/.selfSigned/.none)
+httpx.tls.TlsError       // Unified TLS error set
 
 // TLS lifecycle
 tls_listener.run(handler)                  // Wire handler to all routes, blocking accept loop

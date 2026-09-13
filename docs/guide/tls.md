@@ -28,9 +28,12 @@ across Linux, Windows, and macOS.
 * **HelloRetryRequest**: fully handled on both sides (shareless hello →
   retry with share, single-retry guard, transcript splice). Only X25519
   is supported: a server selecting any other group fails loudly.
-* **Not implemented, by policy**: 0-RTT early data. There is deliberately
-  **no** 0-RTT at any layer (replay-unsafe methods must never be sent
-  early); tickets never carry `early_data` extensions.
+* **0-RTT Early Data (RFC 8446 & RFC 9001)**: Fully supported across TLS 1.3,
+  QUIC TLS, and HTTP/3. Safe by default: early data is disabled unless explicitly
+  enabled via `.earlyData = .{ .enabled = true }`. Safe HTTP methods (`GET`, `HEAD`,
+  `OPTIONS`) are permitted by default; replay-sensitive methods (`POST`, `PUT`, `PATCH`,
+  `DELETE`) require explicit `.allowUnsafeMethods = true`. Servers enforce bounded
+  anti-replay defense via `ReplayCache`, ticket age checks, and `maxEarlyData` bounds.
 
 ## Mutual TLS (Client Certificates)
 

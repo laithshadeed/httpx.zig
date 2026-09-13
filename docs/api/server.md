@@ -84,7 +84,7 @@ defer server.deinit();
 | `liveReload` | `bool` | `false` | Enable SSE/WebSocket live-reload endpoints + script injection. |
 | `liveReloadPath` | `[]const u8` | `"/__httpx_liveReload"` | Mount path for the live-reload endpoint. |
 | `templates` | `?TemplateConfig` | `null` | Template engine config (auto-discovers `templates/` when null). |
-| `tls` | `?TlsServerConfig` | `null` | TLS/HTTPS config (certificate + private key). |
+| `tls` | `?tls.Server.Config` | `null` | TLS/HTTPS config (certificate + private key). |
 
 All `ServerConfig` fields are optional customizations. Omitted fields use the built-in defaults; `. {}` is the safe default.
 

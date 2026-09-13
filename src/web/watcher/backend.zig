@@ -33,7 +33,7 @@ pub const Config = struct {
     debounceMs: i64 = 50,
     /// Top-level directory names skipped during scans (generated trees).
     /// Empty disables skipping.
-    ignoredDirs: []const []const u8 = &.{ "node_modules", ".git", ".zig-cache", "zig-out", ".cache", "dist" },
+    ignoredDirs: []const []const u8 = &.{ "node_modules", ".git", ".zig-cache", "zig-out", "zig-pkg", ".cache", "dist" },
     /// Callback triggered when a file modification is detected.
     onChange: ?*const fn (event: WatchEvent, userData: ?*anyopaque) void = null,
     userData: ?*anyopaque = null,
@@ -615,6 +615,7 @@ pub const Watcher = struct {
         defer self.mutex.unlock();
         for (evs) |*e| {
             if (!events.isPathInsideRoot(self.config.dirPath, e.relPath)) continue;
+            if (self.isIgnoredPath(e.relPath)) continue;
             if (events.isEditorTempFile(e.relPath)) continue;
             const full = std.Io.Dir.path.join(self.allocator, &.{ self.config.dirPath, e.relPath }) catch continue;
             defer self.allocator.free(full);
@@ -658,6 +659,10 @@ pub const Watcher = struct {
                 continue;
             };
             defer self.allocator.free(full);
+            if (self.isIgnoredPath(e.name)) {
+                i += 1;
+                continue;
+            }
             if (events.isEditorTempFile(full)) {
                 i += 1;
                 continue;

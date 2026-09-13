@@ -6,7 +6,7 @@ RFC 9000 defines QUIC, a secure, general-purpose, multiplexed transport protocol
 
 * **Authenticated & Encrypted**: All packet headers and payloads are encrypted using TLS 1.3 (RFC 9001). Middleboxes and firewalls cannot inspect or tamper with stream headers.
 * **Stream Multiplexing**: Supports arbitrary numbers of concurrent unidirectional and bidirectional streams.
-* **Low Latency Handshake**: 1-RTT connection setup for new connections. (0-RTT early data is not enabled: `0-RTT not enabled in this build`.)
+* **Low Latency Handshake**: 1-RTT connection setup for new connections, and 0-RTT early-data connection resumption with pre-shared keys (PSK) and bounded anti-replay protection.
 * **Congestion Control**: NewReno controller plus RTT/loss detection primitives (`loss.zig`, `cc.zig`); ACK tracking is integrated into the receive path.
 
 ## QUIC Packet Types

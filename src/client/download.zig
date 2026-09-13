@@ -929,15 +929,10 @@ pub const Downloader = struct {
                 if (resp.header("content-range")) |cr| {
                     if (parseUnsatisfiedRange(cr)) |complete| {
                         if (complete == resumeOffset) {
-                            return .{
-                                .destination = destPath,
-                                .downloadedBytes = 0,
-                                .totalBytes = complete,
-                                .elapsedMs = 0,
-                                .statusCode = 200,
-                                .resumed = true,
-                                .skipped = true,
-                            };
+                            var r = DownloadResult.make(destPath, 0, complete, 0, 200);
+                            r.resumed = true;
+                            r.skipped = true;
+                            return r;
                         }
                     }
                 }

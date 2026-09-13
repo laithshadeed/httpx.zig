@@ -27,6 +27,7 @@ const clockMod = @import("../../common/clock.zig");
 
 const alpnMod = @import("alpn.zig");
 const sessionMod = @import("session.zig");
+const quicTls = @import("quicTls.zig");
 
 // Random helper — OS CSPRNG when available, otherwise deterministic PRNG
 
@@ -211,6 +212,13 @@ pub const Engine = struct {
     // Handshake state
     state: State = .start,
 
+    /// 0-RTT early data state
+    earlyDataOffered: bool = false,
+    earlyDataAccepted: bool = false,
+    clientEarlyTrafficSecret: ?[32]u8 = null,
+    maxEarlyData: u32 = 0,
+    replayCache: ?*sessionMod.ReplayCache = null,
+
     pub const State = enum {
         start,
         clientHelloSent,
@@ -351,12 +359,14 @@ pub const Engine = struct {
         serverName: ?[]const u8,
         session: *const sessionMod.ClientSession,
         nowMs: u64,
+        quicTransportParams: ?[]const u8,
     ) ![]u8 {
         var seed: [32]u8 = undefined;
         fillRandom(&seed);
         self.localKeypair = try x25519.KeyPair.generateDeterministic(seed);
         const pubkey = self.localKeypair.public_key;
 
+        const offerEarly = session.maxEarlyData > 0;
         const ch = handshakeMod.ClientHello{
             .random = blk: {
                 var r: [32]u8 = undefined;
@@ -376,6 +386,8 @@ pub const Engine = struct {
             .alpnProtocols = alpnProtocols,
             .serverName = serverName,
             .pskIdentities = &.{session.ticket},
+            .quicTransportParams = quicTransportParams,
+            .earlyData = offerEarly,
         };
         const encoded = try ch.encode(self.allocator);
         errdefer self.allocator.free(encoded);
@@ -384,13 +396,20 @@ pub const Engine = struct {
         // patch the binder. Both spans are validated by the codec.
         var ageSpan = try handshakeMod.pskAgeSpan(encoded, 0);
         std.mem.writeInt(u32, ageSpan[0..], session.obfuscatedAge(nowMs), .big);
-        const binder = computeResumptionBinder(self.transcript.state, encoded, session.psk);
+        const truncLen = try handshakeMod.pskTruncatedLen(encoded);
+        const binder = computeResumptionBinder(self.transcript.state, encoded[0..truncLen], session.psk);
         const binderSpan = try handshakeMod.pskBinderSpan(encoded);
         if (binderSpan.len != HashLen) return error.ProtocolViolation;
         @memcpy(binderSpan[0..HashLen], &binder);
 
         self.offeredPsk = session.psk;
+        self.earlyDataOffered = offerEarly;
         self.transcript.feed(encoded);
+        if (offerEarly) {
+            const earlySec = quicTls.earlySecret(session.psk);
+            const chHash = self.transcript.finish();
+            self.clientEarlyTrafficSecret = quicTls.clientEarlyTrafficSecret(earlySec, chHash);
+        }
         self.state = .clientHelloSent;
         self.cbs.onHandshakeData(self.cbs.ctx, .initial, encoded);
         return encoded;
@@ -497,6 +516,10 @@ pub const Engine = struct {
         self.negotiatedAlpn = if (ee.alpnProtocol) |wire| try self.allocator.dupe(u8, wire) else null;
         if (self.peerQuicTransportParams) |old| self.allocator.free(old);
         self.peerQuicTransportParams = if (ee.quicTransportParams) |tp| try self.allocator.dupe(u8, tp) else null;
+        self.earlyDataAccepted = ee.earlyDataAccepted;
+        if (!ee.earlyDataAccepted) {
+            self.clientEarlyTrafficSecret = null;
+        }
         self.state = .encryptedExtensionsReceived;
     }
 
@@ -589,19 +612,19 @@ pub const Engine = struct {
     pub fn selectPsk(self: *Engine, fullCh: []const u8, nowMs: u64) bool {
         self.resumptionPsk = null;
         self.pskSuite = null;
+        self.earlyDataAccepted = false;
+        self.clientEarlyTrafficSecret = null;
         const keys = self.ticketKeys orelse return false;
         const offer = handshakeMod.parsePskFirst(fullCh) catch return false;
         const o = offer orelse return false;
         if (o.binders.len < HashLen) return false;
         const opened = keys.open(o.ticket, nowMs) catch return false;
         if (!suiteSupportsResumption(opened.suite)) return false;
-        // Binder check over the received bytes with binder bytes zeroed.
-        const zu8 = self.allocator.dupe(u8, fullCh) catch return false;
-        defer self.allocator.free(zu8);
-        const span = handshakeMod.pskBinderSpan(zu8) catch return false;
-        @memset(span, 0);
+
+        // RFC 8446 Section 4.2.11.2: Compute binder over truncated ClientHello
+        const truncLen = handshakeMod.pskTruncatedLen(fullCh) catch return false;
         const fresh = handshakeMod.TranscriptHash.init(.{});
-        const binder = computeResumptionBinder(fresh, zu8, opened.psk);
+        const binder = computeResumptionBinder(fresh, fullCh[0..truncLen], opened.psk);
         var diff: u8 = 0;
         for (binder, o.binders[0..HashLen]) |a, b| diff |= a ^ b;
         if (diff != 0) {
@@ -610,6 +633,21 @@ pub const Engine = struct {
         }
         self.resumptionPsk = opened.psk;
         self.pskSuite = opened.suite;
+
+        // Evaluate 0-RTT early data offer
+        const clientWantsEarly = handshakeMod.hasEarlyDataExtension(fullCh);
+        if (clientWantsEarly and self.maxEarlyData > 0 and opened.maxEarlyData > 0) {
+            // Anti-replay protection check (fail closed if replay cache absent or rejects)
+            if (self.replayCache) |rc| {
+                if (rc.checkAndRecord(o.ticket, nowMs)) {
+                    self.earlyDataAccepted = true;
+                    const earlySec = quicTls.earlySecret(opened.psk);
+                    var copy = self.transcript.state;
+                    const chHash = copy.finalResult();
+                    self.clientEarlyTrafficSecret = quicTls.clientEarlyTrafficSecret(earlySec, chHash);
+                }
+            }
+        }
         return true;
     }
 
@@ -1362,6 +1400,13 @@ pub const Engine = struct {
             try eeExts.appendSlice(self.allocator, tp);
         }
 
+        // early_data extension (RFC 8446 Section 4.2.10) in EncryptedExtensions:
+        // empty body (length 0), signals to client that early data was accepted.
+        if (self.earlyDataAccepted) {
+            try eeExts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(handshakeMod.ExtensionType.early_data))));
+            try eeExts.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, 0)));
+        }
+
         try eeBody.appendSlice(self.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(eeExts.items.len))));
         try eeBody.appendSlice(self.allocator, eeExts.items);
 
@@ -1550,7 +1595,7 @@ pub const Engine = struct {
     /// PSK under the server's ticket keys, so the server stays stateless;
     /// the client re-derives the same PSK from its own master + the clear
     /// nonce. Call after the client's Finished is in the transcript.
-    /// Extensions are always empty: 0-RTT is never offered.
+    /// Includes early_data indication with maxEarlyData when configured.
     pub fn produceNewSessionTicket(
         self: *Engine,
         resumptionMaster: [32]u8,
@@ -1567,12 +1612,15 @@ pub const Engine = struct {
         var ageAdd: [4]u8 = undefined;
         fillRandom(&ageAdd);
         const ageAddV = std.mem.readInt(u32, &ageAdd, .big);
-        const blob = keys.seal(psk, suite, nowMs, lifetimeSecs, ageAddV);
+        const alpnWire = if (self.negotiatedAlpn) |a| a else "";
+        const blob = keys.seal(psk, suite, nowMs, lifetimeSecs, ageAddV, self.maxEarlyData, alpnWire);
+        const maxEd: ?u32 = if (self.maxEarlyData > 0) self.maxEarlyData else null;
         const nst = handshakeMod.NewSessionTicket{
             .lifetimeSecs = lifetimeSecs,
             .ageAdd = ageAddV,
             .nonce = &nonce,
             .ticket = &blob,
+            .maxEarlyData = maxEd,
         };
         return nst.encode(self.allocator);
     }
@@ -1602,12 +1650,13 @@ pub const Engine = struct {
         if (msg.len < 4) return error.ProtocolViolation;
         if (msg[0] != @intFromEnum(handshakeMod.HandshakeType.new_session_ticket)) return error.ProtocolViolation;
         const nst = try handshakeMod.NewSessionTicket.decode(msg[4..]);
-        return sessionMod.clientSessionFromTicket(
+        return sessionMod.clientSessionFromTicketWithAlpn(
             self.allocator,
             nst,
             resumptionMaster,
             self.selectedSuite,
             host,
+            self.negotiatedAlpn,
             nowMs,
         );
     }
@@ -2107,7 +2156,7 @@ test "psk abbreviated handshake resynchronizes application keys" {
     var server2 = Engine.initServer(a, .{});
     defer server2.deinit();
     server2.ticketKeys = server.ticketKeys;
-    const ch2 = try client2.produceClientHelloResumption(&.{"h2"}, &.{}, "example.com", &session, now + 2000);
+    const ch2 = try client2.produceClientHelloResumption(&.{"h2"}, &.{}, "example.com", &session, now + 2000, null);
     defer a.free(ch2);
     try server2.processClientHello(ch2);
     try std.testing.expect(server2.selectPsk(ch2, now + 2000));
@@ -2136,7 +2185,7 @@ test "psk abbreviated handshake resynchronizes application keys" {
     var server3 = Engine.initServer(a, .{});
     defer server3.deinit();
     server3.ticketKeys = server.ticketKeys;
-    const ch3 = try client3.produceClientHelloResumption(&.{"h2"}, &.{}, "example.com", &session, now + 3000);
+    const ch3 = try client3.produceClientHelloResumption(&.{"h2"}, &.{}, "example.com", &session, now + 3000, null);
     defer a.free(ch3);
     // Flip a binder byte: the server must reject the PSK silently.
     const tampered = try a.dupe(u8, ch3);

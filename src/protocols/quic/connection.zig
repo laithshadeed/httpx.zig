@@ -235,6 +235,14 @@ pub const Connection = struct {
     // Packet-number spaces.
     spaces: [3]PnSpace = undefined,
 
+    // 0-RTT early data state
+    zeroRttKeysTx: ?crypto.ProtectionKeys = null,
+    zeroRttKeysRx: ?crypto.ProtectionKeys = null,
+    earlyDataAccepted: bool = false,
+    earlyDataRejected: bool = false,
+    maxEarlyData: u64 = 0,
+    earlyDataBytesReceived: u64 = 0,
+
     // Transport parameters (peer's).
     peerParams: ?paramsMod.Params = null,
 
@@ -363,9 +371,25 @@ pub const Connection = struct {
         sp.keysRx = krx;
     }
 
+    pub fn installZeroRttKeys(self: *Connection, secret: [32]u8, isTx: bool) void {
+        const keys = crypto.deriveProtectionKeys(secret);
+        if (isTx) {
+            self.zeroRttKeysTx = keys;
+        } else {
+            self.zeroRttKeysRx = keys;
+        }
+    }
+
+    pub fn discardZeroRtt(self: *Connection) void {
+        self.zeroRttKeysTx = null;
+        self.zeroRttKeysRx = null;
+        self.earlyDataRejected = true;
+        self.earlyDataAccepted = false;
+    }
+
     /// Queues TLS handshake bytes for later packetization as CRYPTO frames.
     pub fn queueCrypto(self: *Connection, kind: SpaceKind, data: []const u8) Error!u64 {
-        if (kind == .application or data.len > MAX_DATAGRAM) return Error.BufferTooSmall;
+        if (data.len > MAX_DATAGRAM) return Error.BufferTooSmall;
         const idx = @intFromEnum(kind);
         const offset = self.cryptoSendOff[idx];
         self.cryptoSendOff[idx] = std.math.add(u64, offset, data.len) catch return Error.BufferTooSmall;
@@ -376,7 +400,6 @@ pub const Connection = struct {
     /// Peeks queued CRYPTO bytes while retaining their absolute stream offset.
     /// Call `consumeCrypto` after the frame has been serialized.
     pub fn takeCrypto(self: *Connection, kind: SpaceKind, maxBytes: usize) ?CryptoChunk {
-        if (kind == .application) return null;
         const idx = @intFromEnum(kind);
         const queued = self.cryptoOut[idx].items;
         if (queued.len == 0) return null;
@@ -387,8 +410,9 @@ pub const Connection = struct {
 
     /// Consumes bytes previously returned by `takeCrypto` after packetization.
     pub fn consumeCrypto(self: *Connection, kind: SpaceKind, count: usize) bool {
-        if (kind == .application or count > self.cryptoOut[@intFromEnum(kind)].items.len) return false;
-        self.cryptoOut[@intFromEnum(kind)].replaceRange(self.allocator, 0, count, &.{}) catch return false;
+        const idx = @intFromEnum(kind);
+        if (count > self.cryptoOut[idx].items.len) return false;
+        self.cryptoOut[idx].replaceRange(self.allocator, 0, count, &.{}) catch return false;
         return true;
     }
 
@@ -559,7 +583,11 @@ pub const Connection = struct {
             else => {},
         }
         const sp = &self.spaces[@intFromEnum(kind)];
-        const keys = sp.keysTx orelse return Error.TlsDriverFailed;
+        const isZeroRtt = (kind == .application and sp.keysTx == null and self.zeroRttKeysTx != null);
+        const keys = if (isZeroRtt)
+            self.zeroRttKeysTx.?
+        else
+            (sp.keysTx orelse return Error.TlsDriverFailed);
 
         // Server anti-amplification gate until address validation.
         if (self.role == .server and !self.addressValidated) {
@@ -591,7 +619,17 @@ pub const Connection = struct {
         std.mem.writeInt(u32, &pnBytes, @intCast(pn & 0xFFFFFFFF), .big);
 
         var buf: [MAX_DATAGRAM]u8 = undefined;
-        const hdrLen = if (kind == .application)
+        const hdrLen = if (isZeroRtt)
+            packetMod.writeLongHeader(buf[0..], .{
+                .type = .zeroRtt,
+                .version = 0x00000001,
+                .dcid = self.dcid[0..self.dcidLen],
+                .scid = self.scid[0..self.scidLen],
+                .token = "",
+                .pnLen = pnLen,
+                .protectedPayloadLen = payload.items.len + 16,
+            }) catch return Error.BufferTooSmall
+        else if (kind == .application)
             packetMod.writeShortHeader(buf[0..], .{
                 .keyPhase = false,
                 .dcid = self.dcid[0..self.dcidLen],
@@ -646,7 +684,7 @@ pub const Connection = struct {
                 break :blk protect.hpMaskChacha(hp32, &sample);
             },
         };
-        buf[0] ^= mask[0] & @as(u8, if (kind != .application) 0x0F else 0x1F);
+        buf[0] ^= mask[0] & @as(u8, if (kind != .application or isZeroRtt) 0x0F else 0x1F);
         for (0..pnLen) |i| buf[hdrLen + i] ^= mask[1 + i];
 
         try self.outbuf.appendSlice(self.allocator, buf[0..wireLen]);
@@ -897,13 +935,22 @@ pub const Connection = struct {
             else => return Error.ProtocolViolation,
         };
 
-        const spIdx: usize = switch (parsed.header.type) {
+        const isZeroRtt = parsed.header.type == .zeroRtt;
+        const spIdx: usize = if (isZeroRtt) 2 else switch (parsed.header.type) {
             .initial => 0,
             .handshake => 1,
-            else => return, // 0-RTT not enabled in this build
+            else => return,
         };
         const sp = &self.spaces[spIdx];
-        const keys = sp.keysRx orelse return Error.TlsDriverFailed;
+        const keys: crypto.ProtectionKeys = if (isZeroRtt) blk: {
+            if (self.role != .server) return; // 0-RTT is client -> server only
+            const zk = self.zeroRttKeysRx orelse {
+                const payloadLen = std.math.cast(usize, parsed.header.length) orelse return;
+                self.rxConsumed = parsed.header.pnOffset + payloadLen;
+                return;
+            };
+            break :blk zk;
+        } else (sp.keysRx orelse return Error.TlsDriverFailed);
 
         const pnOffset = parsed.header.pnOffset;
         if (dgram.len > MAX_DATAGRAM) return Error.ProtocolViolation;
@@ -948,6 +995,15 @@ pub const Connection = struct {
         var pt: [MAX_DATAGRAM]u8 = undefined;
         protect.openWithKeys(pt[0..ctLen], work[aadLen..][0..ctLen], work[declaredEnd - 16 ..][0..16].*, work[0..aadLen], keys, pn) catch
             return Error.AuthenticationFailed;
+
+        if (isZeroRtt) {
+            if (self.maxEarlyData > 0) {
+                self.earlyDataBytesReceived +|= ctLen;
+                if (self.earlyDataBytesReceived > self.maxEarlyData) {
+                    return Error.FlowControlViolation;
+                }
+            }
+        }
 
         sp.highestRxPn = @max(sp.highestRxPn, @as(i64, @intCast(@min(pn, 1 << 62))));
         sp.largestAcked = if (sp.largestAcked) |old| @max(old, pn) else pn;
@@ -2089,8 +2145,8 @@ test "crypto transmit queue preserves offsets across partial drains" {
     try std.testing.expectEqual(@as(u64, 6), second.offset);
     try std.testing.expectEqualStrings("-hello-tail", second.data);
     try std.testing.expect(conn.consumeCrypto(.initial, second.data.len));
-    try std.testing.expect(conn.takeCrypto(.initial, 1) == null);
-    try std.testing.expectError(Error.BufferTooSmall, conn.queueCrypto(.application, "bad"));
+    var huge: [1501]u8 = undefined;
+    try std.testing.expectError(Error.BufferTooSmall, conn.queueCrypto(.initial, &huge));
 }
 
 test "crypto receive reassembles reordered and overlapping segments" {

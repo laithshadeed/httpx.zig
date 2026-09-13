@@ -33,7 +33,7 @@ const Method = @import("../common/method.zig").Method;
 const parserMod = @import("../protocols/http1/parser.zig");
 const writerMod = @import("../protocols/http1/writer.zig");
 const tlsTransport = @import("../protocols/tls/transport.zig");
-const nativeTlsClient = @import("../protocols/tls/tcpClient.zig");
+const tlsClientMod = @import("../protocols/tls/client.zig");
 const http2Transport = @import("../protocols/http2/transport.zig");
 const poolNs = @import("pool.zig");
 const Pool = poolNs.Pool;
@@ -111,6 +111,15 @@ pub const TlsOptions = struct {
     allowTruncation: bool = true,
 };
 
+/// Early data (0-RTT) options for TLS 1.3 / QUIC / HTTP/3.
+pub const EarlyDataOptions = struct {
+    /// Explicit opt-in required. Default is false (safe by default).
+    enabled: bool = false,
+    /// Whether to allow replay-sensitive methods (POST, PUT, DELETE, PATCH).
+    /// Default is false (only GET, HEAD, OPTIONS are eligible).
+    allowUnsafeMethods: bool = false,
+};
+
 /// Per-request socket I/O timeout (milliseconds).
 pub const Header = struct { name: []const u8, value: []const u8 };
 
@@ -130,6 +139,8 @@ pub const Request = struct {
     maxRedirects: u8 = 5,
     /// Required for https:// URLs. Absence on an https URL is an error.
     tls: ?TlsOptions = null,
+    /// Early data configuration.
+    earlyData: EarlyDataOptions = .{},
     /// Optional single-flight DNS cache; set by Client automatically.
     dnsCache: ?*dnsCacheNs.Cache = null,
     /// Optional keep-alive connection pool; set by Client automatically.
@@ -339,25 +350,24 @@ pub const Error = error{
 
 pub const maxResponseBodySize: usize = 64 * 1024 * 1024;
 
-/// Uniform plain/TLS connection for the request engine.
+/// Uniform plain/TLS connection for the request engine. The TLS arm
+/// is a heap-boxed `tls.Client.Connection` (either transport); the box
+/// is freed alongside the deferred cleanup below.
 const Transport = union(enum) {
     plain: tcp.Socket,
-    encrypted: *tlsTransport.Connection,
-    nativeTls: *nativeTlsClient.TlsClientConn,
+    tls: *tlsClientMod.Client.Connection,
 
     fn writeAll(self: Transport, bytes: []const u8) !void {
         switch (self) {
             .plain => |s| try s.writeAll(bytes),
-            .encrypted => |t| try t.writeAll(bytes),
-            .nativeTls => |t| try t.writeAll(bytes),
+            .tls => |t| try t.writeAll(bytes),
         }
     }
 
     fn read(self: Transport, buf: []u8) !usize {
         return switch (self) {
             .plain => |s| s.read(buf) catch return error.ReadFailed,
-            .encrypted => |t| t.read(buf) catch return error.ReadFailed,
-            .nativeTls => |t| t.read(buf) catch return error.ReadFailed,
+            .tls => |t| t.read(buf) catch return error.ReadFailed,
         };
     }
 };
@@ -460,12 +470,18 @@ fn headerLinesWithAuth(a: Allocator, hdrs: []const Header, contentType: ?[]const
 }
 
 /// Executes the request. Returned Response owns its memory via `a`.
-/// Maps native-TLS client errors onto the request error set.
+/// Maps TLS client errors from either transport onto the request error set.
 fn mapNativeTlsError(err: anyerror) Error {
     return switch (err) {
         error.CertificateExpired => Error.CertificateExpired,
         error.CertificateHostMismatch => Error.CertificateHostMismatch,
+        error.CertificateIssuerMismatch => Error.CertificateIssuerMismatch,
+        error.CertificateNotYetValid => Error.CertificateNotYetValid,
+        error.CertificateSignatureInvalid => Error.CertificateSignatureInvalid,
         error.CertificateUntrusted => Error.TlsCertificateNotVerified,
+        error.TlsCertificateNotVerified => Error.TlsCertificateNotVerified,
+        error.TlsAlert => Error.TlsAlert,
+        error.TlsDecodeError => Error.TlsDecodeError,
         error.OutOfMemory => Error.OutOfMemory,
         else => Error.TlsHandshakeFailed,
     };
@@ -541,9 +557,41 @@ fn h3DoRequest(
     const t = tlsOpts orelse TlsOptions{ .verify = .caBundle, .allowTruncation = true };
     var conn = quicConn.Connection.init(a, .client, .{}, @intCast(clockMod.millisNow())) catch return Error.OutOfMemory;
     defer conn.deinit();
-    var ep = quicEp.Endpoint.init(a, io, conn) catch return Error.ConnectFailed;
+    var ep = quicEp.Endpoint.init(a, io, conn, .{}) catch return Error.ConnectFailed;
     defer ep.deinit();
-    var driver = quicHs.Driver.initClient(a, .{ .host = host, .verify = t.verify, .caPem = t.caPem });
+
+    const nowMs: u64 = @intCast(clockMod.millisNow());
+    var sessionToResume: ?tlsSession.ClientSession = null;
+    defer if (sessionToResume) |*s| s.deinit(a);
+    if (req.sessionCache) |sc| {
+        sessionToResume = sc.getWithAlpn(host, port, nowMs, "h3");
+    }
+
+    const isMethodSafe = req.method == .GET or req.method == .HEAD or req.method == .OPTIONS;
+    const canSendEarlyData = req.earlyData.enabled and (isMethodSafe or req.earlyData.allowUnsafeMethods);
+
+    var capturedSession: tlsSession.ClientSession = .{
+        .ticket = "",
+        .psk = undefined,
+        .ageAdd = 0,
+        .createdMs = 0,
+        .lifetimeSecs = 0,
+        .suite = undefined,
+        .host = "",
+        .maxEarlyData = 0,
+        .alpn = [_]u8{0} ** 16,
+        .alpnLen = 0,
+    };
+    defer if (capturedSession.ticket.len > 0) capturedSession.deinit(a);
+
+    var driver = quicHs.Driver.initClient(a, .{
+        .host = host,
+        .verify = t.verify,
+        .caPem = t.caPem,
+        .session = if (sessionToResume) |*s| s else null,
+        .earlyData = canSendEarlyData,
+        .sessionOut = &capturedSession,
+    });
     defer driver.deinit();
     conn.tls = .{ .ctx = &driver, .start = quicHs.Driver.clientStart, .onData = quicHs.Driver.onData };
 
@@ -555,6 +603,12 @@ fn h3DoRequest(
     quicHs.performHandshake(&ep, &pump, &driver, null, null, null, dest, deadlineMs) catch |e| {
         return mapQuicHandshakeError(e, driver.detail);
     };
+
+    if (capturedSession.ticket.len > 0) {
+        if (req.sessionCache) |sc| {
+            sc.put(host, port, &capturedSession);
+        }
+    }
 
     var h3c = h3Transport.Client.init(a, &ep);
     defer h3c.deinit();
@@ -783,7 +837,8 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
         // (getaddrinfo) and each returned address is tried in order.
         var resolved: ?[]addressMod.Address = null;
         defer if (resolved) |list| a.free(list);
-        const tcpSock = blk: {
+        // Mutable: the TLS box below borrows its address for the call.
+        var tcpSock = blk: {
             if (req.proxy) |pUrl| {
                 const pInfo = proxyMod.parseProxyUrl(pUrl) orelse return Error.InvalidUrl;
                 switch (pInfo.kind) {
@@ -1029,22 +1084,30 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
             else
                 null;
             defer if (offered) |*s| s.deinit(a);
-            var nativeCli = nativeTlsClient.TlsClient.init(.{
-                .allocator = a,
-                .verify = tlsOptsH2.verify,
-                .caPem = tlsOptsH2.caPem,
-                .clientCertPem = tlsOptsH2.clientCertPem,
-                .clientKeyPem = tlsOptsH2.clientKeyPem,
-                .alpnProtocols = &.{"h2"},
-                .session = if (offered) |*s| s else null,
-                .captureSession = true,
-            });
-            box.conn = nativeTlsClient.TlsClient.handshake(&nativeCli, io, &box.sock, hostCopy[0..hl]) catch |err| {
+            // Short-lived TLS owner for this handshake (trust parsed from
+            // the merged per-request options); the connection it returns
+            // is self-contained and outlives the owner.
+            var tlsOwner = tlsClientMod.Client.init(a, io, .{}) catch |err| {
                 box.sock.close();
                 a.destroy(box);
                 return mapNativeTlsError(err);
             };
-            if (box.conn.alpn != .h2) {
+            defer tlsOwner.deinit();
+            box.conn = tlsOwner.connect(&box.sock, hostCopy[0..hl], .{
+                .verify = tlsOptsH2.verify,
+                .caPem = tlsOptsH2.caPem,
+                .clientCertPem = tlsOptsH2.clientCertPem,
+                .clientKeyPem = tlsOptsH2.clientKeyPem,
+                .alpn = &.{.h2},
+                .transport = .native,
+                .session = if (offered) |*s| s else null,
+                .captureSession = true,
+            }) catch |err| {
+                box.sock.close();
+                a.destroy(box);
+                return mapNativeTlsError(err);
+            };
+            if (box.conn.alpn() != .h2) {
                 box.conn.deinit();
                 box.sock.close();
                 a.destroy(box);
@@ -1097,79 +1160,64 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
             return resp;
         }
 
-        // The TCP socket remains the owned cleanup resource until TLS
-        // initialization succeeds and replaces this union arm. Initializing
-        // it before the defer is essential: TLS setup may fail before the
-        // encrypted transport exists.
+        // The TCP socket remains the owned cleanup resource until the TLS
+        // box below takes it over. `transport` starts plain; on TLS success
+        // it points at the heap-boxed unified connection (which borrows the
+        // socket). The deferred cleanup frees the box and closes the socket
+        // exactly once unless pooled out.
         var transport: Transport = .{ .plain = tcpSock };
-        var tlsConn: ?*tlsTransport.Connection = null;
-        // Native-TLS state (client certificates): the session borrows the
-        // moved socket below; both are released together in the defer.
-        var nativeSock: tcp.Socket = undefined;
-        var nativeInit = false;
-        var native: nativeTlsClient.TlsClientConn = undefined;
+        var tlsBox: ?*tlsClientMod.Client.Connection = null;
         var pooledOut = false; // socket handed back to the pool
         defer {
-            if (tlsConn) |t| {
-                t.destroy(a);
-            } else if (nativeInit) {
-                native.deinit();
-                nativeSock.close();
-            } else if (!pooledOut) {
-                transport.plain.close();
+            // The TLS box teardown closes its socket; plain sockets close
+            // here unless pooled out. Never both.
+            if (!pooledOut) {
+                switch (transport) {
+                    .plain => |s| s.close(),
+                    .tls => {},
+                }
+            }
+            if (tlsBox) |b| {
+                b.deinit();
+                a.destroy(b);
             }
         }
 
         if (isTls) {
             const opts = tlsOpts.?;
-            if (opts.clientCertPem != null and resolvedVer != .http2) {
-                // Mutual TLS over HTTP/1.x needs certificate presentation,
-                // which only the native client implements: handshake here
-                // offering http/1.1, then join the shared HTTP/1.1 flow
-                // below. Never silently downgraded: anything but http/1.1
-                // (or no ALPN, treated as http/1.1 like the std path)
-                // fails loudly.
-                var nativeCli = nativeTlsClient.TlsClient.init(.{
-                    .allocator = a,
-                    .verify = opts.verify,
-                    .caPem = opts.caPem,
-                    .clientCertPem = opts.clientCertPem,
-                    .clientKeyPem = opts.clientKeyPem,
-                    .alpnProtocols = &.{"http/1.1"},
-                });
-                nativeSock = tcpSock;
-                native = nativeTlsClient.TlsClient.handshake(&nativeCli, io, &nativeSock, hostCopy[0..hl]) catch |err| {
-                    nativeSock.close();
-                    return mapNativeTlsError(err);
-                };
-                if (native.alpn != null and native.alpn.? != .@"http/1.1") {
-                    native.deinit();
-                    nativeSock.close();
+            // One TLS owner per handshake, configured from the merged
+            // per-request options; the connection it returns is
+            // self-contained and outlives the owner. Transport selection
+            // preserves the historical routing exactly: mutual TLS over
+            // HTTP/1.x uses the native transport offering http/1.1 only
+            // (anything else fails loudly, never silently downgraded);
+            // plain HTTP/1.x uses the standard transport.
+            var tlsOwner = tlsClientMod.Client.init(a, io, .{}) catch |err| {
+                return mapNativeTlsError(err);
+            };
+            defer tlsOwner.deinit();
+            const box = a.create(tlsClientMod.Client.Connection) catch return Error.OutOfMemory;
+            errdefer a.destroy(box);
+            const wantNative = opts.clientCertPem != null and resolvedVer != .http2;
+            box.* = tlsOwner.connect(&tcpSock, hostCopy[0..hl], .{
+                .verify = opts.verify,
+                .caPem = opts.caPem,
+                .caBundle = opts.caBundle,
+                .clientCertPem = opts.clientCertPem,
+                .clientKeyPem = opts.clientKeyPem,
+                .alpn = if (wantNative) &.{.@"http/1.1"} else null,
+                .transport = if (wantNative) .native else .std,
+                .allowTruncation = opts.allowTruncation,
+            }) catch |err| {
+                return mapNativeTlsError(err);
+            };
+            tlsBox = box;
+            transport = .{ .tls = box };
+            if (wantNative) {
+                const negotiated = box.alpn();
+                if (negotiated != null and negotiated.? != .@"http/1.1") {
                     return Error.AlpnNegotiationFailed;
                 }
-                nativeInit = true;
-                transport = .{ .nativeTls = &native };
-            } else {
-                tlsConn = tlsTransport.Connection.init(a, .{
-                    .socketHandle = tcpSock.netSocketHandle(),
-                    .host = hostCopy[0..hl],
-                    .verify = opts.verify,
-                    .caBundle = opts.caBundle,
-                    .allowTruncation = opts.allowTruncation,
-                    .io = io,
-                }) catch |err| switch (err) {
-                    error.CertificateExpired => return Error.CertificateExpired,
-                    error.CertificateHostMismatch => return Error.CertificateHostMismatch,
-                    error.CertificateIssuerMismatch => return Error.CertificateIssuerMismatch,
-                    error.CertificateNotYetValid => return Error.CertificateNotYetValid,
-                    error.CertificateSignatureInvalid => return Error.CertificateSignatureInvalid,
-                    error.TlsCertificateNotVerified => return Error.TlsCertificateNotVerified,
-                    error.TlsAlert => return Error.TlsAlert,
-                    error.TlsDecodeError => return Error.TlsDecodeError,
-                    error.OutOfMemory => return Error.OutOfMemory,
-                    else => return Error.TlsHandshakeFailed,
-                };
-                transport = .{ .encrypted = tlsConn.? };
             }
         } else {
             transport = .{ .plain = tcpSock };

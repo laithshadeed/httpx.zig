@@ -40,19 +40,60 @@ fn emptyHash() [32]u8 {
     return h.finalResult();
 }
 
-/// Derives Handshake-level keys from the ECDHE shared secret and the
-/// CH..SH transcript hash (RFC 8446 Section 7.1 as profiled by RFC 9001
-/// Section 7.2): early=Extract(0,0); derived=Derive(early,"derived","").
-/// hs=Extract(derived,shared); c/s hs traffic=Derive(hs,...,hash).
-pub fn handshakeKeys(sharedSecret: [32]u8, chShHash: [32]u8) struct { hsSecret: [32]u8, keys: LevelKeys } {
+/// Derives Early Secret from a PSK (RFC 8446 Section 7.1).
+pub fn earlySecret(psk: [32]u8) [32]u8 {
     const zero: [32]u8 = .{0} ** 32;
-    const early = HkdfSha256.extract(&zero, &zero);
+    return HkdfSha256.extract(&zero, &psk);
+}
+
+/// Derives client_early_traffic_secret from Early Secret and ClientHello hash.
+pub fn clientEarlyTrafficSecret(earlySec: [32]u8, chHash: [32]u8) [32]u8 {
+    return qcrypto.deriveSecretWithContext(earlySec, "c e traffic", &chHash);
+}
+
+/// Derives 0-RTT keys from a PSK and ClientHello hash (RFC 9001 Section 5.2).
+pub fn earlyKeys(psk: [32]u8, chHash: [32]u8) struct { earlySec: [32]u8, cEarlySecret: [32]u8, keys: qcrypto.ProtectionKeys } {
+    const es = earlySecret(psk);
+    const cets = clientEarlyTrafficSecret(es, chHash);
+    return .{
+        .earlySec = es,
+        .cEarlySecret = cets,
+        .keys = qcrypto.deriveProtectionKeys(cets),
+    };
+}
+
+/// Derives 0-RTT keys for a specific cipher from a PSK and ClientHello hash.
+pub fn earlyKeysForCipher(psk: [32]u8, chHash: [32]u8, cipher: qcrypto.Cipher) struct { earlySec: [32]u8, cEarlySecret: [32]u8, keys: qcrypto.ProtectionKeys } {
+    const es = earlySecret(psk);
+    const cets = clientEarlyTrafficSecret(es, chHash);
+    return .{
+        .earlySec = es,
+        .cEarlySecret = cets,
+        .keys = qcrypto.deriveProtectionKeysForCipher(cets, cipher),
+    };
+}
+
+pub const HandshakeKeysResult = struct { hsSecret: [32]u8, keys: LevelKeys };
+
+/// Derives Handshake-level keys given an established Early Secret (from PSK or initial 0),
+/// ECDHE shared secret, and CH..SH transcript hash.
+pub fn handshakeKeysWithEarly(earlySec: [32]u8, sharedSecret: [32]u8, chShHash: [32]u8) HandshakeKeysResult {
     const eh = emptyHash();
-    const derived = qcrypto.deriveSecretWithContext(early, "derived", &eh);
+    const derived = qcrypto.deriveSecretWithContext(earlySec, "derived", &eh);
     const hs = HkdfSha256.extract(&derived, &sharedSecret);
     const cHs = qcrypto.deriveSecretWithContext(hs, "c hs traffic", &chShHash);
     const sHs = qcrypto.deriveSecretWithContext(hs, "s hs traffic", &chShHash);
     return .{ .hsSecret = hs, .keys = level(cHs, sHs) };
+}
+
+/// Derives Handshake-level keys from the ECDHE shared secret and the
+/// CH..SH transcript hash (RFC 8446 Section 7.1 as profiled by RFC 9001
+/// Section 7.2): early=Extract(0,0); derived=Derive(early,"derived","").
+/// hs=Extract(derived,shared); c/s hs traffic=Derive(hs,...,hash).
+pub fn handshakeKeys(sharedSecret: [32]u8, chShHash: [32]u8) HandshakeKeysResult {
+    const zero: [32]u8 = .{0} ** 32;
+    const early = earlySecret(zero);
+    return handshakeKeysWithEarly(early, sharedSecret, chShHash);
 }
 
 /// Derives Application (1-RTT) keys from the handshake secret and the
@@ -114,4 +155,30 @@ test "key update chains forward without reusing old secrets" {
     const k2 = updateSecret(k1);
     try std.testing.expect(!std.mem.eql(u8, &s, &k1));
     try std.testing.expect(!std.mem.eql(u8, &k1, &k2));
+}
+
+test "0-RTT earlyKeys derives keys and chains into handshake and application keys" {
+    const psk: [32]u8 = .{0xAA} ** 32;
+    const chHash: [32]u8 = .{0x12} ** 32;
+    const early = earlyKeys(psk, chHash);
+
+    // Early secret and client early traffic secret are not all-zero and distinct
+    const zero: [32]u8 = .{0} ** 32;
+    try std.testing.expect(!std.mem.eql(u8, &early.earlySec, &zero));
+    try std.testing.expect(!std.mem.eql(u8, &early.cEarlySecret, &zero));
+    try std.testing.expect(!std.mem.eql(u8, &early.earlySec, &early.cEarlySecret));
+
+    // 0-RTT protection keys are populated
+    try std.testing.expectEqual(@as(usize, 16), early.keys.keyLen);
+    try std.testing.expectEqual(@as(usize, 16), early.keys.hpLen);
+
+    // Chaining: earlySecret -> handshakeKeysWithEarly -> applicationKeys
+    const shared: [32]u8 = .{0xBB} ** 32;
+    const chShHash: [32]u8 = .{0x34} ** 32;
+    const hs = handshakeKeysWithEarly(early.earlySec, shared, chShHash);
+    try std.testing.expect(!std.mem.eql(u8, &hs.hsSecret, &early.earlySec));
+
+    const chSfHash: [32]u8 = .{0x56} ** 32;
+    const ap = applicationKeys(hs.hsSecret, chSfHash);
+    try std.testing.expect(!std.mem.eql(u8, &ap.apSecret, &hs.hsSecret));
 }

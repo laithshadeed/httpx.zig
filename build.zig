@@ -166,6 +166,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "http2-multiplex", .path = "examples/http2Multiplex.zig" },
         .{ .name = "http3-client", .path = "examples/http3Client.zig" },
         .{ .name = "http3-quic", .path = "examples/http3Quic.zig" },
+        .{ .name = "http3-0rtt", .path = "examples/http3ZeroRtt.zig" },
         .{ .name = "ftp-client", .path = "examples/ftpClient.zig" },
         .{ .name = "live-static-watcher", .path = "examples/liveStaticWatcher.zig" },
         .{ .name = "docs-server", .path = "examples/docsServer.zig" },

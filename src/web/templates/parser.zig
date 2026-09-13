@@ -1254,7 +1254,7 @@ pub const Parser = struct {
                     } else if (std.mem.eql(u8, tagCmd, "filter") or std.mem.eql(u8, tagCmd, "apply")) {
                         const isApply = std.mem.eql(u8, tagCmd, "apply");
                         const endName: []const u8 = if (isApply) "endapply" else "endfilter";
-                        const spec = std.mem.trim(u8, tagContent[if (isApply) 5 else 6 ..], " \t\r\n");
+                        const spec = std.mem.trim(u8, tagContent[if (isApply) 5 else 6..], " \t\r\n");
                         if (spec.len == 0) {
                             return self.fail(.syntaxError, tagStart, "expected a filter after '{% filter %}'");
                         }

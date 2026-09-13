@@ -10,42 +10,47 @@
 //! - Secure private key handling with memory zeroing
 //! - Optional OpenSSL backend integration
 
-pub const config = @import("config.zig");
-pub const certificate = @import("certificate.zig");
-pub const trustStore = @import("trustStore.zig");
-pub const verify = @import("verify.zig");
-pub const key = @import("key.zig");
-pub const errors = @import("errors.zig");
-pub const alpn = @import("alpn.zig");
-pub const record = @import("record.zig");
-pub const handshake = @import("handshake.zig");
-pub const engine = @import("engine.zig");
-pub const transport = @import("transport.zig");
-pub const tcpTls = @import("tcpTls.zig");
-pub const tcpClient = @import("tcpClient.zig");
-pub const quicTls = @import("quicTls.zig");
-pub const session = @import("session.zig");
+// Public TLS owners and value types. Everything else in this directory
+// (engine, handshake, records, transports, verification internals) is an
+// implementation detail imported directly by file path where needed.
+const clientMod = @import("client.zig");
+const serverMod = @import("server.zig");
+const sessionMod = @import("session.zig");
+const certificateMod = @import("certificate.zig");
+const trustStoreMod = @import("trustStore.zig");
+const transportMod = @import("transport.zig");
+const configMod = @import("config.zig");
+const errorsMod = @import("errors.zig");
+const alpnMod = @import("alpn.zig");
 
-// Canonical types
-pub const ServerConfig = config.ServerConfig;
-pub const ClientConfig = config.ClientConfig;
-pub const TlsVersion = config.TlsVersion;
-pub const ClientAuthMode = config.ClientAuthMode;
-pub const X509Certificate = certificate.X509Certificate;
-pub const CertificateChain = certificate.CertificateChain;
-pub const TrustStore = trustStore.TrustStore;
-pub const TrustMode = trustStore.TrustMode;
-pub const PrivateKey = key.PrivateKey;
-pub const TlsError = errors.TlsError;
-pub const Connection = transport.Connection;
-pub const TlsServer = tcpTls.TlsServer;
-pub const TlsServerConn = tcpTls.TlsServerConn;
-pub const TlsServerConfig = tcpTls.TlsServerConfig;
-pub const TlsClient = tcpClient.TlsClient;
-pub const TlsClientConn = tcpClient.TlsClientConn;
-pub const TlsClientConfig = tcpClient.TlsClientConfig;
-pub const ClientSession = session.ClientSession;
-pub const TicketKeys = session.TicketKeys;
+/// TLS client owner: configuration, trust and identity, connection factory.
+pub const Client = clientMod.Client;
+/// TLS server owner: configuration, identity and mTLS trust, acceptor.
+pub const Server = serverMod.Server;
+/// A resumable TLS session (PSK identity), as captured from connections
+/// and offered back for abbreviated handshakes.
+pub const Session = sessionMod.ClientSession;
+/// Origin-keyed resumption session cache (typically owned by the caller,
+/// e.g. the HTTP connection pool).
+pub const SessionCache = sessionMod.SessionCache;
+/// Bounded anti-replay cache for TLS 1.3 0-RTT early data.
+pub const ReplayCache = sessionMod.ReplayCache;
+/// Server-side session-ticket encryption keys (stateless resumption).
+pub const TicketKeys = sessionMod.TicketKeys;
+pub const session = sessionMod;
+/// A parsed X.509 certificate.
+pub const Certificate = certificateMod.X509Certificate;
+/// Trust anchor store (system and/or custom CAs).
+pub const TrustStore = trustStoreMod.TrustStore;
+pub const TrustMode = trustStoreMod.TrustMode;
+/// Server-certificate verification policy.
+pub const VerifyMode = transportMod.VerifyMode;
+pub const TlsVersion = configMod.TlsVersion;
+pub const ClientAuthMode = configMod.ClientAuthMode;
+pub const TlsError = errorsMod.TlsError;
+pub const AlpnProtocol = alpnMod.Protocol;
+pub const record = @import("record.zig");
+pub const certificate = certificateMod;
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -68,7 +73,7 @@ pub const ListenerConfig = struct {
     clientCaPem: ?[]const u8 = null,
     /// Session-ticket keys enabling TLS 1.3 resumption. Null disables
     /// tickets (clients always do full handshakes).
-    ticketKeys: ?session.TicketKeys = null,
+    ticketKeys: ?sessionMod.TicketKeys = null,
     /// Lifetime (seconds) stamped into issued session tickets.
     ticketLifetimeSecs: u32 = 7200,
 };
@@ -103,10 +108,10 @@ pub const Listener = struct {
             .port = cfg.port,
             .enableDocs = false,
             .tls = if (cfg.defaultIdentity) |id| .{
-                .certPem = id.certChainPem,
-                .keyPem = id.privateKeyPem,
+                .certificatePem = id.certChainPem,
+                .privateKeyPem = id.privateKeyPem,
                 .clientAuth = cfg.clientAuth,
-                .clientCa = cfg.clientCaPem,
+                .clientCaPem = cfg.clientCaPem,
                 .ticketKeys = cfg.ticketKeys,
                 .ticketLifetimeSecs = cfg.ticketLifetimeSecs,
             } else null,
@@ -160,23 +165,19 @@ pub const Listener = struct {
 };
 
 test {
-    _ = config;
-    _ = certificate;
-    _ = trustStore;
-    _ = verify;
-    _ = key;
-    _ = errors;
-    _ = alpn;
-    _ = record;
-    _ = handshake;
-    _ = engine;
-    _ = transport;
-    _ = tcpTls;
-    _ = quicTls;
+    _ = clientMod;
+    _ = serverMod;
+    _ = sessionMod;
+    _ = certificateMod;
+    _ = trustStoreMod;
+    _ = transportMod;
+    _ = configMod;
+    _ = errorsMod;
+    _ = alpnMod;
 }
 
 test "Listener.run wires handler for all requests" {
-    const clientMod = @import("../../client/client.zig");
+    const httpClientMod = @import("../../client/client.zig");
     const a = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
@@ -203,7 +204,7 @@ test "Listener.run wires handler for all requests" {
     defer r.join();
     defer listener.stop();
 
-    var client = clientMod.Client.init(a, io, .{});
+    var client = httpClientMod.Client.init(a, io, .{});
     defer client.deinit();
 
     var urlBuf: [96]u8 = undefined;
@@ -226,7 +227,7 @@ test "local TLS handshake serves HTTPS end to end" {
     // both sides, then encrypted application data). Uses the committed
     // P-256 test identity; RSA keys are rejected loudly (no RSA private
     // operations in std).
-    const clientMod = @import("../../client/client.zig");
+    const httpClientMod = @import("../../client/client.zig");
     const a = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
@@ -256,7 +257,7 @@ test "local TLS handshake serves HTTPS end to end" {
     defer r.join();
     defer listener.stop();
 
-    var client = clientMod.Client.init(a, io, .{});
+    var client = httpClientMod.Client.init(a, io, .{});
     defer client.deinit();
 
     var urlBuf: [64]u8 = undefined;

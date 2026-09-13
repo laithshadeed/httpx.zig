@@ -89,6 +89,8 @@ pub const ClientHello = struct {
     /// Raw QUIC transport parameters block for extension 57
     /// (RFC 9001 Section 7.4). Borrowed; emitted only over QUIC.
     quicTransportParams: ?[]const u8 = null,
+    /// 0-RTT early data extension offer (RFC 8446 Section 4.2.10).
+    earlyData: bool = false,
 
     pub const CipherSuite = tls.CipherSuite;
     pub const KeyShareEntry = struct {
@@ -220,6 +222,13 @@ pub const ClientHello = struct {
             try exts.appendSlice(allocator, self.pskModes);
         }
 
+        // early_data (RFC 8446 Section 4.2.10): type 42, length 0 in ClientHello.
+        // Signals intent to send early application data. Must precede pre_shared_key.
+        if (self.earlyData) {
+            try exts.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(ExtensionType.early_data))));
+            try exts.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, 0)));
+        }
+
         // preSharedKey (RFC 8446 Section 4.2.11): MUST be last. The
         // binder bytes are emitted as zeros here; the caller patches the
         // real binders with `pskBinderSpan` after hashing the message.
@@ -315,6 +324,47 @@ pub fn pskBinderSpan(msg: []u8) ![]u8 {
     if (bLen % HashLen != 0) return error.ProtocolViolation;
     if (bLenPos + 2 + bLen != body.len) return error.ProtocolViolation;
     return msg[ext.start + bLenPos + 2 ..][0..bLen];
+}
+
+/// Returns the byte length of the truncated ClientHello up to and including
+/// the `PreSharedKeyExtension.identities` field (RFC 8446 Section 4.2.11.2),
+/// for computing the PSK binder over the exact standard transcript representation.
+pub fn pskTruncatedLen(msg: []const u8) !usize {
+    const ext = try pskExtBody(msg);
+    const body = msg[ext.start..][0..ext.len];
+    if (body.len < 2) return error.ProtocolViolation;
+    const idLen: usize = (@as(usize, body[0]) << 8) | body[1];
+    if (2 + idLen + 2 > body.len) return error.ProtocolViolation;
+    return ext.start + 2 + idLen;
+}
+
+/// Checks whether an encoded ClientHello contains the early_data extension (type 42).
+pub fn hasEarlyDataExtension(msg: []const u8) bool {
+    if (msg.len < 4 + 34 + 1) return false;
+    var pos: usize = 4 + 34; // header + version + random
+    const sidLen: usize = msg[pos];
+    pos += 1 + sidLen;
+    if (pos + 2 > msg.len) return false;
+    const csLen: usize = (@as(usize, msg[pos]) << 8) | msg[pos + 1];
+    pos += 2 + csLen;
+    if (pos + 1 > msg.len) return false;
+    pos += 1 + msg[pos]; // compression methods
+    if (pos + 2 > msg.len) return false;
+    const extTotal: usize = (@as(usize, msg[pos]) << 8) | msg[pos + 1];
+    pos += 2;
+    const extEnd = pos + extTotal;
+    if (extEnd > msg.len) return false;
+    var p = pos;
+    while (p + 4 <= extEnd) {
+        const t = std.mem.readInt(u16, msg[p..][0..2], .big);
+        const l: usize = (@as(usize, msg[p + 2]) << 8) | msg[p + 3];
+        if (p + 4 + l > extEnd) return false;
+        if (t == @intFromEnum(ExtensionType.early_data)) {
+            return l == 0; // RFC 8446 Section 4.2.10: ClientHello early_data must have 0-length body
+        }
+        p += 4 + l;
+    }
+    return false;
 }
 
 /// Mutable span of the u32 obfuscatedTicketAge of identity `index`
@@ -485,10 +535,11 @@ pub const NewSessionTicket = struct {
     ageAdd: u32,
     nonce: []const u8,
     ticket: []const u8,
+    maxEarlyData: ?u32 = null,
 
-    /// Encodes a full NewSessionTicket handshake message (type 4) with
-    /// empty extensions. Early-data extensions are never emitted:
-    /// 0-RTT stays unimplemented by policy (replay risk).
+    /// Encodes a full NewSessionTicket handshake message (type 4).
+    /// If `maxEarlyData` is set, emits the `early_data` extension (RFC 8446 Section 4.2.10)
+    /// containing the u32 max_early_data_size.
     pub fn encode(self: *const NewSessionTicket, allocator: Allocator) ![]u8 {
         var body = std.ArrayList(u8).empty;
         defer body.deinit(allocator);
@@ -500,7 +551,16 @@ pub const NewSessionTicket = struct {
         if (self.ticket.len == 0 or self.ticket.len > 65535) return error.ProtocolViolation;
         try body.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(self.ticket.len))));
         try body.appendSlice(allocator, self.ticket);
-        try body.appendSlice(allocator, &.{ 0x00, 0x00 }); // extensions: empty
+
+        var exts = std.ArrayList(u8).empty;
+        defer exts.deinit(allocator);
+        if (self.maxEarlyData) |med| {
+            try exts.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(ExtensionType.early_data))));
+            try exts.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, 4)));
+            try exts.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, med)));
+        }
+        try body.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(exts.items.len))));
+        try body.appendSlice(allocator, exts.items);
 
         var msg = std.ArrayList(u8).empty;
         errdefer msg.deinit(allocator);
@@ -514,7 +574,7 @@ pub const NewSessionTicket = struct {
     }
 
     /// Decodes a NewSessionTicket body (after the 4-byte header).
-    /// Borrows all slices; rejects any early-data extension loudly.
+    /// Borrows all slices; extracts early-data allowance if present.
     pub fn decode(body: []const u8) !NewSessionTicket {
         var pos: usize = 0;
         if (body.len < 12) return error.ProtocolViolation;
@@ -534,14 +594,24 @@ pub const NewSessionTicket = struct {
         pos += 2;
         if (pos + extLen != body.len) return error.ProtocolViolation;
         var ep: usize = pos;
+        var maxEarlyData: ?u32 = null;
         while (ep + 4 <= body.len) {
             const t = std.mem.readInt(u16, body[ep..][0..2], .big);
             const l: usize = std.mem.readInt(u16, body[ep + 2 ..][0..2], .big);
-            if (t == @intFromEnum(ExtensionType.early_data)) return error.EarlyDataRejected;
+            if (t == @intFromEnum(ExtensionType.early_data)) {
+                if (l != 4 or ep + 4 + l > body.len) return error.ProtocolViolation;
+                maxEarlyData = std.mem.readInt(u32, body[ep + 4 ..][0..4], .big);
+            }
             ep += 4 + l;
         }
         if (lifetime == 0) return error.ProtocolViolation;
-        return .{ .lifetimeSecs = lifetime, .ageAdd = ageAdd, .nonce = nonce, .ticket = ticket };
+        return .{
+            .lifetimeSecs = lifetime,
+            .ageAdd = ageAdd,
+            .nonce = nonce,
+            .ticket = ticket,
+            .maxEarlyData = maxEarlyData,
+        };
     }
 };
 
@@ -551,6 +621,8 @@ pub const EncryptedExtensions = struct {
     alpnProtocol: ?[]const u8 = null,
     /// Raw QUIC transport parameters block (ext 57), borrowed.
     quicTransportParams: ?[]const u8 = null,
+    /// True when server accepted early data (ext 42 present with 0 length).
+    earlyDataAccepted: bool = false,
 
     pub fn decode(body: []const u8) !EncryptedExtensions {
         var result: EncryptedExtensions = .{};
@@ -579,6 +651,12 @@ pub const EncryptedExtensions = struct {
                 }
             } else if (extType == QUIC_TRANSPORT_PARAMETERS_ID) {
                 result.quicTransportParams = body[pos..][0..extDataLen];
+            } else if (extType == @intFromEnum(ExtensionType.early_data)) {
+                if (extDataLen == 0) {
+                    result.earlyDataAccepted = true;
+                } else {
+                    return error.EncryptedExtensionsTruncated;
+                }
             }
             pos += extDataLen;
         }
@@ -756,4 +834,71 @@ test "Alert encode/decode roundtrip" {
     const decoded = Alert.decode(encoded);
     try std.testing.expectEqual(.fatal, decoded.level);
     try std.testing.expectEqual(.handshakeFailure, decoded.description);
+}
+
+test "ClientHello with earlyData and PSK offers early_data and computes pskTruncatedLen" {
+    const ch = ClientHello{
+        .random = [_]u8{0x55} ** 32,
+        .cipherSuites = &.{.AES_128_GCM_SHA256},
+        .keyShareEntries = &.{.{
+            .group = .x25519,
+            .keyExchange = &[_]u8{0x66} ** 32,
+        }},
+        .signatureAlgorithms = &.{.ecdsa_secp256r1_sha256},
+        .alpnProtocols = &.{"h3"},
+        .pskIdentities = &.{"dummy-ticket-identity"},
+        .earlyData = true,
+    };
+
+    const encoded = try ch.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+
+    try std.testing.expect(hasEarlyDataExtension(encoded));
+
+    const truncLen = try pskTruncatedLen(encoded);
+    try std.testing.expect(truncLen > 0);
+    try std.testing.expect(truncLen < encoded.len);
+    // Binder span starts right after truncLen + 2 (binders length prefix)
+    const binderSpan = try pskBinderSpan(encoded);
+    try std.testing.expectEqual(@as(usize, HashLen), binderSpan.len);
+}
+
+test "NewSessionTicket encodes and decodes maxEarlyData" {
+    const nst = NewSessionTicket{
+        .lifetimeSecs = 7200,
+        .ageAdd = 12345,
+        .nonce = &[_]u8{ 1, 2, 3, 4 },
+        .ticket = &[_]u8{0xAA} ** 40,
+        .maxEarlyData = 0xFFFFFFFF,
+    };
+
+    const msg = try nst.encode(std.testing.allocator);
+    defer std.testing.allocator.free(msg);
+
+    // Skip 4-byte handshake header
+    const decoded = try NewSessionTicket.decode(msg[4..]);
+    try std.testing.expectEqual(nst.lifetimeSecs, decoded.lifetimeSecs);
+    try std.testing.expectEqual(nst.ageAdd, decoded.ageAdd);
+    try std.testing.expectEqualSlices(u8, nst.nonce, decoded.nonce);
+    try std.testing.expectEqualSlices(u8, nst.ticket, decoded.ticket);
+    try std.testing.expectEqual(@as(?u32, 0xFFFFFFFF), decoded.maxEarlyData);
+}
+
+test "EncryptedExtensions decodes earlyDataAccepted" {
+    // Construct an EncryptedExtensions body with early_data (type 42, length 0)
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(std.testing.allocator);
+
+    var exts = std.ArrayList(u8).empty;
+    defer exts.deinit(std.testing.allocator);
+
+    // ext 42, len 0
+    try exts.appendSlice(std.testing.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(ExtensionType.early_data))));
+    try exts.appendSlice(std.testing.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, 0)));
+
+    try body.appendSlice(std.testing.allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(exts.items.len))));
+    try body.appendSlice(std.testing.allocator, exts.items);
+
+    const ee = try EncryptedExtensions.decode(body.items);
+    try std.testing.expect(ee.earlyDataAccepted);
 }

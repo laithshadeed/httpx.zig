@@ -43,11 +43,12 @@ fn handle(
 fn runServer(lst: *httpx.tcp.Listener, io: std.Io) void {
     var conn = lst.accept(io) catch return;
     defer conn.close();
-    var srv = httpx.tls.TlsServer.init(.{
-        .allocator = std.heap.page_allocator,
-        .defaultIdentity = .{ .certChainPem = certPem, .privateKeyPem = keyPem },
-    });
-    var tlsConn = srv.handshake(io, &conn) catch return;
+    var srv = httpx.tls.Server.init(std.heap.page_allocator, io, .{
+        .certificatePem = certPem,
+        .privateKeyPem = keyPem,
+    }) catch return;
+    defer srv.deinit();
+    var tlsConn = srv.accept(&conn) catch return;
     defer tlsConn.deinit();
     httpx.http2.transport.serveTlsConnection(std.heap.page_allocator, &tlsConn, handle, null) catch return;
 }

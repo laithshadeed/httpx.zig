@@ -44,20 +44,47 @@ its own TLS 1.3 handshake paths**, including:
 ## Architecture
 
 ```
-tls.zig              -- Listener, TlsServer/TlsClient facades
-├── engine.zig       -- TLS 1.3 handshake engine (both roles), key schedule
-├── tcpTls.zig      -- TLS 1.3 server transport (records, mTLS enforcement)
-├── tcpClient.zig   -- TLS 1.3 client transport (ALPN offer, chain verify)
-├── quicTls.zig     -- RFC 9001 key schedule for TLS-in-QUIC
-├── transport.zig    -- std-based HTTPS/1.1 client transport
+tls.zig              -- Client/Server owners, Session, Certificate, TrustStore
+├── client.zig       -- Client owner + native TLS client transport
+├── server.zig       -- Server owner + native TLS server transport
+├── engine.zig       -- (internal) TLS 1.3 handshake engine, key schedule
+├── quicTls.zig      -- RFC 9001 key schedule for TLS-in-QUIC
+├── transport.zig    -- (internal) std-based HTTPS/1.1 client transport
 ├── handshake.zig    -- handshake message encode/decode, transcript
 ├── record.zig       -- record-layer AEAD encrypt/decrypt
 ├── certificate.zig  -- X.509 parsing (+ structural DER guard)
 ├── verify.zig       -- chain/hostname verification
 ├── trustStore.zig  -- system + custom trust anchors
-├── config.zig       -- ServerConfig/ClientConfig (incl. mTLS fields)
+├── config.zig       -- shared enums (versions, client-auth modes)
 ├── alpn.zig         -- ALPN protocol negotiation
+├── key.zig          -- private key parsing (zeroed after use)
 └── errors.zig       -- Unified TLS error set and alert conversion
+```
+
+The public API is two owners — `httpx.tls.Client` and
+`httpx.tls.Server` — plus value types (`Session`, `Certificate`,
+`TrustStore`). The handshake engine, records, and transports are
+implementation details selected internally per connection.
+
+```zig
+var tlsClient = try httpx.tls.Client.init(allocator, io, .{});
+defer tlsClient.deinit();
+
+var conn = try tlsClient.connect(&socket, "example.com", .{
+    .verify = .caBundle,
+});
+defer conn.deinit();
+```
+
+```zig
+var tlsServer = try httpx.tls.Server.init(allocator, io, .{
+    .certificatePem = certPem,
+    .privateKeyPem = keyPem,
+});
+defer tlsServer.deinit();
+
+var conn = try tlsServer.accept(&socket);
+defer conn.deinit();
 ```
 
 ## TlsConfig (Client)
@@ -106,20 +133,26 @@ var res = try client.get("https://127.0.0.1:8443/", .{
 });
 ```
 
-## ServerTlsConfig
+## ServerConfig
 
-Server identity and ALPN preference (`src/protocols/tls/tcpTls.zig`):
+Server identity and ALPN preference (`tls.Server.Config`):
 
 ```zig
-pub const TlsServerConfig = struct {
-    allocator: Allocator,
-    defaultIdentity: ?CertIdentity = null, // .{ .certChainPem, .privateKeyPem }
-    certSelector: ?CertSelector = null,    // SNI selector, falls back to defaultIdentity
-    alpnProtocols: []const alpn.Protocol = &alpn.DEFAULT_TCP_PREFERENCE,
+pub const Config = struct {
+    certificatePem: ?[]const u8 = null, // PEM string or file path
+    privateKeyPem: ?[]const u8 = null,  // PEM string or file path
+    certSelector: ?CertSelector = null, // SNI selector, falls back to the default identity
+    alpn: []const AlpnProtocol = &.{ .h2, .@"http/1.1" },
     clientAuth: ClientAuthMode = .disabled, // .disabled / .optional / .required
     clientCaPem: ?[]const u8 = null,        // CA bundle trusted for client chains
+    ticketKeys: ?TicketKeys = null,         // stateless resumption keys
+    ticketLifetimeSecs: u32 = 7200,
+    allowPlainHttp: bool = false,
 };
 ```
+
+The identity is parsed and validated once at `Server.init` (fail fast
+at startup); per-connection handshakes reuse it.
 
 ## Server Configuration
 
@@ -132,8 +165,8 @@ var server = try httpx.Server.init(allocator, io, .{
     .host = "127.0.0.1",
     .port = 8443,
     .tls = .{
-        .certPem = @embedFile("cert.pem"),
-        .keyPem = @embedFile("key.pem"),
+        .certificatePem = @embedFile("cert.pem"),
+        .privateKeyPem = @embedFile("key.pem"),
     },
     .http2 = true,
 });
@@ -154,7 +187,7 @@ try listener.run(handler);
 ```
 
 ::: tip ALPN Default
-The server negotiates ALPN from `alpnProtocols` (default TCP preference: h2 then http/1.1), so clients negotiate HTTP/2 or HTTP/1.1 automatically.
+The server negotiates ALPN from `alpn` (default TCP preference: h2 then http/1.1), so clients negotiate HTTP/2 or HTTP/1.1 automatically.
 :::
 
 The server automatically loads the certificate chain and private key on the first TLS connection. ALPN negotiation selects between HTTP/1.1, HTTP/2, and HTTP/3 based on the client's offer.
@@ -171,6 +204,13 @@ handlers based on the negotiated ALPN protocol.
 
 | Method | Description |
 |--------|-------------|
+| `httpx.tls.Client.init(allocator, io, .{})` | TLS client owner (trust parsed once) |
+| `client.connect(&socket, host, .{})` | Handshake; returns an owned `Connection` |
+| `conn.read/writeAll/deinit` | Record I/O and teardown (deinit closes the socket) |
+| `conn.takeCapturedSession()` | Take a captured resumption session, if any |
+| `httpx.tls.Server.init(allocator, io, cfg)` | TLS server owner (identity validated once) |
+| `server.accept(&socket)` | Accept; returns an owned `Connection` |
+| `server.acceptBuffered(&socket, peeked)` | Accept with pre-read bytes |
 | `httpx.tls.Listener.init(allocator, io, cfg)` | Bind a TLS listener with `defaultIdentity` |
 | `listener.run(handler)` | Blocking accept loop |
 | `listener.stop()` | Immediate shutdown |

@@ -18,7 +18,7 @@ const Allocator = std.mem.Allocator;
 const tcp = @import("../../sockets/tcp.zig");
 const addressMod = @import("../../net/address.zig");
 const netResolve = @import("../../net/resolve.zig");
-const tlsClientMod = @import("../tls/tcpClient.zig");
+const tlsClientMod = @import("../tls/client.zig");
 const tlsTransport = @import("../tls/transport.zig");
 
 pub const Options = struct {
@@ -161,19 +161,20 @@ fn parseEpsv(replyText: []const u8) ?u16 {
 }
 
 /// Heap box for a TLS-wrapped control channel. The box exists because
-/// `TlsClientConn` borrows its socket (`conn.socket: *tcp.Socket`) while
-/// `Client` is returned by value — a stable heap address is the only way
-/// to keep that pointer valid across moves of the `Client` struct.
+/// the TLS connection borrows its socket (`conn.socket: *tcp.Socket`)
+/// while `Client` is returned by value — a stable heap address is the
+/// only way to keep that pointer valid across moves of the `Client`
+/// struct.
 const CtrlTls = struct {
     socket: tcp.Socket,
-    conn: tlsClientMod.TlsClientConn,
+    conn: tlsClientMod.Client.Connection,
 };
 
 /// Heap box for a TLS-wrapped data connection, for the same borrow
 /// reason as `CtrlTls`. One box per transfer; destroyed on close.
 const DataTls = struct {
     socket: tcp.Socket,
-    conn: tlsClientMod.TlsClientConn,
+    conn: tlsClientMod.Client.Connection,
 };
 
 /// A data connection: plaintext, or TLS-wrapped when `PROT P` was
@@ -216,6 +217,9 @@ pub const Client = struct {
     /// meaningful only when `secure` was requested).
     tlsVerify: tlsTransport.VerifyMode = .caBundle,
     tlsCaPem: ?[]const u8 = null,
+    /// TLS owner for FTPS handshakes (control + data). Built when
+    /// `secure` was requested; trust is parsed once here.
+    tlsClient: ?tlsClientMod.Client = null,
     hostCopy: [256]u8,
     hostLen: usize,
     io: std.Io,
@@ -272,8 +276,20 @@ pub const Client = struct {
             .hostLen = @min(opts.host.len, cHostMax),
             .io = io,
         };
+        if (opts.secure) {
+            c.tlsClient = tlsClientMod.Client.init(allocator, io, .{
+                .verify = opts.tlsVerify,
+                .caPem = opts.tlsCaPem,
+                .alpn = &.{},
+            }) catch |err| switch (err) {
+                error.OutOfMemory => return FtpError.OutOfMemory,
+                error.InvalidCertificate => return FtpError.CertificateUntrusted,
+                else => return FtpError.TlsHandshakeFailed,
+            };
+        }
         @memcpy(c.hostCopy[0..c.hostLen], opts.host[0..c.hostLen]);
         errdefer {
+            if (c.tlsClient) |*owner| owner.deinit();
             c.readBuf.deinit(allocator);
             c.lastListing.deinit(allocator);
             c.ctrl.close();
@@ -308,13 +324,8 @@ pub const Client = struct {
         const box = self.allocator.create(CtrlTls) catch return FtpError.OutOfMemory;
         box.socket = self.ctrl;
 
-        var cli = tlsClientMod.TlsClient.init(.{
-            .allocator = self.allocator,
-            .verify = opts.tlsVerify,
-            .caPem = opts.tlsCaPem,
-            .alpnProtocols = &.{},
-        });
-        box.conn = cli.handshake(self.io, &box.socket, self.hostCopy[0..self.hostLen]) catch |err| {
+        const owner = &(self.tlsClient orelse return FtpError.ProtocolError);
+        box.conn = owner.connect(&box.socket, self.hostCopy[0..self.hostLen], .{ .transport = .native }) catch |err| {
             // The handle was moved into the box: close it here so the
             // outer errdefer's idempotent `ctrl.close()` is a no-op.
             box.socket.close();
@@ -327,7 +338,6 @@ pub const Client = struct {
         errdefer {
             if (self.ctrlTls) |b| {
                 b.conn.deinit();
-                b.socket.close();
                 self.allocator.destroy(b);
                 self.ctrlTls = null;
             }
@@ -344,11 +354,14 @@ pub const Client = struct {
     const cHostMax = 256;
 
     pub fn deinit(self: *Client) void {
+        if (self.tlsClient) |*owner| {
+            owner.deinit();
+            self.tlsClient = null;
+        }
         if (self.ctrlTls) |box| {
             // The plaintext `ctrl` value was moved into the box on
-            // upgrade; close exactly once through the box.
+            // upgrade; the connection teardown closes it exactly once.
             box.conn.deinit();
-            box.socket.close();
             self.allocator.destroy(box);
             self.ctrlTls = null;
         } else {
@@ -531,7 +544,6 @@ pub const Client = struct {
             .plain => |s| s.close(),
             .tls => |box| {
                 box.conn.deinit();
-                box.socket.close();
                 self.allocator.destroy(box);
             },
         }
@@ -570,13 +582,8 @@ pub const Client = struct {
         };
         errdefer self.allocator.destroy(box);
         box.socket = plain;
-        var cli = tlsClientMod.TlsClient.init(.{
-            .allocator = self.allocator,
-            .verify = self.tlsVerify,
-            .caPem = self.tlsCaPem,
-            .alpnProtocols = &.{},
-        });
-        box.conn = cli.handshake(self.io, &box.socket, self.hostCopy[0..self.hostLen]) catch |err| {
+        const owner = &(self.tlsClient orelse return FtpError.ProtocolError);
+        box.conn = owner.connect(&box.socket, self.hostCopy[0..self.hostLen], .{ .transport = .native }) catch |err| {
             box.socket.close();
             return mapTlsHandshakeErr(err);
         };

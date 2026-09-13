@@ -16,8 +16,8 @@ const clock = @import("../../common/clock.zig");
 const sessionMod = @import("connection.zig");
 const Session = sessionMod.Session;
 const hpack = @import("hpack.zig");
-const tlsClientMod = @import("../tls/tcpClient.zig");
-const tlsServerMod = @import("../tls/tcpTls.zig");
+const tlsClientMod = @import("../tls/client.zig");
+const tlsServerMod = @import("../tls/server.zig");
 const tlsSessionMod = @import("../tls/session.zig");
 pub const Error = error{
     ProtocolViolation,
@@ -41,9 +41,9 @@ pub const Header = struct { name: []const u8, value: []const u8 };
 pub const Stream = union(enum) {
     tcp: tcp.Socket,
     /// Client side of a native TLS session (h2 negotiated via ALPN).
-    tls: *tlsClientMod.TlsClientConn,
+    tls: *tlsClientMod.Client.Connection,
     /// Server side of a native TLS session.
-    tlsServer: *tlsServerMod.TlsServerConn,
+    tlsServer: *tlsServerMod.Server.Connection,
 
     fn read(self: *Stream, buf: []u8) !usize {
         return switch (self.*) {
@@ -64,10 +64,8 @@ pub const Stream = union(enum) {
     fn close(self: *Stream) void {
         switch (self.*) {
             .tcp => |*s| s.close(),
-            .tls => |t| {
-                t.deinit();
-                t.close();
-            },
+            // Client connections fully tear down (socket included).
+            .tls => |t| t.deinit(),
             .tlsServer => |t| {
                 t.deinit();
                 t.socket.close();
@@ -107,7 +105,7 @@ pub const Client = struct {
 
     /// Handshakes (magic + SETTINGS) and flushes over an established
     /// native TLS session (h2 negotiated via ALPN).
-    pub fn connectTls(allocator: Allocator, tlsConn: *tlsClientMod.TlsClientConn) !*Client {
+    pub fn connectTls(allocator: Allocator, tlsConn: *tlsClientMod.Client.Connection) !*Client {
         return connectStream(allocator, .{ .tls = tlsConn });
     }
 
@@ -253,12 +251,12 @@ pub const Client = struct {
     }
 };
 
-/// Heap box for a TLS-backed H2 session. `TlsClientConn` borrows its
-/// socket, and pooled connections outlive any stack frame, so both live
-/// together on the heap with a stable address.
+/// Heap box for a TLS-backed H2 session. The TLS connection borrows
+/// its socket, and pooled connections outlive any stack frame, so both
+/// live together on the heap with a stable address.
 pub const TlsBox = struct {
     sock: tcp.Socket,
-    conn: tlsClientMod.TlsClientConn,
+    conn: tlsClientMod.Client.Connection,
 };
 
 /// A pool-owned H2 connection: heap-stable transport boxes plus the
@@ -290,7 +288,6 @@ pub const PooledConn = struct {
         errdefer allocator.destroy(self);
         const hc = Client.connectTls(allocator, &box.conn) catch |err| {
             box.conn.deinit();
-            box.sock.close();
             allocator.destroy(box);
             return err;
         };
@@ -418,7 +415,7 @@ fn svrOnData(ctx: ?*anyopaque, sid: u31, data: []const u8) anyerror!void {
 /// differs (TLS records instead of TCP).
 pub fn serveTlsConnection(
     allocator: Allocator,
-    tlsConn: *tlsServerMod.TlsServerConn,
+    tlsConn: *tlsServerMod.Server.Connection,
     handler: HandlerFn,
     handlerCtx: ?*anyopaque,
 ) !void {
@@ -574,11 +571,15 @@ test "http2 over native tls loopback negotiates h2 via alpn" {
                 return;
             };
             defer conn.close();
-            var srv = tlsServerMod.TlsServer.init(.{
-                .allocator = std.heap.page_allocator,
-                .defaultIdentity = .{ .certChainPem = certPem, .privateKeyPem = keyPem },
-            });
-            var tlsConn = srv.handshake(io2, &conn) catch |e| {
+            var srv = tlsServerMod.Server.init(std.heap.page_allocator, io2, .{
+                .certificatePem = certPem,
+                .privateKeyPem = keyPem,
+            }) catch |e| {
+                out.* = e;
+                return;
+            };
+            defer srv.deinit();
+            var tlsConn = srv.accept(&conn) catch |e| {
                 out.* = e;
                 return;
             };
@@ -599,21 +600,21 @@ test "http2 over native tls loopback negotiates h2 via alpn" {
 
     var sock = try tcp.connect(ctx.io, "127.0.0.1", port);
     errdefer sock.close();
-    var tlsCli = tlsClientMod.TlsClient.init(.{
-        .allocator = a,
+    var tlsCli = try tlsClientMod.Client.init(a, ctx.io, .{});
+    defer tlsCli.deinit();
+    var tlsConn = try tlsCli.connect(&sock, "127.0.0.1", .{
         .verify = .caBundle,
         .caPem = certPem,
-        .alpnProtocols = &.{"h2"},
+        .alpn = &.{.h2},
     });
-    var tlsConn = try tlsCli.handshake(ctx.io, &sock, "127.0.0.1");
     {
-        // TlsClientConn borrows the socket; the block scope ends the
+        // The TLS connection borrows the socket; the block scope ends the
         // session (and closes the socket) before joining below, so the
         // serve loop observes EOF and exits instead of deadlocking.
         var hc = try Client.connectTls(a, &tlsConn);
         defer hc.deinit();
 
-        const negotiated = tlsConn.alpn orelse return error.AlpnMissing;
+        const negotiated = tlsConn.alpn() orelse return error.AlpnMissing;
         try std.testing.expect(negotiated == .h2);
         const r = try hc.request("GET", "/h2s", &[_]Header{}, "https", "127.0.0.1");
         defer r.deinit();
