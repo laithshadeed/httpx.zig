@@ -1,7 +1,7 @@
 //! Wall-clock and monotonic time utilities.
 //!
 //! Platform-abstracted time sources (Windows `GetSystemTimeAsFileTime` /
-//! `QueryPerformanceCounter`, POSIX `clockGettime` / `gettimeofday`,
+//! `QueryPerformanceCounter`, POSIX `clock_gettime` / `gettimeofday`,
 //! macOS `machAbsoluteTime`). Used for timestamping, timeout
 //! calculations, and connection-lifetime tracking.
 //!
@@ -32,7 +32,7 @@ fn wallMillis() i64 {
         .linux => {
             const linux = std.os.linux;
             var t: linux.timespec = .{ .sec = 0, .nsec = 0 };
-            _ = linux.clockGettime(linux.CLOCK.REALTIME, &t);
+            _ = linux.clock_gettime(linux.CLOCK.REALTIME, &t);
             return @as(i64, @intCast(t.sec)) * 1000 + @divFloor(@as(i64, @intCast(t.nsec)), 1_000_000);
         },
         .macos, .ios, .tvos, .watchos => {
@@ -66,7 +66,7 @@ pub fn monotonicMillis() i64 {
         .linux => {
             const linux = std.os.linux;
             var t: linux.timespec = .{ .sec = 0, .nsec = 0 };
-            _ = linux.clockGettime(linux.CLOCK.MONOTONIC, &t);
+            _ = linux.clock_gettime(linux.CLOCK.MONOTONIC, &t);
             return @as(i64, @intCast(t.sec)) * 1000 + @divFloor(@as(i64, @intCast(t.nsec)), 1_000_000);
         },
         .macos, .ios, .tvos, .watchos => {

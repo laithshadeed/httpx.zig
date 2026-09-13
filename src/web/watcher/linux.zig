@@ -84,7 +84,7 @@ pub const Backend = struct {
             .watches = std.AutoHashMap(i32, []u8).init(allocator),
         };
         errdefer self.deinit();
-        self.fd = try syscallFd(linux.inotifyInit1(IN_NONBLOCK | IN_CLOEXEC));
+        self.fd = try syscallFd(linux.inotify_init1(IN_NONBLOCK | IN_CLOEXEC));
         self.root = try allocator.dupe(u8, root);
         try self.watchRecursive(root);
         return self;
@@ -106,7 +106,7 @@ pub const Backend = struct {
     fn watchDir(self: *Backend, path: []const u8) void {
         const cpath = self.allocator.dupeZ(u8, path) catch return;
         defer self.allocator.free(cpath);
-        const wd: i32 = syscallFd(linux.inotifyAddWatch(self.fd, cpath, WATCH_MASK | IN_ONLYDIR)) catch return;
+        const wd: i32 = syscallFd(linux.inotify_add_watch(self.fd, cpath, WATCH_MASK | IN_ONLYDIR)) catch return;
         if (self.watches.getPtr(wd)) |old| {
             self.allocator.free(old.*);
             old.* = self.allocator.dupe(u8, path) catch return;
@@ -158,14 +158,14 @@ pub const Backend = struct {
             };
             if (n == 0) break;
             var off: usize = 0;
-            while (off + @sizeOf(linux.inotifyEvent) <= n) {
-                const ev: *const linux.inotifyEvent = @ptrCast(@alignCast(&buf[off]));
+            while (off + @sizeOf(linux.inotify_event) <= n) {
+                const ev: *const linux.inotify_event = @ptrCast(@alignCast(&buf[off]));
                 const nameLen: usize = ev.len;
-                const name = if (nameLen > 0 and off + @sizeOf(linux.inotifyEvent) + nameLen <= n)
-                    std.mem.span(@as([*:0]const u8, @ptrCast(&buf[off + @sizeOf(linux.inotifyEvent)])))
+                const name = if (nameLen > 0 and off + @sizeOf(linux.inotify_event) + nameLen <= n)
+                    std.mem.span(@as([*:0]const u8, @ptrCast(&buf[off + @sizeOf(linux.inotify_event)])))
                 else
                     "";
-                off += @sizeOf(linux.inotifyEvent) + nameLen;
+                off += @sizeOf(linux.inotify_event) + nameLen;
                 try self.translate(allocator, &out, ev, name);
                 if (self.dirty) break;
             }
@@ -174,7 +174,7 @@ pub const Backend = struct {
         return out.toOwnedSlice(allocator);
     }
 
-    fn translate(self: *Backend, allocator: Allocator, out: *std.ArrayList(RawEvent), ev: *const linux.inotifyEvent, name: []const u8) !void {
+    fn translate(self: *Backend, allocator: Allocator, out: *std.ArrayList(RawEvent), ev: *const linux.inotify_event, name: []const u8) !void {
         const mask = ev.mask;
         const dir = if (self.watches.get(ev.wd)) |d| d else return;
         if (mask & IN_Q_OVERFLOW != 0) {
