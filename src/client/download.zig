@@ -362,7 +362,7 @@ pub const Hasher = struct {
 const FileOps = struct {
     const isWin = builtin.os.tag == .windows;
 
-    pub const Handle = if (isWin) std.os.windows.HANDLE else std.posix.fdT;
+    pub const Handle = if (isWin) std.os.windows.HANDLE else std.posix.fd_t;
     pub const invalidHandle: Handle = if (isWin) std.os.windows.INVALID_HANDLE_VALUE else -1;
 
     pub fn createTruncate(path: []const u8) ?Handle {
@@ -394,7 +394,7 @@ const FileOps = struct {
             if (path.len >= nullTerm.len) return null;
             @memcpy(nullTerm[0..path.len], path);
             nullTerm[path.len] = 0;
-            const fd = std.c.open(&nullTerm, .{ .ACCMODE = .RDWR, .CREAT = true }, @as(std.c.modeT, 0o644));
+            const fd = std.c.open(&nullTerm, .{ .ACCMODE = .RDWR, .CREAT = true }, @as(std.c.mode_t, 0o644));
             if (fd < 0) return null;
             return fd;
         }

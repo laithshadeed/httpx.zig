@@ -256,7 +256,7 @@ pub const FileMeta = struct { size: u64, mtimeNs: i128 };
 pub const cFs = struct {
     pub const isWin = builtin.os.tag == .windows;
 
-    pub const FILE_HANDLE = if (isWin) std.os.windows.HANDLE else std.c.fdT;
+    pub const FILE_HANDLE = if (isWin) std.os.windows.HANDLE else std.c.fd_t;
     pub const INVALID_HANDLE: FILE_HANDLE = if (isWin) std.os.windows.INVALID_HANDLE_VALUE else -1;
 
     pub fn openRead(path: []const u8) ?FILE_HANDLE {
@@ -289,7 +289,7 @@ pub const cFs = struct {
             if (path.len >= nullTerm.len) return null;
             @memcpy(nullTerm[0..path.len], path);
             nullTerm[path.len] = 0;
-            const fd = std.c.open(&nullTerm, .{ .ACCMODE = .RDONLY }, @as(std.c.modeT, 0));
+            const fd = std.c.open(&nullTerm, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
             if (fd < 0) return null;
             return fd;
         }
@@ -322,7 +322,7 @@ pub const cFs = struct {
             if (path.len >= nullTerm.len) return null;
             @memcpy(nullTerm[0..path.len], path);
             nullTerm[path.len] = 0;
-            const fd = std.c.open(&nullTerm, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.modeT, 0o644));
+            const fd = std.c.open(&nullTerm, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o644));
             if (fd < 0) return null;
             return fd;
         }
@@ -432,7 +432,7 @@ pub fn statPath(_: ?std.Io, path: []const u8) ?FileMeta {
         if (comptime std.posix.Stat != void) {
             const statFn = switch (builtin.os.tag) {
                 .driverkit, .ios, .maccatalyst, .macos, .tvos, .visionos, .watchos => switch (builtin.cpu.arch) {
-                    .x8664 => struct {
+                    .x86_64 => struct {
                         extern "c" fn @"stat$INODE64"(noalias path: [*:0]const u8, noalias buf: *std.c.Stat) c_int;
                     }.@"stat$INODE64",
                     else => struct {

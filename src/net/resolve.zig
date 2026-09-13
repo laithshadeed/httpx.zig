@@ -92,7 +92,7 @@ fn lookupIoImpl(allocator: Allocator, io: std.Io, host: []const u8, port: u16) E
 
 fn lookupImpl(allocator: Allocator, host: []const u8, port: u16) Error![]addressMod.Address {
     if (builtin.os.tag == .windows) return lookupWindows(allocator, host, port);
-    if (builtin.linkLibc) return lookupPosix(allocator, host, port);
+    if (builtin.link_libc) return lookupPosix(allocator, host, port);
     if (std.mem.eql(u8, host, "localhost")) {
         var out: std.ArrayList(addressMod.Address) = .empty;
         errdefer out.deinit(allocator);
@@ -105,7 +105,7 @@ fn lookupImpl(allocator: Allocator, host: []const u8, port: u16) Error![]address
 }
 
 // Wire structs kept local so we don't depend on platform sockaddr exports.
-// Layouts follow the C definitions exactly (x8664 & x86 safe: natural
+// Layouts follow the C definitions exactly (x86_64 & x86 safe: natural
 // alignment of all members is <= pointer size and no implicit padding beyond
 // what these explicit fields produce).
 

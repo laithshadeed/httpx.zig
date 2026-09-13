@@ -224,7 +224,7 @@ pub const ws = if (isWindows) struct {
 
 // POSIX (libc)
 
-pub const posixC = if (!isWindows and builtin.linkLibc) struct {
+pub const posixC = if (!isWindows and builtin.link_libc) struct {
     pub const Fd = i32;
     pub const INVALID: Fd = -1;
 
@@ -394,12 +394,12 @@ pub fn init() void {
     if (isWindows) ws.startup();
 }
 
-pub const Handle = if (isWindows) usize else if (builtin.linkLibc) posixC.Fd else posix.fdT;
+pub const Handle = if (isWindows) usize else if (builtin.link_libc) posixC.Fd else posix.fd_t;
 
 /// Blocking receive with full error mapping. n==0 means orderly peer close.
 pub fn read(h: Handle, buf: []u8) Error!usize {
     if (isWindows) return ws.recvRaw(h, buf);
-    if (builtin.linkLibc) return posixC.recvRaw(h, buf);
+    if (builtin.link_libc) return posixC.recvRaw(h, buf);
     const n = posix.read(h, buf) catch |err| return mapPosixError(err);
     return n;
 }
@@ -407,7 +407,7 @@ pub fn read(h: Handle, buf: []u8) Error!usize {
 /// Blocking send with full error mapping. Partial sends are normal.
 pub fn write(h: Handle, bytes: []const u8) Error!usize {
     if (isWindows) return ws.sendRaw(h, bytes);
-    if (builtin.linkLibc) return posixC.sendRaw(h, bytes);
+    if (builtin.link_libc) return posixC.sendRaw(h, bytes);
     const n = posix.write(h, bytes) catch |err| return mapPosixError(err);
     return n;
 }
@@ -415,7 +415,7 @@ pub fn write(h: Handle, bytes: []const u8) Error!usize {
 /// Poll for readability. Returns false on timeout.
 pub fn waitReadable(h: Handle, timeoutMs: u31) Error!bool {
     if (isWindows) return ws.waitReadable(h, timeoutMs);
-    if (builtin.linkLibc) return posixC.waitReadable(h, timeoutMs);
+    if (builtin.link_libc) return posixC.waitReadable(h, timeoutMs);
     var pfd = [_]posix.pollfd{.{
         .fd = h,
         .events = posix.POLL.IN,
@@ -428,7 +428,7 @@ pub fn waitReadable(h: Handle, timeoutMs: u31) Error!bool {
 pub fn setTimeouts(h: Handle, timeoutMs: u31) void {
     if (isWindows) {
         ws.setTimeouts(h, timeoutMs);
-    } else if (builtin.linkLibc) {
+    } else if (builtin.link_libc) {
         posixC.setTimeouts(h, timeoutMs);
     } else {
         const tv = posix.timeval{
@@ -443,7 +443,7 @@ pub fn setTimeouts(h: Handle, timeoutMs: u31) void {
 pub fn setNoDelay(h: Handle, noDelay: bool) void {
     if (isWindows) {
         ws.setNoDelay(h, noDelay);
-    } else if (builtin.linkLibc) {
+    } else if (builtin.link_libc) {
         posixC.setNoDelay(h, noDelay);
     } else {
         const opt: c_int = if (noDelay) 1 else 0;
@@ -454,7 +454,7 @@ pub fn setNoDelay(h: Handle, noDelay: bool) void {
 pub fn setKeepAlive(h: Handle, idleSecs: u32) void {
     if (isWindows) {
         ws.setKeepAlive(h, idleSecs);
-    } else if (builtin.linkLibc) {
+    } else if (builtin.link_libc) {
         posixC.setKeepAlive(h, idleSecs);
     } else {
         const one: c_int = 1;
@@ -471,7 +471,7 @@ pub fn setKeepAlive(h: Handle, idleSecs: u32) void {
 pub fn setReuseAddress(h: Handle, reuse: bool) void {
     if (isWindows) {
         ws.setReuseAddress(h, reuse);
-    } else if (builtin.linkLibc) {
+    } else if (builtin.link_libc) {
         posixC.setReuseAddress(h, reuse);
     } else {
         const opt: c_int = if (reuse) 1 else 0;
@@ -482,7 +482,7 @@ pub fn setReuseAddress(h: Handle, reuse: bool) void {
 pub fn setNonBlocking(h: Handle, nonBlocking: bool) void {
     if (isWindows) {
         ws.setNonBlocking(h, nonBlocking);
-    } else if (builtin.linkLibc) {
+    } else if (builtin.link_libc) {
         posixC.setNonBlocking(h, nonBlocking);
     } else {
         // std.posix fallback
@@ -492,7 +492,7 @@ pub fn setNonBlocking(h: Handle, nonBlocking: bool) void {
 pub fn shutdownSend(h: Handle) void {
     if (isWindows) {
         _ = ws.shutdown(h, ws.SD_SEND);
-    } else if (builtin.linkLibc) {
+    } else if (builtin.link_libc) {
         _ = posixC.shutdown(h, 1); // SHUT_WR
     } else {
         posix.shutdown(h, .send) catch {};
@@ -502,7 +502,7 @@ pub fn shutdownSend(h: Handle) void {
 pub fn close(h: Handle) void {
     if (isWindows) {
         _ = ws.closesocket(h);
-    } else if (builtin.linkLibc) {
+    } else if (builtin.link_libc) {
         _ = posixC.close(h);
     } else {
         posix.close(h);
@@ -540,7 +540,7 @@ test "error taxonomy: every known winsock code maps to a named error" {
 }
 
 test "error taxonomy: posix errno mapping" {
-    if (!isWindows and builtin.linkLibc) {
+    if (!isWindows and builtin.link_libc) {
         try std.testing.expectEqual(Error.WouldBlock, posixC.mapErrno(11));
         try std.testing.expectEqual(Error.ConnectionReset, posixC.mapErrno(104));
         try std.testing.expectEqual(Error.TimedOut, posixC.mapErrno(110));

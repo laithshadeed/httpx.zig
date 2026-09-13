@@ -62,7 +62,7 @@ pub const RawKind = enum {
 /// a failure. Never @intCast blindly: a missed error would abort the
 /// process with "integer does not fit in destination type" instead of
 /// surfacing a catchable WatchInitFailed.
-fn syscallFd(rc: usize) !std.posix.fdT {
+fn syscallFd(rc: usize) !std.posix.fd_t {
     const signed: isize = @bitCast(rc);
     if (signed < 0) return error.WatchInitFailed;
     return @intCast(signed);
@@ -71,7 +71,7 @@ fn syscallFd(rc: usize) !std.posix.fdT {
 pub const Backend = struct {
     allocator: Allocator,
     io: std.Io,
-    fd: std.posix.fdT = -1,
+    fd: std.posix.fd_t = -1,
     /// wd -> watched directory path (owned).
     watches: std.AutoHashMap(i32, []u8),
     root: []u8 = &.{},
@@ -236,8 +236,8 @@ test "inotify backend watches and reports a write" {
     const root = ".zig-cache/tmp-inotify-probe";
     {
         const cwd: std.Io.Dir = .cwd();
-        cwd.createDir(io, ".zig-cache", .defaultDir) catch {};
-        cwd.createDir(io, root, .defaultDir) catch {};
+        cwd.createDir(io, ".zig-cache", .default_dir) catch {};
+        cwd.createDir(io, root, .default_dir) catch {};
     }
     defer {
         const cwd: std.Io.Dir = .cwd();

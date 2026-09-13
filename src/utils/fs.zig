@@ -78,7 +78,7 @@ const cFs = struct {
             if (h == INVALID_HANDLE_VALUE) return null;
             return h;
         } else {
-            const fd = std.c.open(&buf, .{ .ACCMODE = .RDONLY }, @as(std.c.modeT, 0));
+            const fd = std.c.open(&buf, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
             if (fd < 0) return null;
             return fd;
         }
@@ -100,7 +100,7 @@ const cFs = struct {
                 .CREAT = true,
                 .TRUNC = true,
             };
-            const fd = std.c.open(&buf, flags, @as(std.c.modeT, 0o666));
+            const fd = std.c.open(&buf, flags, @as(std.c.mode_t, 0o666));
             if (fd < 0) return null;
             return fd;
         }
@@ -251,7 +251,7 @@ pub fn statPath(io: ?std.Io, path: []const u8) ?Stat {
         if (@as(isize, @bitCast(rc)) < 0) return null;
         const isDirectory = (statxBuf.mode & std.os.linux.S.IFMT) == std.os.linux.S.IFDIR;
 
-        const mtimeNs = @as(i128, statxBuf.mtime.sec) * std.time.nsPerS + @as(i128, statxBuf.mtime.nsec);
+        const mtimeNs = @as(i128, statxBuf.mtime.sec) * std.time.ns_per_s + @as(i128, statxBuf.mtime.nsec);
         return Stat{
             .size = statxBuf.size,
             .mtimeNs = mtimeNs,
@@ -265,7 +265,7 @@ pub fn statPath(io: ?std.Io, path: []const u8) ?Stat {
 
         const statFn = switch (builtin.os.tag) {
             .driverkit, .ios, .maccatalyst, .macos, .tvos, .visionos, .watchos => switch (builtin.cpu.arch) {
-                .x8664 => struct {
+                .x86_64 => struct {
                     extern "c" fn @"stat$INODE64"(noalias p: [*:0]const u8, noalias b: *std.c.Stat) c_int;
                 }.@"stat$INODE64",
                 else => struct {
@@ -283,7 +283,7 @@ pub fn statPath(io: ?std.Io, path: []const u8) ?Stat {
 
         return Stat{
             .size = @intCast(@max(0, st.size)),
-            .mtimeNs = @as(i128, st.mtime().sec) * std.time.nsPerS + @as(i128, st.mtime().nsec),
+            .mtimeNs = @as(i128, st.mtime().sec) * std.time.ns_per_s + @as(i128, st.mtime().nsec),
             .isDir = isDirectory,
         };
     }

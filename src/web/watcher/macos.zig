@@ -44,7 +44,7 @@ pub const RawKind = enum {
 };
 
 const WatchedDir = struct {
-    fd: std.posix.fdT,
+    fd: std.posix.fd_t,
     path: []u8,
 };
 
