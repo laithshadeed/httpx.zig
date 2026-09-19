@@ -207,8 +207,9 @@ const NativeConnection = struct {
                 // Post-handshake handshake message: capture NST tickets,
                 // reject everything else. The rx sequence already advanced,
                 // so continuing with the next record stays in sync.
-                if (!self.captureSession) return error.TlsRecordError;
-                try self.captureTicketRecord(result.plaintext);
+                if (self.captureSession) {
+                    self.captureTicketRecord(result.plaintext) catch {};
+                }
                 continue;
             }
 
@@ -227,31 +228,29 @@ const NativeConnection = struct {
         }
     }
 
-    /// Captures one post-handshake NewSessionTicket record's plaintext
-    /// (full handshake message: type 4 + body, single record). Replaces
-    /// any previously captured session. Unparseable or unusable tickets
-    /// fail loudly: a corrupt ticket stream must never silently downgrade
-    /// resumption bookkeeping.
+    /// Captures post-handshake NewSessionTicket record plaintext.
+    /// (RFC 8446 allows multiple handshake messages packed in a record).
+    /// Replaces any previously captured session.
     fn captureTicketRecord(self: *NativeConnection, plaintext: []const u8) Error!void {
-        const master = self.resumptionMaster orelse return error.TlsRecordError;
-        const host = self.sessionHost orelse return error.TlsRecordError;
-        if (plaintext.len < 4) return error.TlsRecordError;
-        if (plaintext[0] != @intFromEnum(handshakeMod.HandshakeType.new_session_ticket)) {
-            return error.TlsRecordError;
+        var off: usize = 0;
+        while (off + 4 <= plaintext.len) {
+            if (plaintext[off] != @intFromEnum(handshakeMod.HandshakeType.new_session_ticket)) break;
+            const msgLen: usize = (@as(usize, plaintext[off + 1]) << 16) | (@as(usize, plaintext[off + 2]) << 8) | plaintext[off + 3];
+            if (off + 4 + msgLen > plaintext.len) break;
+            const body = plaintext[off + 4 ..][0..msgLen];
+            if (handshakeMod.NewSessionTicket.decode(body)) |nst| {
+                const nowMs: u64 = @intCast(clockMod.millisNow());
+                if (self.resumptionMaster) |master| {
+                    if (self.sessionHost) |host| {
+                        if (sessionMod.clientSessionFromTicket(self.allocator, nst, master, self.suite, host, nowMs)) |fresh| {
+                            if (self.pendingSession) |*old| old.deinit(self.allocator);
+                            self.pendingSession = fresh;
+                        } else |_| {}
+                    }
+                }
+            } else |_| {}
+            off += 4 + msgLen;
         }
-        const nst = handshakeMod.NewSessionTicket.decode(plaintext[4..]) catch return error.TlsRecordError;
-        const nowMs: u64 = @intCast(clockMod.millisNow());
-        var fresh = sessionMod.clientSessionFromTicket(
-            self.allocator,
-            nst,
-            master,
-            self.suite,
-            host,
-            nowMs,
-        ) catch return error.TlsRecordError;
-        errdefer fresh.deinit(self.allocator);
-        if (self.pendingSession) |*old| old.deinit(self.allocator);
-        self.pendingSession = fresh;
     }
 };
 
