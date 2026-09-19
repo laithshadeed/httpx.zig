@@ -130,6 +130,8 @@ pub const Config = struct {
     http3: bool = false,
     /// Default early data options (disabled by default).
     earlyData: req.EarlyDataOptions = .{},
+    /// Disable compression advertisement (prevents sending Accept-Encoding: gzip, br, zstd).
+    disableCompression: bool = false,
 
     pub const DnsCacheOptions = struct {
         enable: bool = true,
@@ -179,6 +181,8 @@ pub const RequestOptions = struct {
     proxy: ?[]const u8 = null,
     /// 0-RTT early data options for this request.
     earlyData: ?req.EarlyDataOptions = null,
+    /// Disable compression advertisement for this request.
+    disableCompression: ?bool = null,
 };
 
 pub const Response = req.Response;
@@ -850,13 +854,13 @@ pub const Client = struct {
 
         var userHasContentType = false;
 
-        // Headers: support both []const Header and struct literal
+        // Headers: support []const Header, *const [N]Header / &.{ ... }, and struct literal
         if (@hasField(@TypeOf(opts), "headers")) {
             const H = @TypeOf(opts.headers);
-            if (comptime @typeInfo(H) == .pointer and @typeInfo(H).pointer.size == .slice) {
+            if (comptime @typeInfo(H) == .pointer and (@typeInfo(H).pointer.size == .slice or (@typeInfo(H).pointer.size == .one and @typeInfo(@typeInfo(H).pointer.child) == .array))) {
                 for (opts.headers) |h| {
                     if (std.ascii.eqlIgnoreCase(h.name, "content-type")) userHasContentType = true;
-                    hdrs.append(self.allocator, h) catch return Error.OutOfMemory;
+                    hdrs.append(self.allocator, .{ .name = h.name, .value = h.value }) catch return Error.OutOfMemory;
                 }
             } else if (comptime @typeInfo(H) == .@"struct") {
                 inline for (@typeInfo(H).@"struct".fields) |field| {
@@ -954,8 +958,8 @@ pub const Client = struct {
         defer queryList.deinit(self.allocator);
         if (@hasField(@TypeOf(opts), "query")) {
             const Q = @TypeOf(opts.query);
-            if (comptime @typeInfo(Q) == .pointer and @typeInfo(Q).pointer.size == .slice) {
-                for (opts.query) |q| queryList.append(self.allocator, q) catch return Error.OutOfMemory;
+            if (comptime @typeInfo(Q) == .pointer and (@typeInfo(Q).pointer.size == .slice or (@typeInfo(Q).pointer.size == .one and @typeInfo(@typeInfo(Q).pointer.child) == .array))) {
+                for (opts.query) |q| queryList.append(self.allocator, .{ .name = q.name, .value = q.value }) catch return Error.OutOfMemory;
             } else if (comptime @typeInfo(Q) == .@"struct") {
                 inline for (@typeInfo(Q).@"struct".fields) |field| {
                     const v = @field(opts.query, field.name);
@@ -1274,6 +1278,17 @@ pub const Client = struct {
             .timeoutMs = reqTimeout,
             .maxResponseSize = reqMaxSize,
             .proxy = reqProxy,
+            .disableCompression = blk: {
+                if (@hasField(@TypeOf(opts), "disableCompression")) {
+                    const v = opts.disableCompression;
+                    if (@typeInfo(@TypeOf(v)) == .optional) {
+                        break :blk v orelse self.config.disableCompression;
+                    } else {
+                        break :blk v;
+                    }
+                }
+                break :blk self.config.disableCompression;
+            },
         });
         if (result) |resp| {
             if (self.config.eventCallback) |cb| cb(.{

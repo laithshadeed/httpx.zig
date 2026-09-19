@@ -164,6 +164,8 @@ pub const Request = struct {
     maxResponseSize: ?usize = null,
     /// Optional proxy URL (e.g. "socks5://127.0.0.1:1080", "socks5h://127.0.0.1:1080", "http://127.0.0.1:8080").
     proxy: ?[]const u8 = null,
+    /// Disable compression advertisement (prevents sending Accept-Encoding: gzip, br, zstd).
+    disableCompression: bool = false,
 
     pub fn text(url: []const u8, bodyText: []const u8) Request {
         return .{ .url = url, .method = .POST, .bodyKind = .raw, .body = bodyText };
@@ -417,10 +419,18 @@ fn buildTarget(a: Allocator, reqPath: []const u8, urlQuery: []const u8, query: [
 }
 
 fn headerLines(a: Allocator, hdrs: []const Header, contentType: ?[]const u8) ![][]const u8 {
-    return headerLinesWithAuth(a, hdrs, contentType, null, null, null);
+    return headerLinesWithAuth(a, hdrs, contentType, null, null, null, false);
 }
 
-fn headerLinesWithAuth(a: Allocator, hdrs: []const Header, contentType: ?[]const u8, cookie: ?[]const u8, basicAuth: ?[]const u8, bearerAuth: ?[]const u8) ![][]const u8 {
+fn headerLinesWithAuth(
+    a: Allocator,
+    hdrs: []const Header,
+    contentType: ?[]const u8,
+    cookie: ?[]const u8,
+    basicAuth: ?[]const u8,
+    bearerAuth: ?[]const u8,
+    disableCompression: bool,
+) ![][]const u8 {
     var lines: std.ArrayList([]const u8) = .empty;
     errdefer lines.deinit(a);
     var hasAcceptEncoding = false;
@@ -429,7 +439,10 @@ fn headerLinesWithAuth(a: Allocator, hdrs: []const Header, contentType: ?[]const
     var hasUserAgent = false;
     var hasContentType = false;
     for (hdrs) |h| {
-        if (std.ascii.eqlIgnoreCase(h.name, "accept-encoding")) hasAcceptEncoding = true;
+        if (std.ascii.eqlIgnoreCase(h.name, "accept-encoding")) {
+            hasAcceptEncoding = true;
+            if (h.value.len == 0) continue;
+        }
         if (std.ascii.eqlIgnoreCase(h.name, "authorization")) hasAuthorization = true;
         if (std.ascii.eqlIgnoreCase(h.name, "cookie")) hasCookie = true;
         if (std.ascii.eqlIgnoreCase(h.name, "user-agent")) hasUserAgent = true;
@@ -462,7 +475,7 @@ fn headerLinesWithAuth(a: Allocator, hdrs: []const Header, contentType: ?[]const
             try lines.append(a, l);
         }
     }
-    if (!hasAcceptEncoding) {
+    if (!hasAcceptEncoding and !disableCompression) {
         const l = try a.dupe(u8, "Accept-Encoding: gzip, br, zstd");
         try lines.append(a, l);
     }
@@ -614,12 +627,18 @@ fn h3DoRequest(
     defer h3c.deinit();
     var hasAcceptEncoding = false;
     for (req.headers) |h| {
-        if (std.ascii.eqlIgnoreCase(h.name, "accept-encoding")) hasAcceptEncoding = true;
+        if (std.ascii.eqlIgnoreCase(h.name, "accept-encoding")) {
+            hasAcceptEncoding = true;
+            if (h.value.len == 0) continue;
+        }
     }
     var conv = std.ArrayList(h3Transport.Header).empty;
     defer conv.deinit(a);
-    for (req.headers) |h| conv.append(a, .{ .name = h.name, .value = h.value }) catch return Error.OutOfMemory;
-    if (!hasAcceptEncoding) {
+    for (req.headers) |h| {
+        if (std.ascii.eqlIgnoreCase(h.name, "accept-encoding") and h.value.len == 0) continue;
+        conv.append(a, .{ .name = h.name, .value = h.value }) catch return Error.OutOfMemory;
+    }
+    if (!hasAcceptEncoding and !req.disableCompression) {
         conv.append(a, .{ .name = "accept-encoding", .value = "gzip, br, zstd" }) catch return Error.OutOfMemory;
     }
     const h3respRaw = h3c.request(
@@ -688,15 +707,27 @@ fn h2DoRequest(
     reqHeaders: []const Header,
     scheme: []const u8,
     authority: []const u8,
+    disableCompression: bool,
 ) Error!Response {
     var hasAcceptEncoding = false;
+    var effectiveHeaderCount: usize = 0;
     for (reqHeaders) |h| {
-        if (std.ascii.eqlIgnoreCase(h.name, "accept-encoding")) hasAcceptEncoding = true;
+        if (std.ascii.eqlIgnoreCase(h.name, "accept-encoding")) {
+            hasAcceptEncoding = true;
+            if (h.value.len == 0) continue;
+        }
+        effectiveHeaderCount += 1;
     }
-    var conv: []http2Transport.Header = try a.alloc(http2Transport.Header, reqHeaders.len + @as(usize, if (hasAcceptEncoding) 0 else 1));
+    const shouldAddAcceptEncoding = !hasAcceptEncoding and !disableCompression;
+    var conv: []http2Transport.Header = try a.alloc(http2Transport.Header, effectiveHeaderCount + @as(usize, if (shouldAddAcceptEncoding) 1 else 0));
     defer a.free(conv);
-    for (reqHeaders, 0..) |h, i| conv[i] = .{ .name = h.name, .value = h.value };
-    if (!hasAcceptEncoding) conv[reqHeaders.len] = .{ .name = "accept-encoding", .value = "gzip, br, zstd" };
+    var idx: usize = 0;
+    for (reqHeaders) |h| {
+        if (std.ascii.eqlIgnoreCase(h.name, "accept-encoding") and h.value.len == 0) continue;
+        conv[idx] = .{ .name = h.name, .value = h.value };
+        idx += 1;
+    }
+    if (shouldAddAcceptEncoding) conv[idx] = .{ .name = "accept-encoding", .value = "gzip, br, zstd" };
     const r = pc.request(method, target, conv, scheme, authority) catch |e| switch (e) {
         error.OutOfMemory => return Error.OutOfMemory,
         else => return Error.ProtocolViolation,
@@ -758,7 +789,7 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
         };
         const bodyOut: ?[]const u8 = if (hasBody) req.body else null;
 
-        const extra = try headerLinesWithAuth(a, req.headers, ct, req.cookie, req.basicAuth, req.bearerAuth);
+        const extra = try headerLinesWithAuth(a, req.headers, ct, req.cookie, req.basicAuth, req.bearerAuth, req.disableCompression);
         defer {
             for (extra) |l| a.free(l);
             a.free(extra);
@@ -823,7 +854,7 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
             if (req.pool) |p| {
                 if (p.acquireH2(hostCopy[0..hl], port, isTls)) |pc| {
                     const scheme: []const u8 = if (isTls) "https" else "http";
-                    const resp = h2DoRequest(a, pc, method.toString(), target, req.headers, scheme, hostCopy[0..hl]) catch |e| {
+                    const resp = h2DoRequest(a, pc, method.toString(), target, req.headers, scheme, hostCopy[0..hl], req.disableCompression) catch |e| {
                         pc.deinit();
                         return e;
                     };
@@ -1117,7 +1148,7 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
                 // wrapTls already closed the socket and freed the box.
                 return Error.ProtocolViolation;
             };
-            const resp = h2DoRequest(a, pc, method.toString(), target, req.headers, "https", hostCopy[0..hl]) catch |e| {
+            const resp = h2DoRequest(a, pc, method.toString(), target, req.headers, "https", hostCopy[0..hl], req.disableCompression) catch |e| {
                 pc.deinit();
                 return e;
             };
@@ -1146,7 +1177,7 @@ pub fn request(a: Allocator, io: std.Io, req: Request) Error!Response {
                 tcpSock.close();
                 return Error.ProtocolViolation;
             };
-            const resp = h2DoRequest(a, pc, method.toString(), target, req.headers, "http", hostCopy[0..hl]) catch |e| {
+            const resp = h2DoRequest(a, pc, method.toString(), target, req.headers, "http", hostCopy[0..hl], req.disableCompression) catch |e| {
                 pc.deinit();
                 return e;
             };
@@ -1331,6 +1362,22 @@ test "client compression advertisement respects explicit override" {
     try std.testing.expectEqual(@as(usize, 2), custom.len);
     try std.testing.expectEqualStrings("Accept-Encoding: identity", custom[0]);
     try std.testing.expectEqualStrings("User-Agent: httpx/0.2.0", custom[1]);
+
+    const disabled = try headerLinesWithAuth(a, &.{}, null, null, null, null, true);
+    defer {
+        for (disabled) |line| a.free(line);
+        a.free(disabled);
+    }
+    try std.testing.expectEqual(@as(usize, 1), disabled.len);
+    try std.testing.expectEqualStrings("User-Agent: httpx/0.2.0", disabled[0]);
+
+    const omitted = try headerLinesWithAuth(a, &.{.{ .name = "Accept-Encoding", .value = "" }}, null, null, null, null, false);
+    defer {
+        for (omitted) |line| a.free(line);
+        a.free(omitted);
+    }
+    try std.testing.expectEqual(@as(usize, 1), omitted.len);
+    try std.testing.expectEqualStrings("User-Agent: httpx/0.2.0", omitted[0]);
 }
 
 /// `reusable` is true ONLY when the body was framed and fully consumed —
