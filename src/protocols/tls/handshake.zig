@@ -244,9 +244,13 @@ pub const ClientHello = struct {
             }
             try pskBody.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(idList.items.len))));
             try pskBody.appendSlice(allocator, idList.items);
-            const binderBytes: usize = self.pskIdentities.len * HashLen;
+            // binders<33..2^16-1>: each binder is opaque binder<32..255>, a length byte and the HMAC.
+            const binderBytes: usize = self.pskIdentities.len * (1 + HashLen);
             try pskBody.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(binderBytes))));
-            try pskBody.appendNTimes(allocator, 0, binderBytes);
+            for (self.pskIdentities) |_| {
+                try pskBody.append(allocator, HashLen);
+                try pskBody.appendNTimes(allocator, 0, HashLen);
+            }
             try exts.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(ExtensionType.pre_shared_key))));
             try exts.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(pskBody.items.len))));
             try exts.appendSlice(allocator, pskBody.items);
@@ -310,20 +314,28 @@ fn pskExtBody(msg: []const u8) !struct { start: usize, len: usize } {
     return .{ .start = lastStart, .len = lastLen };
 }
 
-/// Mutable span of the contiguous binder bytes of a PSK offer, for
-/// patching real binders over the zero placeholders left by
-/// `ClientHello.encode`. Validates the full extension structure.
+/// Mutable span of the first binder's bytes of a PSK offer (past its length byte), for
+/// patching the real binder over the zero placeholder left by `ClientHello.encode`.
+/// Validates the full extension structure.
 pub fn pskBinderSpan(msg: []u8) ![]u8 {
     const ext = try pskExtBody(msg);
-    const body = msg[ext.start..][0..ext.len];
+    const first = try firstBinderStart(msg[ext.start..][0..ext.len]);
+    return msg[ext.start + first ..][0..HashLen];
+}
+
+/// Where the first binder's bytes start in a PSK extension body: past the identities, the
+/// binders' own length, and the length byte of the binder. The binders must be whole
+/// `opaque binder<32..255>` entries that fill the rest of the body.
+fn firstBinderStart(body: []const u8) !usize {
     if (body.len < 2) return error.ProtocolViolation;
     const idLen: usize = (@as(usize, body[0]) << 8) | body[1];
-    if (2 + idLen + 2 > body.len) return error.ProtocolViolation;
     const bLenPos = 2 + idLen;
+    if (bLenPos + 2 > body.len) return error.ProtocolViolation;
     const bLen: usize = (@as(usize, body[bLenPos]) << 8) | body[bLenPos + 1];
-    if (bLen % HashLen != 0) return error.ProtocolViolation;
+    if (bLen == 0 or bLen % (1 + HashLen) != 0) return error.ProtocolViolation;
     if (bLenPos + 2 + bLen != body.len) return error.ProtocolViolation;
-    return msg[ext.start + bLenPos + 2 ..][0..bLen];
+    if (body[bLenPos + 2] != HashLen) return error.ProtocolViolation;
+    return bLenPos + 3;
 }
 
 /// Returns the byte length of the truncated ClientHello up to and including
@@ -390,12 +402,12 @@ pub fn pskAgeSpan(msg: []u8, index: usize) ![4]u8 {
     return error.ProtocolViolation;
 }
 
-/// Borrowed view of identity 0 of a PSK offer plus all binder bytes.
+/// Borrowed view of identity 0 of a PSK offer plus the first binder.
 /// This covers the engine's single-identity offers and keeps parsing
 /// allocation-free; multi-identity offers are rejected as over-engineered
 /// attack surface (RFC allows servers to ignore identities past the
 /// first they accept — we accept only the first).
-pub fn parsePskFirst(msg: []const u8) !?struct { ticket: []const u8, obfuscatedAge: u32, binders: []const u8 } {
+pub fn parsePskFirst(msg: []const u8) !?struct { ticket: []const u8, obfuscatedAge: u32, binder: []const u8 } {
     const ext = pskExtBody(msg) catch return null;
     const body = msg[ext.start..][0..ext.len];
     const idLen: usize = (@as(usize, body[0]) << 8) | body[1];
@@ -407,11 +419,8 @@ pub fn parsePskFirst(msg: []const u8) !?struct { ticket: []const u8, obfuscatedA
     if (p + 2 + ilen + 4 > listEnd) return error.ProtocolViolation;
     const ticket = body[p + 2 ..][0..ilen];
     const age = std.mem.readInt(u32, body[p + 2 + ilen ..][0..4], .big);
-    const bLenPos = listEnd;
-    const bLen: usize = (@as(usize, body[bLenPos]) << 8) | body[bLenPos + 1];
-    if (bLen % HashLen != 0) return error.ProtocolViolation;
-    if (bLenPos + 2 + bLen != body.len) return error.ProtocolViolation;
-    return .{ .ticket = ticket, .obfuscatedAge = age, .binders = body[bLenPos + 2 ..][0..bLen] };
+    const binder = try firstBinderStart(body);
+    return .{ .ticket = ticket, .obfuscatedAge = age, .binder = body[binder..][0..HashLen] };
 }
 
 // ServerHello (RFC 8446 Section 4.1.3)
@@ -858,9 +867,38 @@ test "ClientHello with earlyData and PSK offers early_data and computes pskTrunc
     const truncLen = try pskTruncatedLen(encoded);
     try std.testing.expect(truncLen > 0);
     try std.testing.expect(truncLen < encoded.len);
-    // Binder span starts right after truncLen + 2 (binders length prefix)
+    // The binder span is past truncLen + 2 (the binders' length prefix) + 1 (the binder's own length byte)
     const binderSpan = try pskBinderSpan(encoded);
     try std.testing.expectEqual(@as(usize, HashLen), binderSpan.len);
+}
+
+test "PSK binders are length-prefixed entries, as RFC 8446 section 4.2.11 defines them" {
+    const ch = ClientHello{
+        .random = [_]u8{0x55} ** 32,
+        .cipherSuites = &.{.AES_128_GCM_SHA256},
+        .keyShareEntries = &.{.{
+            .group = .x25519,
+            .keyExchange = &[_]u8{0x66} ** 32,
+        }},
+        .signatureAlgorithms = &.{.ecdsa_secp256r1_sha256},
+        .alpnProtocols = &.{"h2"},
+        .pskIdentities = &.{"ticket"},
+    };
+    const encoded = try ch.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+
+    // The message ends with binders<33..2^16-1>: its length, then one opaque binder<32..255>.
+    const tail = encoded[encoded.len - (2 + 1 + HashLen) ..];
+    try std.testing.expectEqual(@as(u16, 1 + HashLen), std.mem.readInt(u16, tail[0..2], .big));
+    try std.testing.expectEqual(@as(u8, HashLen), tail[2]);
+
+    // The span to patch is the binder's bytes, past both lengths, and a parse reads it back.
+    const span = try pskBinderSpan(encoded);
+    try std.testing.expectEqual(@as(usize, HashLen), span.len);
+    @memset(span, 0xAB);
+    const parsed = (try parsePskFirst(encoded)).?;
+    try std.testing.expectEqualSlices(u8, &[_]u8{0xAB} ** HashLen, parsed.binder);
+    try std.testing.expectEqualSlices(u8, "ticket", parsed.ticket);
 }
 
 test "NewSessionTicket encodes and decodes maxEarlyData" {

@@ -416,8 +416,9 @@ pub const Engine = struct {
     }
 
     /// PSK binder for a zero-patched ClientHello: HMAC over
-    /// Hash(prefix || chZeroed) keyed by Derive-Secret(early, "res
-    /// binder", ""). The client passes its pre-CH transcript state as
+    /// Hash(prefix || chZeroed) keyed by the finished key of
+    /// Derive-Secret(early, "res binder", "") (RFC 8446 4.2.11.2: computed
+    /// like Finished, with the binder key as base key). The client passes its pre-CH transcript state as
     /// `prefix` (empty, or the HRR splice); the server passes a fresh
     /// hash (the received CH is the whole input). Nothing is fed here.
     fn computeResumptionBinder(prefix: handshakeMod.TranscriptHash, chZeroed: []const u8, psk: [32]u8) [HashLen]u8 {
@@ -427,12 +428,15 @@ pub const Engine = struct {
         const emptyHash = emptyCopy.finish();
         var binderKey: [32]u8 = undefined;
         hkdfExpandLabelWithContext(early, "res binder", &emptyHash, &binderKey);
+        var finishedKey: [32]u8 = undefined;
+        hkdfExpandLabel(binderKey, "finished", &finishedKey);
         var copy = prefix;
         copy.update(chZeroed);
         const hash = copy.finalResult();
         var out: [HashLen]u8 = undefined;
-        std.crypto.auth.hmac.Hmac(Sha256).create(&out, &hash, &binderKey);
+        std.crypto.auth.hmac.Hmac(Sha256).create(&out, &hash, &finishedKey);
         std.crypto.secureZero(u8, &binderKey);
+        std.crypto.secureZero(u8, &finishedKey);
         return out;
     }
 
@@ -617,7 +621,6 @@ pub const Engine = struct {
         const keys = self.ticketKeys orelse return false;
         const offer = handshakeMod.parsePskFirst(fullCh) catch return false;
         const o = offer orelse return false;
-        if (o.binders.len < HashLen) return false;
         const opened = keys.open(o.ticket, nowMs) catch return false;
         if (!suiteSupportsResumption(opened.suite)) return false;
 
@@ -626,7 +629,7 @@ pub const Engine = struct {
         const fresh = handshakeMod.TranscriptHash.init(.{});
         const binder = computeResumptionBinder(fresh, fullCh[0..truncLen], opened.psk);
         var diff: u8 = 0;
-        for (binder, o.binders[0..HashLen]) |a, b| diff |= a ^ b;
+        for (binder, o.binder) |a, b| diff |= a ^ b;
         if (diff != 0) {
             std.crypto.secureZero(u8, @constCast(&opened.psk));
             return false;
@@ -1710,12 +1713,10 @@ pub const Engine = struct {
         var derived: [32]u8 = undefined;
         hkdfExpandLabelWithContext(hsSecret, "derived", &emptyHash, &derived);
 
-        // With an accepted PSK the Master Secret mixes it in; otherwise
-        // zeros exactly as before. (EC)DHE is always performed alongside
-        // (pskDheKe), so forward secrecy holds either way.
+        // The PSK enters the key schedule at the Early Secret only; the Master
+        // Secret's input keying material is always zeros (RFC 8446 Section 7.1).
         const zero: [32]u8 = .{0} ** 32;
-        const pskIkm = self.resumptionPsk orelse zero;
-        const master = HkdfSha256.extract(&derived, &pskIkm);
+        const master = HkdfSha256.extract(&derived, &zero);
         self.masterSecret = master;
 
         var copy = self.transcript.state;
