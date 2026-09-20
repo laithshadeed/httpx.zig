@@ -59,23 +59,29 @@ pub const SessionCache = struct {
         self.entries.deinit(self.allocator);
     }
 
-    /// Returns an owned duplicate of the usable session for this origin,
-    /// or null. Caller owns the result (`deinit` with an allocator).
+    /// Takes the usable session for this origin out of the cache, or null.
+    /// A ticket is single-use (RFC 8446 section 8.1): offering it on two
+    /// handshakes lets a server that enforces this close the second one, so
+    /// the entry is gone once handed out and the next `put` refills it.
+    /// Caller owns the result (`deinit` with an allocator).
     pub fn get(self: *SessionCache, host: []const u8, port: u16, nowMs: u64) ?ClientSession {
         return self.getWithAlpn(host, port, nowMs, null);
     }
 
-    /// Returns an owned duplicate of the usable session matching origin and ALPN (if requested).
+    /// Like `get`, for the session matching origin and ALPN (if requested).
     pub fn getWithAlpn(self: *SessionCache, host: []const u8, port: u16, nowMs: u64, targetAlpn: ?[]const u8) ?ClientSession {
         if (host.len == 0 or host.len > 64) return null;
         self.mu.lock();
         defer self.mu.unlock();
-        for (self.entries.items) |*e| {
+        for (self.entries.items, 0..) |*e, i| {
             if (e.port == port and e.hostLen == host.len and
                 std.mem.eql(u8, e.host[0..e.hostLen], host))
             {
                 if (!e.session.isUsableWithAlpn(host, nowMs, targetAlpn)) return null;
-                return e.session.dupe(self.allocator) catch null;
+                const taken = e.session.dupe(self.allocator) catch return null;
+                var spent = self.entries.swapRemove(i);
+                spent.session.deinit(self.allocator);
+                return taken;
             }
         }
         return null;
@@ -549,4 +555,30 @@ test "client session usability is host-bound and time-bound" {
     // Obfuscation round-trips through wrapping arithmetic.
     const obf = s.obfuscatedAge(9_000);
     try std.testing.expectEqual(@as(u32, 4000) +% 7, obf);
+}
+
+test "session cache hands each ticket out once" {
+    const a = std.testing.allocator;
+    var cache = SessionCache.init(a);
+    defer cache.deinit();
+    var s = ClientSession{
+        .ticket = try a.dupe(u8, "tok"),
+        .psk = [_]u8{0} ** 32,
+        .ageAdd = 7,
+        .createdMs = 1_000,
+        .lifetimeSecs = 100,
+        .suite = .AES_128_GCM_SHA256,
+        .host = try a.dupe(u8, "example.com"),
+    };
+    defer s.deinit(a);
+    cache.put("example.com", 443, &s);
+    var first = cache.get("example.com", 443, 2_000) orelse return error.TestExpectedSession;
+    first.deinit(a);
+    // Two handshakes in flight must not both offer it.
+    try std.testing.expect(cache.get("example.com", 443, 2_000) == null);
+    // A ticket the server sends afterwards is offered again, once.
+    cache.put("example.com", 443, &s);
+    var second = cache.get("example.com", 443, 2_000) orelse return error.TestExpectedSession;
+    second.deinit(a);
+    try std.testing.expect(cache.get("example.com", 443, 2_000) == null);
 }
